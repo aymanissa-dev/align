@@ -1,12 +1,12 @@
 # Align client
 
-React + Vite + Tailwind frontend for Align. See the repository README for how to run it.
+React, Vite, and Tailwind frontend for Align. See the repository README for how to run it with the API.
 
 ```bash
 npm install
 npm run dev
 ```
 
-Demo account (seeded on first launch): `demo@align.app` / `password`.
+`npm run build` typechecks and writes `dist/`.
 
-`npm run build` typechecks and produces `dist/`.
+The UI reads `VITE_API` from the repo-root `.env`. Leave it unset to use the API. Set `VITE_API=mock` to use the localStorage mock (`demo@align.app` / `password`, seeded in the browser).

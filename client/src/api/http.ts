@@ -10,7 +10,7 @@ import type {
 } from './types.ts'
 
 /**
- * Fetch client for the real Align API. Unused until `api/index.ts` exports it.
+ * Fetch client for the Align API.
  * Sends cookies with `credentials: 'include'` (the JWT lives in an httpOnly cookie).
  */
 

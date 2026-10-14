@@ -1,7 +1,11 @@
+import type { AlignApi } from './types.ts'
+import { httpApi } from './http.ts'
+import { mockApi } from './mock.ts'
+
 /**
  * The only data-access import the UI should use.
  *
- * Swap this line for the fetch client when the API is available:
- *   export { httpApi as api } from './http.ts'
+ * Talks to the Express API by default. Set `VITE_API=mock` (repo-root `.env`)
+ * to use the localStorage mock without a database.
  */
-export { mockApi as api } from './mock.ts'
+export const api: AlignApi = import.meta.env.VITE_API === 'mock' ? mockApi : httpApi
