@@ -6,7 +6,7 @@ Align is a minimal project manager for projects, tasks, and notes. One Vercel pr
 
 - `client/` — React, Vite, and Tailwind. Screens talk to `client/src/api`.
 - `server/` — Express, Mongoose, and the integration tests.
-- `api/index.ts` — Vercel serverless entry. It exports the Express app.
+- `api/index.js` — Vercel serverless entry, bundled from `server/src/vercel.ts` by `npm run build`.
 
 The client uses the HTTP API by default. Set `VITE_API=mock` to use the localStorage mock instead (no database).
 
@@ -39,7 +39,7 @@ npm run dev -w client
 ```bash
 npm test   # API integration tests (Vitest, Supertest, mongodb-memory-server)
 npm run lint
-npm run build
+npm run build   # client bundle plus api/index.js for Vercel
 ```
 
 ## Deploy on Vercel

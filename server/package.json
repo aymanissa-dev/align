@@ -7,7 +7,8 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "test": "vitest run",
-    "lint": "tsc --noEmit && oxlint --deny-warnings src test && cd .. && oxlint --deny-warnings api/index.ts"
+    "build:api": "node scripts/bundle-api.mjs",
+    "lint": "tsc --noEmit && oxlint --deny-warnings src test"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -24,6 +25,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.19.1",
     "@types/supertest": "^6.0.3",
+    "esbuild": "^0.25.12",
     "mongodb-memory-server": "^10.3.0",
     "oxlint": "^1.81.0",
     "supertest": "^7.1.4",

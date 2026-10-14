@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { createApp } from '../server/src/app.ts'
-import { resolveRequestUrl } from '../server/src/requestPath.ts'
+import { createApp } from './app.ts'
+import { resolveRequestUrl } from './requestPath.ts'
 
 const app = createApp()
 
