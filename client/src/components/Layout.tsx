@@ -48,8 +48,13 @@ export function Layout() {
     document.body.style.overflow = 'hidden'
     const closeButton = closeRef.current
     closeButton?.focus()
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
     return () => {
       document.body.style.overflow = previous
+      document.removeEventListener('keydown', onKey)
     }
   }, [drawerOpen, isDesktop])
 
@@ -78,12 +83,7 @@ export function Layout() {
       </header>
 
       {open && !isDesktop ? (
-        <button
-          type="button"
-          className="fixed inset-0 z-40 bg-neutral-900/30 md:hidden"
-          aria-label="Close menu"
-          onClick={() => setOpen(false)}
-        />
+        <div className="fixed inset-0 z-40 bg-neutral-900/30 md:hidden" onClick={() => setOpen(false)} />
       ) : null}
 
       <aside
