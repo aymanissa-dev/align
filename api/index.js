@@ -98,10 +98,8 @@ function ensureIndexes() {
   return indexesReady;
 }
 function databaseFailure(error) {
-  const name = error instanceof Error ? error.name : "Error";
-  const message = error instanceof Error ? error.message : "Database connection failed.";
-  const redacted = message.replace(/mongodb(?:\+srv)?:\/\/\S+/gi, "mongodb://[redacted]");
-  return new HttpError(500, `${name}: ${redacted}`);
+  console.error(error);
+  return new HttpError(500, "Database connection failed.");
 }
 async function connectDb() {
   const uri = process.env.MONGODB_URI;
@@ -110,9 +108,11 @@ async function connectDb() {
   }
   const state = cache();
   if (state.conn) {
-    await ensureIndexes().catch((error) => {
-      throw databaseFailure(error);
-    });
+    try {
+      await ensureIndexes();
+    } catch (error) {
+      throw error instanceof HttpError ? error : databaseFailure(error);
+    }
     return state.conn;
   }
   if (!state.promise) {
