@@ -5,6 +5,7 @@ import { api } from '../api/index.ts'
 import { useToast } from '../components/toast-context.ts'
 import { Button, ConfirmDialog, Field, Input } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
+import { clearSignedOut, markSignedOut } from '../lib/signedOut.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
 export function SettingsPage() {
@@ -74,16 +75,24 @@ export function SettingsPage() {
   }
 
   async function onSignOut() {
-    await logout()
-    navigate('/login', { replace: true })
+    markSignedOut()
+    try {
+      await logout()
+      navigate('/', { replace: true })
+    } catch (caught) {
+      clearSignedOut()
+      toast(errorMessage(caught))
+    }
   }
 
   async function onDelete() {
     setDeleting(true)
+    markSignedOut()
     try {
       await deleteAccount()
-      navigate('/login', { replace: true })
+      navigate('/', { replace: true })
     } catch (caught) {
+      clearSignedOut()
       setDeleting(false)
       toast(errorMessage(caught))
     }

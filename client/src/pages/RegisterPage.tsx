@@ -41,7 +41,10 @@ export function RegisterPage() {
   return (
     <div className="flex min-h-screen items-center justify-center px-6 py-16">
       <div className="w-full max-w-sm">
-        <h1 className="text-2xl font-medium tracking-tight text-neutral-950">Create an account</h1>
+        <Link to="/" className="focus-ring rounded-sm text-sm font-medium tracking-tight text-neutral-950">
+          Align
+        </Link>
+        <h1 className="mt-6 text-2xl font-medium tracking-tight text-neutral-950">Create an account</h1>
         <p className="mt-2 text-sm text-neutral-500">A workspace for projects, tasks, and notes.</p>
         <form onSubmit={onSubmit} className="mt-8 space-y-4" noValidate>
           <Field label="Name" htmlFor="name">

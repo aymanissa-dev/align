@@ -19,7 +19,11 @@ export function createApp(options: AppOptions = {}): Express {
   app.disable('x-powered-by')
   app.set('trust proxy', 1)
   app.use(express.json({ limit: '1mb' }))
-  app.use((_req, _res, next) => {
+  app.use((req, _res, next) => {
+    if (req.method === 'POST' && req.path === '/api/auth/logout') {
+      next()
+      return
+    }
     connectDb().then(() => next(), next)
   })
 

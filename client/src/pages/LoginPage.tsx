@@ -39,10 +39,13 @@ export function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center px-6 py-16">
       <div className="w-full max-w-sm">
-        <h1 className="text-2xl font-medium tracking-tight text-neutral-950">Align</h1>
-        <p className="mt-2 text-sm text-neutral-500">Sign in to your workspace.</p>
+        <Link to="/" className="focus-ring rounded-sm text-sm font-medium tracking-tight text-neutral-950">
+          Align
+        </Link>
+        <h1 className="mt-6 text-2xl font-medium tracking-tight text-neutral-950">Sign in</h1>
+        <p className="mt-2 text-sm text-neutral-500">Welcome back to your workspace.</p>
         <form onSubmit={onSubmit} className="mt-8 space-y-4" noValidate>
-          <Field label="Email" htmlFor="email" error={error}>
+          <Field label="Email" htmlFor="email">
             <Input
               id="email"
               type="email"
@@ -50,8 +53,6 @@ export function LoginPage() {
               inputMode="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
-              aria-invalid={error ? true : undefined}
-              aria-describedby={error ? 'email-error' : undefined}
               required
             />
           </Field>
@@ -65,6 +66,11 @@ export function LoginPage() {
               required
             />
           </Field>
+          {error ? (
+            <p role="alert" className="text-sm text-neutral-800">
+              {error}
+            </p>
+          ) : null}
           <Button type="submit" className="w-full" disabled={pending}>
             {pending ? 'Signing in…' : 'Sign in'}
           </Button>

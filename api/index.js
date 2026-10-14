@@ -885,7 +885,11 @@ function createApp(options = {}) {
   app2.disable("x-powered-by");
   app2.set("trust proxy", 1);
   app2.use(express.json({ limit: "1mb" }));
-  app2.use((_req, _res, next) => {
+  app2.use((req, _res, next) => {
+    if (req.method === "POST" && req.path === "/api/auth/logout") {
+      next();
+      return;
+    }
     connectDb().then(() => next(), next);
   });
   const authLimiter = rateLimit({

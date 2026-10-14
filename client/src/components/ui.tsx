@@ -1,14 +1,7 @@
 import { useEffect, useId, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react'
+import { buttonClass, type ButtonVariant } from '../lib/buttonClass.ts'
 import { cn } from '../lib/cn.ts'
 import { IconCheck } from './icons.tsx'
-
-const buttonStyles = {
-  primary: 'bg-neutral-900 text-white hover:bg-neutral-800',
-  secondary: 'border border-neutral-300 bg-white text-neutral-900 hover:bg-neutral-50',
-  ghost: 'text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900',
-} as const
-
-type ButtonVariant = keyof typeof buttonStyles
 
 export function Button({
   variant = 'primary',
@@ -19,11 +12,7 @@ export function Button({
   return (
     <button
       type={type}
-      className={cn(
-        'focus-ring inline-flex items-center justify-center rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40',
-        buttonStyles[variant],
-        className,
-      )}
+      className={buttonClass(variant, cn('disabled:cursor-not-allowed disabled:opacity-40', className))}
       {...props}
     />
   )

@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 
-export function useDocumentTitle(title: string) {
+export function useDocumentTitle(title: string, exact = false) {
   useEffect(() => {
-    document.title = title ? `${title} · Align` : 'Align'
-  }, [title])
+    document.title = exact || !title ? title || 'Align' : `${title} · Align`
+  }, [title, exact])
 }

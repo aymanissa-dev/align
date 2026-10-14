@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/auth-context.ts'
 import { cn } from '../lib/cn.ts'
@@ -19,7 +19,7 @@ function navClass(isActive: boolean): string {
   )
 }
 
-export function Layout() {
+export function Layout({ children }: { children?: ReactNode }) {
   const { user } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
@@ -156,7 +156,7 @@ export function Layout() {
 
       <main id="main" className="min-h-screen pt-14 md:pt-0 md:pl-60">
         <div className="mx-auto w-full max-w-3xl px-6 py-10 md:px-10 md:py-16">
-          <Outlet />
+          {children ?? <Outlet />}
         </div>
       </main>
     </div>
