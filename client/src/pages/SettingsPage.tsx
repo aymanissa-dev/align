@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/auth-context.ts'
 import { api } from '../api/index.ts'
 import { useToast } from '../components/toast-context.ts'
+import { PageHeader } from '../components/chrome.tsx'
 import { Button, ConfirmDialog, Field, Input } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { clearSignedOut, markSignedOut } from '../lib/signedOut.ts'
@@ -100,11 +101,10 @@ export function SettingsPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-medium tracking-tight text-neutral-950">Settings</h1>
-      <p className="mt-2 text-sm text-neutral-500">{user.email}</p>
+      <PageHeader eyebrow="Account" title="Settings" description={user.email} />
 
-      <section className="mt-10 max-w-md">
-        <h2 className="text-base font-medium text-neutral-950">Profile</h2>
+      <section className="mt-6 max-w-lg border border-neutral-200 p-5">
+        <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Profile</h2>
         <form onSubmit={onSaveName} className="mt-4 space-y-4" noValidate>
           <Field label="Name" htmlFor="profile-name" error={nameError}>
             <Input
@@ -122,8 +122,8 @@ export function SettingsPage() {
         </form>
       </section>
 
-      <section className="mt-12 max-w-md border-t border-neutral-200 pt-8">
-        <h2 className="text-base font-medium text-neutral-950">Password</h2>
+      <section className="mt-4 max-w-lg border border-neutral-200 p-5">
+        <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Password</h2>
         <form onSubmit={onChangePassword} className="mt-4 space-y-4" noValidate>
           <Field label="Current password" htmlFor="current-password">
             <Input
@@ -164,15 +164,15 @@ export function SettingsPage() {
         </form>
       </section>
 
-      <section className="mt-12 max-w-md border-t border-neutral-200 pt-8">
-        <h2 className="text-base font-medium text-neutral-950">Session</h2>
+      <section className="mt-4 max-w-lg border border-neutral-200 p-5">
+        <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Session</h2>
         <Button variant="secondary" className="mt-4" onClick={() => void onSignOut()}>
           Sign out
         </Button>
       </section>
 
-      <section className="mt-12 max-w-md border-t border-neutral-200 pt-8">
-        <h2 className="text-base font-medium text-neutral-950">Delete account</h2>
+      <section className="mt-4 max-w-lg border border-dashed border-neutral-300 p-5">
+        <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Delete account</h2>
         <p className="mt-2 text-sm leading-6 text-neutral-500">
           This permanently removes your projects, tasks, and notes.
         </p>

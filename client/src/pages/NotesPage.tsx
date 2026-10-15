@@ -4,7 +4,9 @@ import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api/index.ts'
 import type { Note, Project } from '../api/types.ts'
 import { useToast } from '../components/toast-context.ts'
+import { PageHeader } from '../components/chrome.tsx'
 import { Button, EmptyState, ErrorState, Field, Input, ListSkeleton, Modal, Select } from '../components/ui.tsx'
+import { buttonClass } from '../lib/buttonClass.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { excerpt, formatDate } from '../lib/format.ts'
 import { invalidateWorkspace } from '../queryClient.ts'
@@ -32,13 +34,12 @@ export function NotesPage() {
 
   return (
     <div>
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-medium tracking-tight text-neutral-950">Notes</h1>
-          <p className="mt-2 text-sm text-neutral-500">Writing attached to a project.</p>
-        </div>
-        <Button onClick={onNew}>New note</Button>
-      </div>
+      <PageHeader
+        eyebrow="Workspace"
+        title="Notes"
+        description="Writing attached to a project."
+        action={<Button onClick={onNew}>New note</Button>}
+      />
 
       {loading ? <ListSkeleton /> : null}
       {failed ? (
@@ -59,10 +60,7 @@ export function NotesPage() {
               title="No notes yet"
               body="Notes live with a project. Create one, then come back to write."
               action={
-                <Link
-                  to="/projects"
-                  className="focus-ring inline-flex rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-800"
-                >
+                <Link to="/projects" className={buttonClass('primary')}>
                   Go to projects
                 </Link>
               }
@@ -78,21 +76,18 @@ export function NotesPage() {
       ) : null}
 
       {!loading && !failed && notes.data && projects.data && notes.data.length > 0 ? (
-        <div className="mt-10 space-y-10">
+        <div className="mt-6 space-y-4">
           {groupNotes(notes.data, projects.data).map((group) => (
-            <section key={group.project.id}>
-              <h2 className="text-sm font-medium text-neutral-500">
-                <Link
-                  to={`/projects/${group.project.id}?tab=notes`}
-                  className="focus-ring rounded-sm hover:text-neutral-900"
-                >
+            <section key={group.project.id} className="border border-neutral-200">
+              <h2 className="border-b border-neutral-200 px-4 py-3 text-sm font-medium">
+                <Link to={`/projects/${group.project.id}?tab=notes`} className="focus-ring hover:underline">
                   {group.project.name}
                 </Link>
               </h2>
-              <ul className="mt-2 divide-y divide-neutral-200 border-y border-neutral-200">
+              <ul>
                 {group.notes.map((note) => (
-                  <li key={note.id}>
-                    <Link to={`/notes/${note.id}`} className="focus-ring block rounded-sm py-3 hover:bg-neutral-50">
+                  <li key={note.id} className="border-b border-neutral-200 last:border-b-0">
+                    <Link to={`/notes/${note.id}`} className="focus-ring block px-4 py-3 hover:bg-neutral-50">
                       <div className="flex items-baseline justify-between gap-4">
                         <p className="font-medium text-neutral-950">{note.title || 'Untitled'}</p>
                         <span className="shrink-0 text-xs text-neutral-400">{formatDate(note.updatedAt)}</span>

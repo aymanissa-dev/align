@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from 'reac
 import { useAuth } from '../auth/auth-context.ts'
 import { cn } from '../lib/cn.ts'
 import { useMediaQuery } from '../hooks/useMediaQuery.ts'
+import { Eyebrow } from './chrome.tsx'
 import { IconClose, IconDashboard, IconMenu, IconNotes, IconProjects, IconSearch, IconSettings } from './icons.tsx'
 
 const NAV = [
@@ -14,8 +15,10 @@ const NAV = [
 
 function navClass(isActive: boolean): string {
   return cn(
-    'focus-ring flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm',
-    isActive ? 'bg-neutral-100 font-medium text-neutral-950' : 'text-neutral-600 hover:bg-neutral-50 hover:text-neutral-950',
+    'focus-ring flex items-center gap-2.5 border-l-2 px-3 py-2 text-sm',
+    isActive
+      ? 'border-neutral-950 bg-neutral-50 font-medium text-neutral-950'
+      : 'border-transparent text-neutral-600 hover:bg-neutral-50 hover:text-neutral-950',
   )
 }
 
@@ -64,14 +67,14 @@ export function Layout({ children }: { children?: ReactNode }) {
     <div className="min-h-screen bg-white">
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[70] focus:rounded-md focus:bg-white focus:px-3 focus:py-2 focus:text-sm"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[70] focus:bg-white focus:px-3 focus:py-2 focus:text-sm"
       >
         Skip to content
       </a>
       <header className="fixed inset-x-0 top-0 z-30 flex h-14 items-center gap-1 border-b border-neutral-200 bg-white px-3 md:hidden">
         <button
           type="button"
-          className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md"
+          className="focus-ring inline-flex h-10 w-10 items-center justify-center"
           aria-expanded={open}
           aria-controls="sidebar"
           onClick={() => setOpen(true)}
@@ -79,7 +82,7 @@ export function Layout({ children }: { children?: ReactNode }) {
           <IconMenu />
           <span className="sr-only">Open menu</span>
         </button>
-        <span className="text-sm font-medium tracking-tight">Align</span>
+        <span className="text-sm font-medium tracking-[-0.03em]">Align</span>
       </header>
 
       {open && !isDesktop ? (
@@ -90,18 +93,18 @@ export function Layout({ children }: { children?: ReactNode }) {
         id="sidebar"
         inert={!drawerOpen ? true : undefined}
         className={cn(
-          'fixed inset-y-0 left-0 z-50 flex w-60 flex-col border-r border-neutral-200 bg-white transition-transform duration-200 md:z-30',
+          'fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-neutral-200 bg-white transition-transform duration-200 md:z-30',
           drawerOpen ? 'translate-x-0' : '-translate-x-full',
         )}
       >
         <div className="flex items-center justify-between px-4 pt-5 md:pt-6">
-          <NavLink to="/" className="focus-ring rounded-sm text-lg font-medium tracking-tight text-neutral-950">
+          <NavLink to="/" className="focus-ring text-sm font-medium tracking-[-0.03em] text-neutral-950">
             Align
           </NavLink>
           <button
             ref={closeRef}
             type="button"
-            className="focus-ring inline-flex h-9 w-9 items-center justify-center rounded-md md:hidden"
+            className="focus-ring inline-flex h-9 w-9 items-center justify-center md:hidden"
             aria-label="Close menu"
             onClick={() => setOpen(false)}
           >
@@ -128,7 +131,7 @@ export function Layout({ children }: { children?: ReactNode }) {
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search"
-              className="focus-ring w-full rounded-md border border-neutral-300 bg-white py-1.5 pr-3 pl-8 text-sm placeholder:text-neutral-400"
+              className="focus-ring w-full border border-neutral-300 bg-white py-1.5 pr-3 pl-8 text-sm placeholder:text-neutral-400"
             />
           </div>
           <button type="submit" className="sr-only">
@@ -136,7 +139,8 @@ export function Layout({ children }: { children?: ReactNode }) {
           </button>
         </form>
 
-        <nav className="mt-6 flex-1 space-y-1 overflow-y-auto px-3" aria-label="Primary">
+        <Eyebrow className="px-4 pt-6">Navigate</Eyebrow>
+        <nav className="mt-2 flex-1 space-y-0.5 overflow-y-auto px-2" aria-label="Primary">
           {NAV.map((item) => {
             const ItemIcon = item.icon
             return (
@@ -150,12 +154,12 @@ export function Layout({ children }: { children?: ReactNode }) {
 
         <div className="border-t border-neutral-200 px-4 py-4">
           <p className="truncate text-sm font-medium text-neutral-950">{user.name}</p>
-          <p className="truncate text-xs text-neutral-500">{user.email}</p>
+          <p className="truncate font-mono text-[11px] text-neutral-500">{user.email}</p>
         </div>
       </aside>
 
-      <main id="main" className="min-h-screen pt-14 md:pt-0 md:pl-60">
-        <div className="mx-auto w-full max-w-3xl px-6 py-10 md:px-10 md:py-16">
+      <main id="main" className="min-h-screen pt-14 md:pt-0 md:pl-64">
+        <div className="mx-auto w-full max-w-5xl px-5 py-8 md:px-8 md:py-10">
           {children ?? <Outlet />}
         </div>
       </main>

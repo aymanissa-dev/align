@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/auth-context.ts'
+import { AuthFrame } from '../components/AuthFrame.tsx'
 import { Button, Field, Input } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
@@ -39,14 +40,8 @@ export function RegisterPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-6 py-16">
-      <div className="w-full max-w-sm">
-        <Link to="/" className="focus-ring rounded-sm text-sm font-medium tracking-tight text-neutral-950">
-          Align
-        </Link>
-        <h1 className="mt-6 text-2xl font-medium tracking-tight text-neutral-950">Create an account</h1>
-        <p className="mt-2 text-sm text-neutral-500">A workspace for projects, tasks, and notes.</p>
-        <form onSubmit={onSubmit} className="mt-8 space-y-4" noValidate>
+    <AuthFrame title="Create an account" lede="A workspace for projects, tasks, and notes.">
+        <form onSubmit={onSubmit} className="space-y-4" noValidate>
           <Field label="Name" htmlFor="name">
             <Input
               id="name"
@@ -88,11 +83,10 @@ export function RegisterPage() {
         </form>
         <p className="mt-6 text-sm text-neutral-500">
           Already have an account?{' '}
-          <Link to="/login" className="focus-ring rounded-sm text-neutral-900 underline underline-offset-4">
+          <Link to="/login" className="focus-ring text-neutral-950 underline underline-offset-4">
             Sign in
           </Link>
         </p>
-      </div>
-    </div>
+    </AuthFrame>
   )
 }

@@ -18,6 +18,7 @@ import {
   ProgressBar,
   TextButton,
 } from '../components/ui.tsx'
+import { Badge } from '../components/chrome.tsx'
 import { useToggleTask } from '../hooks/useToggleTask.ts'
 import { cn } from '../lib/cn.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
@@ -81,19 +82,21 @@ export function ProjectDetailPage() {
 
   return (
     <div>
-      <Link to="/projects" className="focus-ring rounded-sm text-sm text-neutral-500 hover:text-neutral-900">
+      <Link to="/projects" className="focus-ring font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase hover:text-neutral-950">
         Projects
       </Link>
-      <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+      <div className="mt-4 flex flex-col gap-4 border-b border-neutral-200 pb-6 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-2xl font-medium tracking-tight text-neutral-950">{current.name}</h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-3xl font-medium tracking-[-0.04em] text-neutral-950 sm:text-4xl">{current.name}</h1>
+            <Badge tone={current.status === 'archived' ? 'outline' : 'solid'}>
+              {current.status === 'archived' ? 'Archived' : 'Active'}
+            </Badge>
+          </div>
           {current.description ? (
-            <p className="mt-2 max-w-xl text-sm leading-6 text-neutral-500">{current.description}</p>
+            <p className="mt-3 max-w-xl text-sm leading-6 text-neutral-600">{current.description}</p>
           ) : null}
-          <p className="mt-3 text-xs text-neutral-400">
-            {current.status === 'archived' ? 'Archived · ' : ''}
-            Updated {formatDate(current.updatedAt)}
-          </p>
+          <p className="mt-3 font-mono text-xs text-neutral-500">Updated {formatDate(current.updatedAt)}</p>
         </div>
         <div className="flex shrink-0 gap-4">
           <TextButton onClick={() => setEditing(true)}>Edit</TextButton>
@@ -104,7 +107,7 @@ export function ProjectDetailPage() {
         </div>
       </div>
 
-      <div className="mt-8 flex gap-6 border-b border-neutral-200" role="tablist" aria-label="Project sections">
+      <div className="mt-6 flex gap-2" role="tablist" aria-label="Project sections">
         {(['tasks', 'notes'] as const).map((key) => (
           <button
             key={key}
@@ -113,8 +116,10 @@ export function ProjectDetailPage() {
             aria-selected={tab === key}
             onClick={() => setParams(key === 'notes' ? { tab: 'notes' } : {})}
             className={cn(
-              'focus-ring -mb-px border-b-2 pb-2 text-sm',
-              tab === key ? 'border-neutral-900 font-medium text-neutral-900' : 'border-transparent text-neutral-500 hover:text-neutral-800',
+              'focus-ring border px-3 py-1.5 text-sm',
+              tab === key
+                ? 'border-neutral-950 bg-neutral-950 font-medium text-white'
+                : 'border-neutral-300 text-neutral-600 hover:bg-neutral-50',
             )}
           >
             {key === 'tasks' ? 'Tasks' : 'Notes'}
@@ -241,10 +246,10 @@ function TasksPanel({ projectId }: { projectId: string }) {
             </div>
             <ProgressBar value={progress.percent} label="Task progress" />
           </div>
-          <ul className="mt-4 divide-y divide-neutral-200 border-y border-neutral-200">
+          <ul className="mt-4 divide-y divide-neutral-200 border border-neutral-200">
             {sorted.map((task) =>
               editingId === task.id ? (
-                <li key={task.id} className="py-3">
+                <li key={task.id} className="px-4 py-3">
                   <form
                     className="flex flex-col gap-2 sm:flex-row"
                     onSubmit={(event) => {
@@ -280,7 +285,7 @@ function TasksPanel({ projectId }: { projectId: string }) {
                   </form>
                 </li>
               ) : (
-                <li key={task.id} className="flex items-start gap-3 py-3">
+                <li key={task.id} className="flex items-start gap-3 px-4 py-3">
                   <CheckButton
                     checked={task.completed}
                     label={task.completed ? `Mark “${task.title}” incomplete` : `Mark “${task.title}” complete`}
@@ -297,12 +302,12 @@ function TasksPanel({ projectId }: { projectId: string }) {
                     </p>
                   </div>
                   {task.dueDate ? (
-                    <span className="shrink-0 pt-0.5 text-sm text-neutral-400">{formatDate(task.dueDate)}</span>
+                    <span className="shrink-0 pt-0.5 font-mono text-xs text-neutral-500">{formatDate(task.dueDate)}</span>
                   ) : null}
                   <div className="flex shrink-0 gap-1">
                     <button
                       type="button"
-                      className="focus-ring rounded-md p-1 text-neutral-400 hover:text-neutral-900"
+                      className="focus-ring p-1 text-neutral-400 hover:text-neutral-950"
                       aria-label={`Edit “${task.title}”`}
                       onClick={() => startEdit(task)}
                     >
@@ -310,7 +315,7 @@ function TasksPanel({ projectId }: { projectId: string }) {
                     </button>
                     <button
                       type="button"
-                      className="focus-ring rounded-md p-1 text-neutral-400 hover:text-neutral-900"
+                      className="focus-ring p-1 text-neutral-400 hover:text-neutral-950"
                       aria-label={`Delete “${task.title}”`}
                       onClick={() => remove.mutate(task.id)}
                     >
@@ -355,7 +360,7 @@ function NotesPanel({ projectId }: { projectId: string }) {
       {notes.data.length === 0 ? (
         <p className="mt-8 text-sm text-neutral-500">Notes for this project will show up here.</p>
       ) : (
-        <ul className="mt-4 divide-y divide-neutral-200 border-y border-neutral-200">
+        <ul className="mt-4 divide-y divide-neutral-200 border border-neutral-200">
           {notes.data.map((note) => (
             <li key={note.id}>
               <NoteRow note={note} />
@@ -369,7 +374,7 @@ function NotesPanel({ projectId }: { projectId: string }) {
 
 function NoteRow({ note }: { note: Note }) {
   return (
-    <Link to={`/notes/${note.id}`} className="focus-ring block rounded-sm py-3 hover:bg-neutral-50">
+    <Link to={`/notes/${note.id}`} className="focus-ring block px-4 py-3 hover:bg-neutral-50">
       <div className="flex items-baseline justify-between gap-4">
         <p className="font-medium text-neutral-950">{note.title || 'Untitled'}</p>
         <span className="shrink-0 text-xs text-neutral-400">{formatDate(note.updatedAt)}</span>

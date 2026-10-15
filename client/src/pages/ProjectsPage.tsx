@@ -5,6 +5,7 @@ import { api } from '../api/index.ts'
 import type { Project, ProjectStatus } from '../api/types.ts'
 import { ProjectFormDialog } from '../components/ProjectFormDialog.tsx'
 import { useToast } from '../components/toast-context.ts'
+import { Badge, PageHeader } from '../components/chrome.tsx'
 import { Button, ConfirmDialog, EmptyState, ErrorState, ListSkeleton, TextButton } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { cn } from '../lib/cn.ts'
@@ -50,15 +51,14 @@ export function ProjectsPage() {
 
   return (
     <div>
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-medium tracking-tight text-neutral-950">Projects</h1>
-          <p className="mt-2 text-sm text-neutral-500">Active work, and what you’ve set aside.</p>
-        </div>
-        <Button onClick={() => setCreating(true)}>New project</Button>
-      </div>
+      <PageHeader
+        eyebrow="Workspace"
+        title="Projects"
+        description="Active work, and what you’ve set aside."
+        action={<Button onClick={() => setCreating(true)}>New project</Button>}
+      />
 
-      <div className="mt-8 flex gap-6 border-b border-neutral-200" role="tablist" aria-label="Project status">
+      <div className="mt-6 flex gap-2" role="tablist" aria-label="Project status">
         {(['active', 'archived'] as const).map((key) => (
           <button
             key={key}
@@ -67,8 +67,10 @@ export function ProjectsPage() {
             aria-selected={status === key}
             onClick={() => setStatus(key)}
             className={cn(
-              'focus-ring -mb-px border-b-2 pb-2 text-sm',
-              status === key ? 'border-neutral-900 font-medium text-neutral-900' : 'border-transparent text-neutral-500 hover:text-neutral-800',
+              'focus-ring border px-3 py-1.5 text-sm',
+              status === key
+                ? 'border-neutral-950 bg-neutral-950 font-medium text-white'
+                : 'border-neutral-300 text-neutral-600 hover:bg-neutral-50',
             )}
           >
             {key === 'active' ? 'Active' : 'Archived'}
@@ -96,17 +98,19 @@ export function ProjectsPage() {
           </div>
         ) : null}
         {projects.data && projects.data.length > 0 ? (
-          <ul>
+          <ul className="border border-neutral-200">
             {projects.data.map((project) => (
-              <li key={project.id} className="border-b border-neutral-200 py-5">
+              <li key={project.id} className="border-b border-neutral-200 px-4 py-4 last:border-b-0">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
-                    <Link
-                      to={`/projects/${project.id}`}
-                      className="focus-ring rounded-sm font-medium text-neutral-950 hover:underline"
-                    >
-                      {project.name}
-                    </Link>
+                    <div className="flex items-center gap-2">
+                      <Link to={`/projects/${project.id}`} className="focus-ring font-medium text-neutral-950 hover:underline">
+                        {project.name}
+                      </Link>
+                      <Badge tone={project.status === 'archived' ? 'outline' : 'solid'}>
+                        {project.status === 'archived' ? 'Archived' : 'Active'}
+                      </Badge>
+                    </div>
                     {project.description ? (
                       <p className="mt-1 line-clamp-2 text-sm leading-6 text-neutral-500">{project.description}</p>
                     ) : null}

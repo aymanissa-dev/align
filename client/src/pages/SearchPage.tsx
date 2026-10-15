@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api/index.ts'
+import { PageHeader } from '../components/chrome.tsx'
 import { EmptyState, ErrorState, ListSkeleton } from '../components/ui.tsx'
 import { excerpt } from '../lib/format.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
@@ -22,10 +23,17 @@ export function SearchPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-medium tracking-tight text-neutral-950">
-        {query ? `Results for “${query}”` : 'Search'}
-      </h1>
-      {!query ? <p className="mt-2 text-sm text-neutral-500">Find a project, task, or note.</p> : null}
+      <PageHeader
+        eyebrow="Workspace"
+        title={query ? `Results for “${query}”` : 'Search'}
+        description={
+          !query
+            ? 'Find a project, task, or note.'
+            : results.data
+              ? `${total} ${total === 1 ? 'match' : 'matches'}`
+              : 'Looking through your workspace.'
+        }
+      />
 
       {query && results.isLoading ? <ListSkeleton rows={4} /> : null}
       {query && results.isError ? (
@@ -44,7 +52,7 @@ export function SearchPage() {
         <Group title="Projects" count={results.data.projects.length}>
           {results.data.projects.map((project) => (
             <li key={project.id}>
-              <Link to={`/projects/${project.id}`} className="focus-ring block rounded-sm py-3 hover:bg-neutral-50">
+              <Link to={`/projects/${project.id}`} className="focus-ring block border-b border-neutral-200 px-4 py-3 last:border-b-0 hover:bg-neutral-50">
                 <p className="font-medium text-neutral-950">
                   <Highlight text={project.name} query={query} />
                 </p>
@@ -66,7 +74,7 @@ export function SearchPage() {
             <li key={task.id}>
               <Link
                 to={`/projects/${task.projectId}`}
-                className="focus-ring block rounded-sm py-3 hover:bg-neutral-50"
+                className="focus-ring block border-b border-neutral-200 px-4 py-3 last:border-b-0 hover:bg-neutral-50"
               >
                 <p className="font-medium text-neutral-950">
                   <Highlight text={task.title} query={query} />
@@ -85,7 +93,7 @@ export function SearchPage() {
         <Group title="Notes" count={results.data.notes.length}>
           {results.data.notes.map((note) => (
             <li key={note.id}>
-              <Link to={`/notes/${note.id}`} className="focus-ring block rounded-sm py-3 hover:bg-neutral-50">
+              <Link to={`/notes/${note.id}`} className="focus-ring block border-b border-neutral-200 px-4 py-3 last:border-b-0 hover:bg-neutral-50">
                 <p className="font-medium text-neutral-950">
                   <Highlight text={note.title} query={query} />
                 </p>
@@ -106,11 +114,12 @@ export function SearchPage() {
 
 function Group({ title, count, children }: { title: string; count: number; children: ReactNode }) {
   return (
-    <section className="mt-10">
-      <h2 className="text-sm font-medium text-neutral-500">
-        {title} <span className="text-neutral-400 tabular-nums">{count}</span>
+    <section className="mt-8 border border-neutral-200">
+      <h2 className="flex items-center justify-between border-b border-neutral-200 px-4 py-3 font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">
+        {title}
+        <span className="font-mono text-xs tracking-normal text-neutral-500 normal-case tabular-nums">{count}</span>
       </h2>
-      <ul className="mt-2 divide-y divide-neutral-200 border-y border-neutral-200">{children}</ul>
+      <ul>{children}</ul>
     </section>
   )
 }

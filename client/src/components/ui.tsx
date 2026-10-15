@@ -22,7 +22,7 @@ export function TextButton({ className, type = 'button', ...props }: ButtonHTMLA
   return (
     <button
       type={type}
-      className={cn('focus-ring rounded-sm text-sm text-neutral-500 hover:text-neutral-900', className)}
+      className={cn('focus-ring text-sm text-neutral-500 hover:text-neutral-950', className)}
       {...props}
     />
   )
@@ -32,7 +32,7 @@ export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElem
   return (
     <input
       className={cn(
-        'focus-ring w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400',
+        'focus-ring w-full border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-950 placeholder:text-neutral-400',
         className,
       )}
       {...props}
@@ -44,7 +44,7 @@ export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTex
   return (
     <textarea
       className={cn(
-        'focus-ring w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400',
+        'focus-ring w-full resize-y border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-950 placeholder:text-neutral-400',
         className,
       )}
       {...props}
@@ -56,7 +56,7 @@ export function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectE
   return (
     <select
       className={cn(
-        'focus-ring w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900',
+        'focus-ring w-full border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-950',
         className,
       )}
       {...props}
@@ -79,7 +79,7 @@ export function Field({
 }) {
   return (
     <div>
-      <label htmlFor={htmlFor} className="block text-sm font-medium text-neutral-800">
+      <label htmlFor={htmlFor} className="font-pixel block text-[11px] tracking-[0.14em] text-neutral-500 uppercase">
         {label}
       </label>
       <div className="mt-1.5">{children}</div>
@@ -141,9 +141,9 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="relative z-10 w-full max-w-md rounded-lg border border-neutral-200 bg-white p-6"
+        className="relative z-10 w-full max-w-md border border-neutral-200 bg-white p-6 shadow-md"
       >
-        <h2 id={titleId} className="text-lg font-medium tracking-tight text-neutral-950">
+        <h2 id={titleId} className="text-xl font-medium tracking-[-0.03em] text-neutral-950">
           {title}
         </h2>
         <div className="mt-4">{children}</div>
@@ -194,7 +194,7 @@ export function EmptyState({
   action?: ReactNode
 }) {
   return (
-    <div className="rounded-lg border border-dashed border-neutral-300 px-6 py-14 text-center">
+    <div className="border border-dashed border-neutral-300 px-6 py-14 text-center">
       <h2 className="text-base font-medium text-neutral-950">{title}</h2>
       <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-neutral-500">{body}</p>
       {action ? <div className="mt-5 flex justify-center">{action}</div> : null}
@@ -219,7 +219,7 @@ export function ErrorState({ onRetry }: { onRetry?: () => void }) {
 }
 
 export function Skeleton({ className }: { className?: string }) {
-  return <div className={cn('animate-pulse rounded-md bg-neutral-100', className)} />
+  return <div className={cn('animate-pulse bg-neutral-100', className)} />
 }
 
 export function ListSkeleton({ rows = 3, header = true }: { rows?: number; header?: boolean }) {
@@ -244,14 +244,14 @@ export function ProgressBar({ value, label }: { value: number; label: string }) 
   const percent = Math.max(0, Math.min(100, Math.round(value)))
   return (
     <div
-      className="h-1 w-full overflow-hidden rounded-full bg-neutral-100"
+      className="h-1 w-full overflow-hidden bg-neutral-100"
       role="progressbar"
       aria-label={label}
       aria-valuenow={percent}
       aria-valuemin={0}
       aria-valuemax={100}
     >
-      <div className="h-full rounded-full bg-neutral-900 transition-[width] duration-300" style={{ width: `${percent}%` }} />
+      <div className="h-full bg-neutral-950 transition-[width] duration-300" style={{ width: `${percent}%` }} />
     </div>
   )
 }
@@ -276,7 +276,7 @@ export function CheckButton({
       disabled={disabled}
       onClick={onChange}
       className={cn(
-        'focus-ring mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border',
+        'focus-ring mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center border',
         checked ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-400 bg-white',
         disabled && 'opacity-40',
       )}

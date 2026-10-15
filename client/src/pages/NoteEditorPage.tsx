@@ -127,11 +127,11 @@ function Editor({ note }: { note: Note }) {
 
   return (
     <div>
-      <div className="flex items-center justify-between gap-4 text-sm">
-        <Link to="/notes" className="focus-ring rounded-sm text-neutral-500 hover:text-neutral-900">
+      <div className="flex items-center justify-between gap-4 border-b border-neutral-200 pb-4 text-sm">
+        <Link to="/notes" className="focus-ring font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase hover:text-neutral-950">
           Notes
         </Link>
-        <span className="text-neutral-400" role="status">
+        <span className="border border-neutral-300 px-2 py-0.5 font-pixel text-[10px] tracking-[0.14em] text-neutral-600 uppercase" role="status">
           {statusLabel}
         </span>
       </div>
@@ -143,12 +143,12 @@ function Editor({ note }: { note: Note }) {
         }}
         aria-label="Title"
         placeholder="Untitled"
-        className="mt-6 w-full bg-transparent text-3xl font-medium tracking-tight text-neutral-950 placeholder:text-neutral-300 focus:outline-none"
+        className="mt-6 w-full bg-transparent text-3xl font-medium tracking-[-0.04em] text-neutral-950 placeholder:text-neutral-300 focus:outline-none sm:text-4xl"
       />
       {project.data ? (
         <Link
           to={`/projects/${project.data.id}?tab=notes`}
-          className="focus-ring mt-3 inline-block rounded-sm text-sm text-neutral-500 hover:text-neutral-900"
+          className="focus-ring mt-3 inline-block text-sm text-neutral-600 hover:text-neutral-950"
         >
           {project.data.name}
         </Link>

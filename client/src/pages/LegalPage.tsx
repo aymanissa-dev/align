@@ -5,8 +5,9 @@ function LegalArticle({ title, children }: { title: string; children: ReactNode 
   useDocumentTitle(title)
   return (
     <article className="mx-auto w-full max-w-2xl px-5 py-16 sm:px-8 sm:py-24">
-      <h1 className="text-3xl font-medium tracking-tight">{title}</h1>
-      <p className="mt-3 text-sm text-neutral-500">Last updated October 14, 2026.</p>
+      <p className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Legal</p>
+      <h1 className="mt-3 text-4xl font-medium tracking-[-0.04em]">{title}</h1>
+      <p className="mt-3 font-mono text-xs text-neutral-500">Last updated October 14, 2026.</p>
       <div className="mt-10 space-y-8 text-sm leading-7 text-neutral-700">{children}</div>
     </article>
   )

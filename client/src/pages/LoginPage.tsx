@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/auth-context.ts'
+import { AuthFrame } from '../components/AuthFrame.tsx'
 import { Button, Field, Input } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
@@ -37,14 +38,8 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-6 py-16">
-      <div className="w-full max-w-sm">
-        <Link to="/" className="focus-ring rounded-sm text-sm font-medium tracking-tight text-neutral-950">
-          Align
-        </Link>
-        <h1 className="mt-6 text-2xl font-medium tracking-tight text-neutral-950">Sign in</h1>
-        <p className="mt-2 text-sm text-neutral-500">Welcome back to your workspace.</p>
-        <form onSubmit={onSubmit} className="mt-8 space-y-4" noValidate>
+    <AuthFrame title="Sign in" lede="Welcome back to your workspace.">
+        <form onSubmit={onSubmit} className="space-y-4" noValidate>
           <Field label="Email" htmlFor="email">
             <Input
               id="email"
@@ -77,14 +72,14 @@ export function LoginPage() {
         </form>
         <p className="mt-6 text-sm text-neutral-500">
           New here?{' '}
-          <Link to="/register" className="focus-ring rounded-sm text-neutral-900 underline underline-offset-4">
+          <Link to="/register" className="focus-ring text-neutral-950 underline underline-offset-4">
             Create an account
           </Link>
         </p>
-        <div className="mt-10 border-t border-neutral-200 pt-6">
+        <div className="mt-8 border-t border-dashed border-neutral-300 pt-6">
           <button
             type="button"
-            className="focus-ring rounded-sm text-sm text-neutral-900 underline decoration-neutral-300 underline-offset-4 hover:decoration-neutral-900 disabled:opacity-40"
+            className="focus-ring text-sm text-neutral-950 underline decoration-neutral-300 underline-offset-4 hover:decoration-neutral-950 disabled:opacity-40"
             disabled={pending}
             onClick={() => {
               setEmail(DEMO_EMAIL)
@@ -94,9 +89,8 @@ export function LoginPage() {
           >
             Use the demo account
           </button>
-          <p className="mt-2 text-xs text-neutral-400">demo@align.app · password</p>
+          <p className="mt-2 font-mono text-[11px] text-neutral-500">demo@align.app · password</p>
         </div>
-      </div>
-    </div>
+    </AuthFrame>
   )
 }
