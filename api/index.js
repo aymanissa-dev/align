@@ -109,6 +109,15 @@ var notificationSchema = new Schema(
 );
 notificationSchema.index({ userId: 1, key: 1 }, { unique: true });
 notificationSchema.index({ userId: 1, createdAt: -1 });
+var whiteboardSchema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    projectId: { type: Schema.Types.ObjectId, ref: "Project", required: true },
+    scene: { type: Schema.Types.Mixed, required: true }
+  },
+  { timestamps: true }
+);
+whiteboardSchema.index({ userId: 1, projectId: 1 }, { unique: true });
 function compile(name, factory) {
   const existing = mongoose.models[name];
   if (existing) return existing;
@@ -121,6 +130,7 @@ var Task = compile("Task", () => model("Task", taskSchema));
 var Note = compile("Note", () => model("Note", noteSchema));
 var Activity = compile("Activity", () => model("Activity", activitySchema));
 var Notification = compile("Notification", () => model("Notification", notificationSchema));
+var Whiteboard = compile("Whiteboard", () => model("Whiteboard", whiteboardSchema));
 
 // src/db.ts
 var globalCache = globalThis;
@@ -137,7 +147,8 @@ function ensureIndexes() {
     Task.syncIndexes(),
     Note.syncIndexes(),
     Activity.syncIndexes(),
-    Notification.syncIndexes()
+    Notification.syncIndexes(),
+    Whiteboard.syncIndexes()
   ]).then(() => void 0).catch((error) => {
     indexesReady = null;
     throw error;
@@ -492,6 +503,51 @@ var notePatchSchema = z.object({
   title: text("Title", 160).optional(),
   body: z.string({ invalid_type_error: "Note is too long." }).max(1e5, "Note is too long.").optional()
 });
+var finite = z.number({ invalid_type_error: "Whiteboard is invalid." }).finite();
+var hex = z.string().regex(/^#[0-9a-fA-F]{6}$/, "Whiteboard is invalid.");
+var point = z.object({ x: finite, y: finite });
+var whiteboardSceneSchema = z.object({
+  strokes: z.array(
+    z.object({
+      id: z.string().min(1).max(40),
+      tool: z.enum(["pen", "eraser"]),
+      points: z.array(point).min(1).max(1500),
+      color: hex,
+      width: finite.min(1).max(64)
+    })
+  ).max(400),
+  shapes: z.array(
+    z.object({
+      id: z.string().min(1).max(40),
+      kind: z.enum(["rect", "ellipse"]),
+      x: finite,
+      y: finite,
+      w: finite,
+      h: finite,
+      color: hex
+    })
+  ).max(200),
+  texts: z.array(
+    z.object({
+      id: z.string().min(1).max(40),
+      x: finite,
+      y: finite,
+      text: z.string().max(280),
+      color: hex
+    })
+  ).max(200),
+  viewport: z.object({
+    x: finite,
+    y: finite,
+    scale: finite.min(0.2).max(4)
+  })
+});
+var emptyScene = {
+  strokes: [],
+  shapes: [],
+  texts: [],
+  viewport: { x: 0, y: 0, scale: 1 }
+};
 function normalizeDueDate(value) {
   if (value === void 0) return void 0;
   if (value === null || value === "") return null;
@@ -590,6 +646,7 @@ function authRouter(limiter) {
       await Label.deleteMany({ userId });
       await Activity.deleteMany({ userId });
       await Notification.deleteMany({ userId });
+      await Whiteboard.deleteMany({ userId });
       await Project.deleteMany({ userId });
       await User.deleteOne({ _id: userId });
       clearSession(res);
@@ -1029,6 +1086,29 @@ function projectsRouter() {
     })
   );
   router.get(
+    "/:id/whiteboard",
+    asyncHandler(async (req, res) => {
+      const userId = currentUserId(req);
+      const project = await requireProject(userId, req.params.id);
+      const board = await Whiteboard.findOne({ userId, projectId: project._id });
+      res.json({ scene: board?.scene ?? emptyScene });
+    })
+  );
+  router.put(
+    "/:id/whiteboard",
+    asyncHandler(async (req, res) => {
+      const userId = currentUserId(req);
+      const project = await requireProject(userId, req.params.id);
+      const scene = parseBody(whiteboardSceneSchema, req.body?.scene ?? req.body);
+      const board = await Whiteboard.findOneAndUpdate(
+        { userId, projectId: project._id },
+        { userId, projectId: project._id, scene },
+        { new: true, upsert: true, setDefaultsOnInsert: true }
+      );
+      res.json({ scene: board?.scene ?? scene });
+    })
+  );
+  router.get(
     "/:id/activity",
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req);
@@ -1084,6 +1164,7 @@ function projectsRouter() {
       const taskIds = await Task.find({ userId, projectId: project._id }).distinct("_id");
       await Notification.deleteMany({ userId, taskId: { $in: taskIds } });
       await Activity.deleteMany({ userId, projectId: project._id });
+      await Whiteboard.deleteMany({ userId, projectId: project._id });
       await Task.deleteMany({ userId, projectId: project._id });
       await Note.deleteMany({ userId, projectId: project._id });
       await project.deleteOne();

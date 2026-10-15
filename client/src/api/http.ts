@@ -11,6 +11,7 @@ import type {
   SearchResults,
   Task,
   User,
+  WhiteboardScene,
 } from './types.ts'
 
 /**
@@ -139,6 +140,15 @@ export const httpApi = {
   },
   listActivity(projectId) {
     return request<ActivityEvent[]>(`/api/projects/${projectId}/activity`)
+  },
+  getWhiteboard(projectId) {
+    return request<{ scene: WhiteboardScene }>(`/api/projects/${projectId}/whiteboard`)
+  },
+  saveWhiteboard(projectId, scene) {
+    return request<{ scene: WhiteboardScene }>(`/api/projects/${projectId}/whiteboard`, {
+      method: 'PUT',
+      body: JSON.stringify({ scene }),
+    })
   },
   listNotifications(today) {
     return request<AppNotification[]>(withQuery('/api/notifications', { today }))

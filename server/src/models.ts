@@ -99,6 +99,16 @@ const notificationSchema = new Schema(
 notificationSchema.index({ userId: 1, key: 1 }, { unique: true })
 notificationSchema.index({ userId: 1, createdAt: -1 })
 
+const whiteboardSchema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true },
+    scene: { type: Schema.Types.Mixed, required: true },
+  },
+  { timestamps: true },
+)
+whiteboardSchema.index({ userId: 1, projectId: 1 }, { unique: true })
+
 export type UserDoc = HydratedDocument<InferSchemaType<typeof userSchema>>
 export type ProjectDoc = HydratedDocument<InferSchemaType<typeof projectSchema>>
 export type LabelDoc = HydratedDocument<InferSchemaType<typeof labelSchema>>
@@ -106,6 +116,7 @@ export type TaskDoc = HydratedDocument<InferSchemaType<typeof taskSchema>>
 export type NoteDoc = HydratedDocument<InferSchemaType<typeof noteSchema>>
 export type ActivityDoc = HydratedDocument<InferSchemaType<typeof activitySchema>>
 export type NotificationDoc = HydratedDocument<InferSchemaType<typeof notificationSchema>>
+export type WhiteboardDoc = HydratedDocument<InferSchemaType<typeof whiteboardSchema>>
 
 function compile<T>(name: string, factory: () => T): T {
   const existing = mongoose.models[name]
@@ -120,3 +131,4 @@ export const Task = compile('Task', () => model('Task', taskSchema))
 export const Note = compile('Note', () => model('Note', noteSchema))
 export const Activity = compile('Activity', () => model('Activity', activitySchema))
 export const Notification = compile('Notification', () => model('Notification', notificationSchema))
+export const Whiteboard = compile('Whiteboard', () => model('Whiteboard', whiteboardSchema))

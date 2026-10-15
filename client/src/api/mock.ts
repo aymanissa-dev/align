@@ -15,6 +15,7 @@ import type {
   TaskPriority,
   TodayData,
   User,
+  WhiteboardScene,
 } from './types.ts'
 
 /**
@@ -33,6 +34,7 @@ type StoredNote = Note & { userId: string }
 type StoredLabel = Label & { userId: string }
 type StoredActivity = ActivityEvent & { userId: string }
 type StoredNotification = AppNotification & { userId: string; key: string }
+type StoredBoard = { userId: string; projectId: string; scene: WhiteboardScene }
 
 type Db = {
   users: StoredUser[]
@@ -42,6 +44,7 @@ type Db = {
   labels: StoredLabel[]
   activities: StoredActivity[]
   notifications: StoredNotification[]
+  whiteboards: StoredBoard[]
   sessionUserId: string | null
 }
 
@@ -76,7 +79,8 @@ function isDb(value: unknown): value is Db {
     Array.isArray(record.notes) &&
     (record.labels === undefined || Array.isArray(record.labels)) &&
     (record.activities === undefined || Array.isArray(record.activities)) &&
-    (record.notifications === undefined || Array.isArray(record.notifications))
+    (record.notifications === undefined || Array.isArray(record.notifications)) &&
+    (record.whiteboards === undefined || Array.isArray(record.whiteboards))
   )
 }
 
@@ -140,6 +144,7 @@ function seed(): Db {
     labels: [],
     activities: [],
     notifications: [],
+    whiteboards: [],
     notes: [
       note(
         userId,
@@ -226,6 +231,7 @@ function load(): Db {
         memory.labels ??= []
         memory.activities ??= []
         memory.notifications ??= []
+        memory.whiteboards ??= []
         for (const item of memory.tasks) {
           item.priority ??= 'medium'
           item.labelIds ??= []
@@ -531,6 +537,7 @@ export const mockApi = {
       state.labels = state.labels.filter((item) => item.userId !== user.id)
       state.activities = state.activities.filter((item) => item.userId !== user.id)
       state.notifications = state.notifications.filter((item) => item.userId !== user.id)
+      state.whiteboards = state.whiteboards.filter((item) => item.userId !== user.id)
       state.users = state.users.filter((item) => item.id !== user.id)
       state.sessionUserId = null
     })
@@ -606,6 +613,7 @@ export const mockApi = {
       state.notes = state.notes.filter((item) => item.projectId !== id)
       state.activities = state.activities.filter((item) => item.projectId !== id)
       state.notifications = state.notifications.filter((item) => !taskIds.has(item.taskId))
+      state.whiteboards = state.whiteboards.filter((item) => item.projectId !== id)
     })
   },
 
@@ -811,6 +819,27 @@ export const mockApi = {
         .filter((item) => item.userId === user.id && item.projectId === projectId)
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
         .map(({ userId: _userId, ...item }) => item)
+    })
+  },
+
+  async getWhiteboard(projectId) {
+    return read((state, user) => {
+      findProject(state, user.id, projectId)
+      const board = state.whiteboards.find((item) => item.userId === user.id && item.projectId === projectId)
+      return {
+        scene: board?.scene ?? { strokes: [], shapes: [], texts: [], viewport: { x: 0, y: 0, scale: 1 } },
+      }
+    })
+  },
+
+  async saveWhiteboard(projectId, scene) {
+    return write((state, user) => {
+      findProject(state, user.id, projectId)
+      if (!scene || !Array.isArray(scene.strokes) || !scene.viewport) throw new ApiError(400, 'Whiteboard is invalid.')
+      const existing = state.whiteboards.find((item) => item.userId === user.id && item.projectId === projectId)
+      if (existing) existing.scene = scene
+      else state.whiteboards.push({ userId: user.id, projectId, scene })
+      return { scene }
     })
   },
 

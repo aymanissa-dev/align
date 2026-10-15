@@ -1,6 +1,6 @@
 import mongoose from 'mongoose'
 import { HttpError } from './errors.ts'
-import { Activity, Label, Note, Notification, Project, Task, User } from './models.ts'
+import { Activity, Label, Note, Notification, Project, Task, User, Whiteboard } from './models.ts'
 
 type Cache = {
   conn: typeof mongoose | null
@@ -25,6 +25,7 @@ function ensureIndexes(): Promise<void> {
     Note.syncIndexes(),
     Activity.syncIndexes(),
     Notification.syncIndexes(),
+    Whiteboard.syncIndexes(),
   ])
     .then(() => undefined)
     .catch((error: unknown) => {

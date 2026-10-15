@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { quoteTitle, recordActivity } from '../activity.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
-import { Activity, Note, Notification, Project, Task } from '../models.ts'
+import { Activity, Note, Notification, Project, Task, Whiteboard } from '../models.ts'
 import { publicActivity, publicNote, publicProject, publicTask } from '../serialize.ts'
 import { ownedLabelIds, requireProject, touchProject } from '../scope.ts'
 import {
@@ -11,6 +11,8 @@ import {
   projectCreateSchema,
   projectPatchSchema,
   taskCreateSchema,
+  emptyScene,
+  whiteboardSceneSchema,
 } from '../validate.ts'
 
 export function projectsRouter(): Router {
@@ -129,6 +131,31 @@ export function projectsRouter(): Router {
   )
 
   router.get(
+    '/:id/whiteboard',
+    asyncHandler(async (req, res) => {
+      const userId = currentUserId(req)
+      const project = await requireProject(userId, req.params.id)
+      const board = await Whiteboard.findOne({ userId, projectId: project._id })
+      res.json({ scene: board?.scene ?? emptyScene })
+    }),
+  )
+
+  router.put(
+    '/:id/whiteboard',
+    asyncHandler(async (req, res) => {
+      const userId = currentUserId(req)
+      const project = await requireProject(userId, req.params.id)
+      const scene = parseBody(whiteboardSceneSchema, req.body?.scene ?? req.body)
+      const board = await Whiteboard.findOneAndUpdate(
+        { userId, projectId: project._id },
+        { userId, projectId: project._id, scene },
+        { new: true, upsert: true, setDefaultsOnInsert: true },
+      )
+      res.json({ scene: board?.scene ?? scene })
+    }),
+  )
+
+  router.get(
     '/:id/activity',
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req)
@@ -188,6 +215,7 @@ export function projectsRouter(): Router {
       const taskIds = await Task.find({ userId, projectId: project._id }).distinct('_id')
       await Notification.deleteMany({ userId, taskId: { $in: taskIds } })
       await Activity.deleteMany({ userId, projectId: project._id })
+      await Whiteboard.deleteMany({ userId, projectId: project._id })
       await Task.deleteMany({ userId, projectId: project._id })
       await Note.deleteMany({ userId, projectId: project._id })
       await project.deleteOne()

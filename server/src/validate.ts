@@ -162,6 +162,60 @@ export const notePatchSchema = z.object({
   body: z.string({ invalid_type_error: 'Note is too long.' }).max(100_000, 'Note is too long.').optional(),
 })
 
+const finite = z.number({ invalid_type_error: 'Whiteboard is invalid.' }).finite()
+const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Whiteboard is invalid.')
+const point = z.object({ x: finite, y: finite })
+
+export const whiteboardSceneSchema = z.object({
+  strokes: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(40),
+        tool: z.enum(['pen', 'eraser']),
+        points: z.array(point).min(1).max(1500),
+        color: hex,
+        width: finite.min(1).max(64),
+      }),
+    )
+    .max(400),
+  shapes: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(40),
+        kind: z.enum(['rect', 'ellipse']),
+        x: finite,
+        y: finite,
+        w: finite,
+        h: finite,
+        color: hex,
+      }),
+    )
+    .max(200),
+  texts: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(40),
+        x: finite,
+        y: finite,
+        text: z.string().max(280),
+        color: hex,
+      }),
+    )
+    .max(200),
+  viewport: z.object({
+    x: finite,
+    y: finite,
+    scale: finite.min(0.2).max(4),
+  }),
+})
+
+export const emptyScene = {
+  strokes: [],
+  shapes: [],
+  texts: [],
+  viewport: { x: 0, y: 0, scale: 1 },
+}
+
 export function normalizeDueDate(value: string | null | undefined): string | null | undefined {
   if (value === undefined) return undefined
   if (value === null || value === '') return null

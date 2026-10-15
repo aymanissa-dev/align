@@ -101,6 +101,29 @@ export type OpenTask = {
   completed: boolean
 }
 
+export type WhiteboardPoint = { x: number; y: number }
+
+export type WhiteboardScene = {
+  strokes: {
+    id: string
+    tool: 'pen' | 'eraser'
+    points: WhiteboardPoint[]
+    color: string
+    width: number
+  }[]
+  shapes: {
+    id: string
+    kind: 'rect' | 'ellipse'
+    x: number
+    y: number
+    w: number
+    h: number
+    color: string
+  }[]
+  texts: { id: string; x: number; y: number; text: string; color: string }[]
+  viewport: { x: number; y: number; scale: number }
+}
+
 export type TodayTask = Task & { projectName: string }
 
 export type TodayData = {
@@ -257,6 +280,10 @@ export interface AlignApi {
 
   /** GET /api/projects/:id/activity */
   listActivity(projectId: string): Promise<ActivityEvent[]>
+  /** GET /api/projects/:id/whiteboard */
+  getWhiteboard(projectId: string): Promise<{ scene: WhiteboardScene }>
+  /** PUT /api/projects/:id/whiteboard */
+  saveWhiteboard(projectId: string, scene: WhiteboardScene): Promise<{ scene: WhiteboardScene }>
   /** GET /api/notifications?today= */
   listNotifications(today: string): Promise<AppNotification[]>
   /** POST /api/notifications/:id/read */
