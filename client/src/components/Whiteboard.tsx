@@ -75,6 +75,7 @@ export function Whiteboard({ projectId }: { projectId: string }) {
   const [status, setStatus] = useState<'saved' | 'saving' | 'idle'>('idle')
   const [draft, setDraft] = useState<{ x: number; y: number; value: string } | null>(null)
   const hydrated = useRef(false)
+  const dirty = useRef(false)
   const sceneRef = useRef(scene)
   const toolRef = useRef(tool)
   const colorRef = useRef(color)
@@ -102,12 +103,14 @@ export function Whiteboard({ projectId }: { projectId: string }) {
   useEffect(() => {
     if (!board.data || hydrated.current) return
     hydrated.current = true
+    if (dirty.current) return
+    sceneRef.current = board.data.scene
     setScene(board.data.scene)
   }, [board.data])
 
   const saveScene = save.mutate
   useEffect(() => {
-    if (!hydrated.current) return
+    if (!dirty.current) return
     setStatus('saving')
     const timer = window.setTimeout(() => saveScene(sceneRef.current), 600)
     return () => window.clearTimeout(timer)
@@ -141,6 +144,7 @@ export function Whiteboard({ projectId }: { projectId: string }) {
   }
 
   function commit(next: WhiteboardScene) {
+    dirty.current = true
     sceneRef.current = next
     setScene(next)
   }
