@@ -1,5 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, type ReactNode } from 'react'
+import { applyAccent, applyTheme, readTheme } from './lib/theme.ts'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AuthProvider } from './auth/AuthProvider.tsx'
 import { useAuth } from './auth/auth-context.ts'
@@ -32,6 +33,23 @@ function safeReturnPath(state: unknown): string | null {
   const query = typeof search === 'string' ? search : ''
   const fragment = typeof hash === 'string' ? hash : ''
   return `${pathname}${query}${fragment}`
+}
+
+function ThemeSync() {
+  const { user } = useAuth()
+  useEffect(() => {
+    applyTheme(readTheme())
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const onChange = () => {
+      if (readTheme() === 'system') applyTheme('system')
+    }
+    media.addEventListener('change', onChange)
+    return () => media.removeEventListener('change', onChange)
+  }, [])
+  useEffect(() => {
+    applyAccent(user?.accent ?? '#171717')
+  }, [user?.accent])
+  return null
 }
 
 function Guest({ children }: { children: ReactNode }) {
@@ -90,6 +108,7 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
+        <ThemeSync />
         <ToastProvider>
           <BrowserRouter>
             <Routes>

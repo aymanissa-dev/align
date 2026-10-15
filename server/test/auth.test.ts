@@ -81,6 +81,13 @@ describe('auth', () => {
     const profile = await agent.patch('/api/auth/me').send({ name: 'Ada King' })
     expect(profile.status).toBe(200)
     expect(profile.body.name).toBe('Ada King')
+    expect(profile.body.accent).toBe('#171717')
+
+    const accent = await agent.patch('/api/auth/me').send({ accent: '#1D4ED8' })
+    expect(accent.body.accent).toBe('#1d4ed8')
+    expect(accent.body.name).toBe('Ada King')
+    expect((await agent.patch('/api/auth/me').send({ accent: 'blue' })).status).toBe(400)
+    expect((await agent.patch('/api/auth/me').send({})).status).toBe(400)
 
     const badPassword = await agent.post('/api/auth/password').send({
       currentPassword: 'nope',

@@ -69,9 +69,19 @@ export const loginSchema = z.object({
     .max(128, 'Email or password is incorrect.'),
 })
 
-export const profileSchema = z.object({
-  name: text('Name', 80),
-})
+const accentColor = z
+  .string({ invalid_type_error: 'Choose a color.' })
+  .trim()
+  .regex(/^#[0-9a-fA-F]{6}$/, 'Choose a color.')
+
+export const profileSchema = z
+  .object({
+    name: text('Name', 80).optional(),
+    accent: accentColor.optional(),
+  })
+  .refine((value) => value.name !== undefined || value.accent !== undefined, {
+    message: 'Nothing to update.',
+  })
 
 export const passwordSchema = z.object({
   currentPassword: z

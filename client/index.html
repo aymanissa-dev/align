@@ -21,6 +21,14 @@
     <meta name="twitter:description" content="Simple project management, thoughtfully organized." />
     <meta name="twitter:image" content="https://align-hazel-kappa.vercel.app/og.png" />
     <title>Align</title>
+    <script>
+      try {
+        var theme = localStorage.getItem('align-theme') || 'system'
+        var dark = theme === 'dark' || (theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)
+        if (dark) document.documentElement.classList.add('dark')
+        document.documentElement.dataset.theme = theme
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

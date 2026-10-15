@@ -16,6 +16,7 @@ export type User = {
   id: string
   name: string
   email: string
+  accent: string
   createdAt: string
 }
 
@@ -193,7 +194,7 @@ export interface AlignApi {
   /** GET /api/auth/me */
   me(): Promise<User>
   /** PATCH /api/auth/me */
-  updateProfile(input: { name: string }): Promise<User>
+  updateProfile(input: { name?: string; accent?: string }): Promise<User>
   /** POST /api/auth/password */
   changePassword(input: { currentPassword: string; newPassword: string }): Promise<void>
   /** DELETE /api/auth/me */

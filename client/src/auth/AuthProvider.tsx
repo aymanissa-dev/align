@@ -44,8 +44,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     queryClient.clear()
   }, [])
 
-  const updateProfile = useCallback(async (name: string) => {
-    const next = await api.updateProfile({ name })
+  const updateProfile = useCallback(async (input: { name?: string; accent?: string }) => {
+    const next = await api.updateProfile(input)
     setUser(next)
     return next
   }, [])

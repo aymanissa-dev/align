@@ -93,6 +93,7 @@ function seed(): Db {
         id: userId,
         name: 'Alex Rivera',
         email: 'demo@align.app',
+        accent: '#171717',
         password: 'password',
         createdAt: created,
       },
@@ -248,7 +249,7 @@ function persist(): void {
 }
 
 function publicUser(user: StoredUser): User {
-  return { id: user.id, name: user.name, email: user.email, createdAt: user.createdAt }
+  return { id: user.id, name: user.name, email: user.email, accent: user.accent || '#171717', createdAt: user.createdAt }
 }
 
 function publicProject(project: StoredProject): Project {
@@ -460,6 +461,7 @@ export const mockApi = {
       id: uid('usr'),
       name,
       email,
+      accent: '#171717',
       password: input.password,
       createdAt: now(),
     }
@@ -495,7 +497,12 @@ export const mockApi = {
 
   async updateProfile(input) {
     return write((_state, user) => {
-      user.name = requireName(input.name ?? '', 'Name', 80)
+      if (input.name === undefined && input.accent === undefined) throw new ApiError(400, 'Nothing to update.')
+      if (input.name !== undefined) user.name = requireName(input.name, 'Name', 80)
+      if (input.accent !== undefined) {
+        if (!/^#[0-9a-fA-F]{6}$/.test(input.accent.trim())) throw new ApiError(400, 'Choose a color.')
+        user.accent = input.accent.trim().toLowerCase()
+      }
       return publicUser(user)
     })
   },

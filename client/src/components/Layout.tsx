@@ -6,6 +6,7 @@ import { useMediaQuery } from '../hooks/useMediaQuery.ts'
 import { Eyebrow } from './chrome.tsx'
 import { IconClose, IconDashboard, IconMenu, IconNotes, IconProjects, IconSearch, IconSettings } from './icons.tsx'
 import { NotificationBell } from './NotificationBell.tsx'
+import { ThemeToggle } from './ThemeControls.tsx'
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: IconDashboard, end: true },
@@ -154,6 +155,9 @@ export function Layout({ children }: { children?: ReactNode }) {
           })}
         </nav>
 
+        <div className="border-t border-neutral-200 px-4 py-3">
+          <ThemeToggle className="w-full" />
+        </div>
         <div className="flex items-center justify-between gap-2 border-t border-neutral-200 px-4 py-3">
           <div className="min-w-0">
             <p className="truncate text-sm font-medium text-neutral-950">{user.name}</p>

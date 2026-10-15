@@ -5,6 +5,7 @@ export function publicUser(user: UserDoc) {
     id: user.id,
     name: user.name,
     email: user.email,
+    accent: user.accent || '#171717',
     createdAt: user.createdAt.toISOString(),
   }
 }

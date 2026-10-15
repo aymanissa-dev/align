@@ -7,7 +7,7 @@ export type AuthContextValue = {
   login: (input: LoginInput) => Promise<void>
   register: (input: RegisterInput) => Promise<void>
   logout: () => Promise<void>
-  updateProfile: (name: string) => Promise<User>
+  updateProfile: (input: { name?: string; accent?: string }) => Promise<User>
   deleteAccount: () => Promise<void>
 }
 

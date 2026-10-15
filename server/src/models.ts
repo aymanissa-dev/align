@@ -5,6 +5,7 @@ const userSchema = new Schema(
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true },
     passwordHash: { type: String, required: true, select: false },
+    accent: { type: String, default: '#171717' },
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 )

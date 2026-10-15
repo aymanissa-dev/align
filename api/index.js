@@ -21,7 +21,8 @@ var userSchema = new Schema(
   {
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true },
-    passwordHash: { type: String, required: true, select: false }
+    passwordHash: { type: String, required: true, select: false },
+    accent: { type: String, default: "#171717" }
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );
@@ -322,6 +323,7 @@ function publicUser(user) {
     id: user.id,
     name: user.name,
     email: user.email,
+    accent: user.accent || "#171717",
     createdAt: user.createdAt.toISOString()
   };
 }
@@ -429,8 +431,12 @@ var loginSchema = z.object({
     invalid_type_error: "Email or password is incorrect."
   }).min(1, "Email or password is incorrect.").max(128, "Email or password is incorrect.")
 });
+var accentColor = z.string({ invalid_type_error: "Choose a color." }).trim().regex(/^#[0-9a-fA-F]{6}$/, "Choose a color.");
 var profileSchema = z.object({
-  name: text("Name", 80)
+  name: text("Name", 80).optional(),
+  accent: accentColor.optional()
+}).refine((value) => value.name !== void 0 || value.accent !== void 0, {
+  message: "Nothing to update."
 });
 var passwordSchema = z.object({
   currentPassword: z.string({
@@ -548,7 +554,10 @@ function authRouter(limiter) {
     requireAuth,
     asyncHandler(async (req, res) => {
       const input = parseBody(profileSchema, req.body);
-      const user = await User.findByIdAndUpdate(currentUserId(req), { name: input.name }, { new: true });
+      const update = {};
+      if (input.name !== void 0) update.name = input.name;
+      if (input.accent !== void 0) update.accent = input.accent.toLowerCase();
+      const user = await User.findByIdAndUpdate(currentUserId(req), update, { new: true });
       if (!user) throw new HttpError(401, "Sign in to continue.");
       res.json(publicUser(user));
     })

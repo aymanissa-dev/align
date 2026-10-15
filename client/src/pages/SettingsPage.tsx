@@ -4,6 +4,7 @@ import { useAuth } from '../auth/auth-context.ts'
 import { api } from '../api/index.ts'
 import { useToast } from '../components/toast-context.ts'
 import { PageHeader } from '../components/chrome.tsx'
+import { AccentPicker, ThemeToggle } from '../components/ThemeControls.tsx'
 import { Button, ConfirmDialog, Field, Input } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { clearSignedOut, markSignedOut } from '../lib/signedOut.ts'
@@ -36,7 +37,7 @@ export function SettingsPage() {
     setNameError('')
     setSavingName(true)
     try {
-      const next = await updateProfile(name)
+      const next = await updateProfile({ name })
       setName(next.name)
       toast('Name saved')
     } catch (caught) {
@@ -104,6 +105,17 @@ export function SettingsPage() {
       <PageHeader eyebrow="Account" title="Settings" description={user.email} />
 
       <section className="mt-6 max-w-lg border border-neutral-200 p-5">
+        <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Appearance</h2>
+        <p className="mt-2 text-sm leading-6 text-neutral-500">Theme stays on this device. Accent color follows your account.</p>
+        <div className="mt-4">
+          <ThemeToggle />
+        </div>
+        <div className="mt-4">
+          <AccentPicker />
+        </div>
+      </section>
+
+      <section className="mt-4 max-w-lg border border-neutral-200 p-5">
         <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Profile</h2>
         <form onSubmit={onSaveName} className="mt-4 space-y-4" noValidate>
           <Field label="Name" htmlFor="profile-name" error={nameError}>

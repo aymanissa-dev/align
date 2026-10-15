@@ -64,7 +64,10 @@ export function authRouter(limiter: RequestHandler): Router {
     requireAuth,
     asyncHandler(async (req, res) => {
       const input = parseBody(profileSchema, req.body)
-      const user = await User.findByIdAndUpdate(currentUserId(req), { name: input.name }, { new: true })
+      const update: { name?: string; accent?: string } = {}
+      if (input.name !== undefined) update.name = input.name
+      if (input.accent !== undefined) update.accent = input.accent.toLowerCase()
+      const user = await User.findByIdAndUpdate(currentUserId(req), update, { new: true })
       if (!user) throw new HttpError(401, 'Sign in to continue.')
       res.json(publicUser(user))
     }),
