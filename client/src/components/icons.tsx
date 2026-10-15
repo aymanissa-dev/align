@@ -17,6 +17,15 @@ function Icon({ className = 'h-4 w-4', children }: { className?: string; childre
   )
 }
 
+export function IconBell({ className }: { className?: string }) {
+  return (
+    <Icon className={className}>
+      <path d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2H4.5L6 16z" />
+      <path d="M10 19a2 2 0 0 0 4 0" />
+    </Icon>
+  )
+}
+
 export function IconDashboard({ className }: { className?: string }) {
   return (
     <Icon className={className}>

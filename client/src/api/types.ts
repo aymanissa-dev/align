@@ -28,6 +28,29 @@ export type Project = {
   updatedAt: string
 }
 
+export type ActivityType = 'create' | 'update' | 'delete' | 'complete'
+export type NotificationKind = 'due-soon' | 'overdue'
+
+export type ActivityEvent = {
+  id: string
+  projectId: string
+  type: ActivityType
+  summary: string
+  createdAt: string
+}
+
+export type AppNotification = {
+  id: string
+  projectId: string
+  taskId: string
+  kind: NotificationKind
+  title: string
+  projectName: string
+  dueDate: string
+  read: boolean
+  createdAt: string
+}
+
 export type Label = {
   id: string
   name: string
@@ -219,6 +242,15 @@ export interface AlignApi {
   updateNote(id: string, input: NotePatch): Promise<Note>
   /** DELETE /api/notes/:id */
   deleteNote(id: string): Promise<void>
+
+  /** GET /api/projects/:id/activity */
+  listActivity(projectId: string): Promise<ActivityEvent[]>
+  /** GET /api/notifications?today= */
+  listNotifications(today: string): Promise<AppNotification[]>
+  /** POST /api/notifications/:id/read */
+  markNotificationRead(id: string): Promise<AppNotification>
+  /** POST /api/notifications/read-all */
+  markAllNotificationsRead(): Promise<void>
 
   /** GET /api/dashboard */
   getDashboard(): Promise<DashboardData>

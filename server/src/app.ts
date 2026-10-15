@@ -6,6 +6,7 @@ import { authRouter } from './routes/auth.ts'
 import { dashboardRouter } from './routes/dashboard.ts'
 import { labelsRouter } from './routes/labels.ts'
 import { notesRouter } from './routes/notes.ts'
+import { notificationsRouter } from './routes/notifications.ts'
 import { projectsRouter } from './routes/projects.ts'
 import { searchRouter } from './routes/search.ts'
 import { tasksRouter } from './routes/tasks.ts'
@@ -41,6 +42,7 @@ export function createApp(options: AppOptions = {}): Express {
   app.use('/api/projects', projectsRouter())
   app.use('/api/tasks', tasksRouter())
   app.use('/api/notes', notesRouter())
+  app.use('/api/notifications', notificationsRouter())
   app.use('/api/dashboard', dashboardRouter())
   app.use('/api/search', searchRouter())
 

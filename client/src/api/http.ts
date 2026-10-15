@@ -1,6 +1,8 @@
 import { ApiError } from './errors.ts'
 import type {
+  ActivityEvent,
   AlignApi,
+  AppNotification,
   DashboardData,
   Label,
   Note,
@@ -133,6 +135,18 @@ export const httpApi = {
   },
   async deleteNote(id) {
     await request<void>(`/api/notes/${id}`, { method: 'DELETE' })
+  },
+  listActivity(projectId) {
+    return request<ActivityEvent[]>(`/api/projects/${projectId}/activity`)
+  },
+  listNotifications(today) {
+    return request<AppNotification[]>(withQuery('/api/notifications', { today }))
+  },
+  markNotificationRead(id) {
+    return request<AppNotification>(`/api/notifications/${id}/read`, { method: 'POST' })
+  },
+  async markAllNotificationsRead() {
+    await request<void>('/api/notifications/read-all', { method: 'POST' })
   },
   getDashboard() {
     return request<DashboardData>('/api/dashboard')

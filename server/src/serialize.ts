@@ -1,4 +1,4 @@
-import type { LabelDoc, NoteDoc, ProjectDoc, TaskDoc, UserDoc } from './models.ts'
+import type { ActivityDoc, LabelDoc, NoteDoc, NotificationDoc, ProjectDoc, TaskDoc, UserDoc } from './models.ts'
 
 export function publicUser(user: UserDoc) {
   return {
@@ -41,6 +41,30 @@ export function publicTask(task: TaskDoc) {
     order: task.order,
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),
+  }
+}
+
+export function publicActivity(item: ActivityDoc) {
+  return {
+    id: item.id,
+    projectId: item.projectId.toString(),
+    type: item.type,
+    summary: item.summary,
+    createdAt: item.createdAt.toISOString(),
+  }
+}
+
+export function publicNotification(item: NotificationDoc) {
+  return {
+    id: item.id,
+    projectId: item.projectId.toString(),
+    taskId: item.taskId.toString(),
+    kind: item.kind,
+    title: item.title,
+    projectName: item.projectName,
+    dueDate: item.dueDate,
+    read: item.read,
+    createdAt: item.createdAt.toISOString(),
   }
 }
 

@@ -1,9 +1,13 @@
 import { ApiError } from './errors.ts'
 import type {
   AlignApi,
+  ActivityEvent,
+  ActivityType,
+  AppNotification,
   DashboardData,
   Label,
   Note,
+  NotificationKind,
   Project,
   ProjectStatus,
   SearchResults,
@@ -26,6 +30,8 @@ type StoredProject = Project & { userId: string }
 type StoredTask = Task & { userId: string }
 type StoredNote = Note & { userId: string }
 type StoredLabel = Label & { userId: string }
+type StoredActivity = ActivityEvent & { userId: string }
+type StoredNotification = AppNotification & { userId: string; key: string }
 
 type Db = {
   users: StoredUser[]
@@ -33,6 +39,8 @@ type Db = {
   tasks: StoredTask[]
   notes: StoredNote[]
   labels: StoredLabel[]
+  activities: StoredActivity[]
+  notifications: StoredNotification[]
   sessionUserId: string | null
 }
 
@@ -65,7 +73,9 @@ function isDb(value: unknown): value is Db {
     Array.isArray(record.projects) &&
     Array.isArray(record.tasks) &&
     Array.isArray(record.notes) &&
-    (record.labels === undefined || Array.isArray(record.labels))
+    (record.labels === undefined || Array.isArray(record.labels)) &&
+    (record.activities === undefined || Array.isArray(record.activities)) &&
+    (record.notifications === undefined || Array.isArray(record.notifications))
   )
 }
 
@@ -126,6 +136,8 @@ function seed(): Db {
       task(userId, launch, 'tsk_video', 'Record the walkthrough', true, null, 3, '2026-10-06T15:00:00.000Z'),
     ],
     labels: [],
+    activities: [],
+    notifications: [],
     notes: [
       note(
         userId,
@@ -209,6 +221,8 @@ function load(): Db {
         memory = parsed
         memory.sessionUserId ??= null
         memory.labels ??= []
+        memory.activities ??= []
+        memory.notifications ??= []
         for (const item of memory.tasks) {
           item.priority ??= 'medium'
           item.labelIds ??= []
@@ -355,6 +369,52 @@ function dueDateOf(value: string | null | undefined): string | null | undefined 
   return value
 }
 
+function quoteTitle(title: string): string {
+  return `“${title}”`
+}
+
+function pushActivity(state: Db, userId: string, projectId: string, type: ActivityType, summary: string): void {
+  state.activities.push({ id: uid('act'), userId, projectId, type, summary, createdAt: now() })
+}
+
+function shiftISODate(iso: string, days: number): string {
+  const [year, month, day] = iso.split('-').map(Number)
+  const date = new Date(Date.UTC(year, month - 1, day))
+  date.setUTCDate(date.getUTCDate() + days)
+  return date.toISOString().slice(0, 10)
+}
+
+function syncNotifications(state: Db, userId: string, today: string): void {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) throw new ApiError(400, 'Use a valid date.')
+  const tomorrow = shiftISODate(today, 1)
+  for (const task of state.tasks) {
+    if (task.userId !== userId || task.completed || !task.dueDate) continue
+    const kind: NotificationKind | null = task.dueDate < today ? 'overdue' : task.dueDate <= tomorrow ? 'due-soon' : null
+    if (!kind) continue
+    const key = `${task.id}:${kind}:${task.dueDate}`
+    const project = state.projects.find((item) => item.id === task.projectId)
+    const existing = state.notifications.find((item) => item.userId === userId && item.key === key)
+    if (existing) {
+      existing.title = task.title
+      existing.projectName = project?.name ?? 'Project'
+      continue
+    }
+    state.notifications.push({
+      id: uid('ntf'),
+      userId,
+      key,
+      projectId: task.projectId,
+      taskId: task.id,
+      kind,
+      title: task.title,
+      projectName: project?.name ?? 'Project',
+      dueDate: task.dueDate,
+      read: false,
+      createdAt: now(),
+    })
+  }
+}
+
 function touchProject(state: Db, projectId: string): void {
   const project = state.projects.find((item) => item.id === projectId)
   if (project) project.updatedAt = now()
@@ -458,6 +518,8 @@ export const mockApi = {
       state.tasks = state.tasks.filter((item) => item.userId !== user.id && !projectIds.has(item.projectId))
       state.notes = state.notes.filter((item) => item.userId !== user.id && !projectIds.has(item.projectId))
       state.labels = state.labels.filter((item) => item.userId !== user.id)
+      state.activities = state.activities.filter((item) => item.userId !== user.id)
+      state.notifications = state.notifications.filter((item) => item.userId !== user.id)
       state.users = state.users.filter((item) => item.id !== user.id)
       state.sessionUserId = null
     })
@@ -487,6 +549,7 @@ export const mockApi = {
         updatedAt: timestamp,
       }
       state.projects.push(project)
+      pushActivity(state, user.id, project.id, 'create', `Created project ${quoteTitle(project.name)}`)
       return publicProject(project)
     })
   },
@@ -501,6 +564,7 @@ export const mockApi = {
       if (input.name !== undefined) project.name = requireName(input.name, 'Project name', 120)
       if (input.description !== undefined) project.description = input.description.trim().slice(0, 2000)
       project.updatedAt = now()
+      pushActivity(state, user.id, project.id, 'update', `Updated project ${quoteTitle(project.name)}`)
       return publicProject(project)
     })
   },
@@ -511,6 +575,13 @@ export const mockApi = {
       const next: ProjectStatus = project.status === 'active' ? 'archived' : 'active'
       project.status = next
       project.updatedAt = now()
+      pushActivity(
+        state,
+        user.id,
+        project.id,
+        'update',
+        next === 'archived' ? `Archived project ${quoteTitle(project.name)}` : `Restored project ${quoteTitle(project.name)}`,
+      )
       return publicProject(project)
     })
   },
@@ -518,9 +589,12 @@ export const mockApi = {
   async deleteProject(id) {
     await write((state, user) => {
       findProject(state, user.id, id)
+      const taskIds = new Set(state.tasks.filter((item) => item.projectId === id).map((item) => item.id))
       state.projects = state.projects.filter((project) => project.id !== id)
       state.tasks = state.tasks.filter((item) => item.projectId !== id)
       state.notes = state.notes.filter((item) => item.projectId !== id)
+      state.activities = state.activities.filter((item) => item.projectId !== id)
+      state.notifications = state.notifications.filter((item) => !taskIds.has(item.taskId))
     })
   },
 
@@ -556,6 +630,7 @@ export const mockApi = {
       }
       state.tasks.push(item)
       touchProject(state, projectId)
+      pushActivity(state, user.id, projectId, 'create', `Created task ${quoteTitle(item.title)}`)
       return publicTask(item)
     })
   },
@@ -563,6 +638,7 @@ export const mockApi = {
   async updateTask(id, input) {
     return write((state, user) => {
       const item = findTask(state, user.id, id)
+      const wasCompleted = item.completed
       if (input.title !== undefined) item.title = requireName(input.title, 'Task title', 200)
       if (input.completed !== undefined) {
         if (typeof input.completed !== 'boolean') throw new ApiError(400, 'Completed must be true or false.')
@@ -577,6 +653,17 @@ export const mockApi = {
       }
       item.updatedAt = now()
       touchProject(state, item.projectId)
+      const justFinished = !wasCompleted && item.completed
+      pushActivity(
+        state,
+        user.id,
+        item.projectId,
+        justFinished ? 'complete' : 'update',
+        justFinished ? `Completed task ${quoteTitle(item.title)}` : `Updated task ${quoteTitle(item.title)}`,
+      )
+      if (item.completed) {
+        state.notifications = state.notifications.filter((note) => !(note.taskId === item.id && note.kind === 'overdue'))
+      }
       return publicTask(item)
     })
   },
@@ -585,7 +672,9 @@ export const mockApi = {
     await write((state, user) => {
       const item = findTask(state, user.id, id)
       state.tasks = state.tasks.filter((taskItem) => taskItem.id !== id)
+      state.notifications = state.notifications.filter((note) => note.taskId !== id)
       touchProject(state, item.projectId)
+      pushActivity(state, user.id, item.projectId, 'delete', `Deleted task ${quoteTitle(item.title)}`)
     })
   },
 
@@ -672,6 +761,7 @@ export const mockApi = {
       }
       state.notes.push(item)
       touchProject(state, projectId)
+      pushActivity(state, user.id, projectId, 'create', `Created note ${quoteTitle(item.title)}`)
       return publicNote(item)
     })
   },
@@ -687,6 +777,7 @@ export const mockApi = {
       if (input.body !== undefined) item.body = input.body.slice(0, 100_000)
       item.updatedAt = now()
       touchProject(state, item.projectId)
+      pushActivity(state, user.id, item.projectId, 'update', `Updated note ${quoteTitle(item.title)}`)
       return publicNote(item)
     })
   },
@@ -696,6 +787,46 @@ export const mockApi = {
       const item = findNote(state, user.id, id)
       state.notes = state.notes.filter((noteItem) => noteItem.id !== id)
       touchProject(state, item.projectId)
+      pushActivity(state, user.id, item.projectId, 'delete', `Deleted note ${quoteTitle(item.title)}`)
+    })
+  },
+
+  async listActivity(projectId) {
+    return read((state, user) => {
+      findProject(state, user.id, projectId)
+      return state.activities
+        .filter((item) => item.userId === user.id && item.projectId === projectId)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .map(({ userId: _userId, ...item }) => item)
+    })
+  },
+
+  async listNotifications(today) {
+    return write((state, user) => {
+      syncNotifications(state, user.id, today)
+      return state.notifications
+        .filter((item) => item.userId === user.id)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .slice(0, 50)
+        .map(({ userId: _userId, key: _key, ...item }) => item)
+    })
+  },
+
+  async markNotificationRead(id) {
+    return write((state, user) => {
+      const item = state.notifications.find((note) => note.id === id && note.userId === user.id)
+      if (!item) throw new ApiError(404, 'Notification not found.')
+      item.read = true
+      const { userId: _userId, key: _key, ...rest } = item
+      return rest
+    })
+  },
+
+  async markAllNotificationsRead() {
+    await write((state, user) => {
+      for (const item of state.notifications) {
+        if (item.userId === user.id) item.read = true
+      }
     })
   },
 

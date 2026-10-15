@@ -18,6 +18,17 @@ export function formatDate(value: string | null | undefined): string {
   }).format(date)
 }
 
+export function formatDateTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return new Intl.DateTimeFormat('en', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date)
+}
+
 export function greeting(date = new Date()): string {
   const hour = date.getHours()
   if (hour < 12) return 'Good morning'

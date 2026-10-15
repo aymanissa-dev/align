@@ -5,6 +5,7 @@ import { cn } from '../lib/cn.ts'
 import { useMediaQuery } from '../hooks/useMediaQuery.ts'
 import { Eyebrow } from './chrome.tsx'
 import { IconClose, IconDashboard, IconMenu, IconNotes, IconProjects, IconSearch, IconSettings } from './icons.tsx'
+import { NotificationBell } from './NotificationBell.tsx'
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: IconDashboard, end: true },
@@ -83,6 +84,7 @@ export function Layout({ children }: { children?: ReactNode }) {
           <span className="sr-only">Open menu</span>
         </button>
         <span className="text-sm font-medium tracking-[-0.03em]">Align</span>
+        <NotificationBell className="ml-auto" />
       </header>
 
       {open && !isDesktop ? (
@@ -152,9 +154,12 @@ export function Layout({ children }: { children?: ReactNode }) {
           })}
         </nav>
 
-        <div className="border-t border-neutral-200 px-4 py-4">
-          <p className="truncate text-sm font-medium text-neutral-950">{user.name}</p>
-          <p className="truncate font-mono text-[11px] text-neutral-500">{user.email}</p>
+        <div className="flex items-center justify-between gap-2 border-t border-neutral-200 px-4 py-3">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium text-neutral-950">{user.name}</p>
+            <p className="truncate font-mono text-[11px] text-neutral-500">{user.email}</p>
+          </div>
+          <NotificationBell placement="up" />
         </div>
       </aside>
 

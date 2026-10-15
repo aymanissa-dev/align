@@ -68,11 +68,42 @@ noteSchema.index(
   { weights: { title: 5, body: 1 }, name: 'NoteTextIndex' },
 )
 
+const activitySchema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true },
+    type: { type: String, enum: ['create', 'update', 'delete', 'complete'], required: true },
+    summary: { type: String, required: true },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } },
+)
+activitySchema.index({ projectId: 1, createdAt: -1 })
+activitySchema.index({ userId: 1, projectId: 1 })
+
+const notificationSchema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true },
+    taskId: { type: Schema.Types.ObjectId, ref: 'Task', required: true },
+    kind: { type: String, enum: ['due-soon', 'overdue'], required: true },
+    title: { type: String, required: true },
+    projectName: { type: String, required: true },
+    dueDate: { type: String, required: true },
+    read: { type: Boolean, default: false, required: true },
+    key: { type: String, required: true },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } },
+)
+notificationSchema.index({ userId: 1, key: 1 }, { unique: true })
+notificationSchema.index({ userId: 1, createdAt: -1 })
+
 export type UserDoc = HydratedDocument<InferSchemaType<typeof userSchema>>
 export type ProjectDoc = HydratedDocument<InferSchemaType<typeof projectSchema>>
 export type LabelDoc = HydratedDocument<InferSchemaType<typeof labelSchema>>
 export type TaskDoc = HydratedDocument<InferSchemaType<typeof taskSchema>>
 export type NoteDoc = HydratedDocument<InferSchemaType<typeof noteSchema>>
+export type ActivityDoc = HydratedDocument<InferSchemaType<typeof activitySchema>>
+export type NotificationDoc = HydratedDocument<InferSchemaType<typeof notificationSchema>>
 
 function compile<T>(name: string, factory: () => T): T {
   const existing = mongoose.models[name]
@@ -85,3 +116,5 @@ export const Project = compile('Project', () => model('Project', projectSchema))
 export const Label = compile('Label', () => model('Label', labelSchema))
 export const Task = compile('Task', () => model('Task', taskSchema))
 export const Note = compile('Note', () => model('Note', noteSchema))
+export const Activity = compile('Activity', () => model('Activity', activitySchema))
+export const Notification = compile('Notification', () => model('Notification', notificationSchema))

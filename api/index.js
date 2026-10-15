@@ -80,6 +80,33 @@ noteSchema.index(
   { title: "text", body: "text" },
   { weights: { title: 5, body: 1 }, name: "NoteTextIndex" }
 );
+var activitySchema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    projectId: { type: Schema.Types.ObjectId, ref: "Project", required: true },
+    type: { type: String, enum: ["create", "update", "delete", "complete"], required: true },
+    summary: { type: String, required: true }
+  },
+  { timestamps: { createdAt: true, updatedAt: false } }
+);
+activitySchema.index({ projectId: 1, createdAt: -1 });
+activitySchema.index({ userId: 1, projectId: 1 });
+var notificationSchema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    projectId: { type: Schema.Types.ObjectId, ref: "Project", required: true },
+    taskId: { type: Schema.Types.ObjectId, ref: "Task", required: true },
+    kind: { type: String, enum: ["due-soon", "overdue"], required: true },
+    title: { type: String, required: true },
+    projectName: { type: String, required: true },
+    dueDate: { type: String, required: true },
+    read: { type: Boolean, default: false, required: true },
+    key: { type: String, required: true }
+  },
+  { timestamps: { createdAt: true, updatedAt: false } }
+);
+notificationSchema.index({ userId: 1, key: 1 }, { unique: true });
+notificationSchema.index({ userId: 1, createdAt: -1 });
 function compile(name, factory) {
   const existing = mongoose.models[name];
   if (existing) return existing;
@@ -90,6 +117,8 @@ var Project = compile("Project", () => model("Project", projectSchema));
 var Label = compile("Label", () => model("Label", labelSchema));
 var Task = compile("Task", () => model("Task", taskSchema));
 var Note = compile("Note", () => model("Note", noteSchema));
+var Activity = compile("Activity", () => model("Activity", activitySchema));
+var Notification = compile("Notification", () => model("Notification", notificationSchema));
 
 // src/db.ts
 var globalCache = globalThis;
@@ -104,7 +133,9 @@ function ensureIndexes() {
     Project.syncIndexes(),
     Label.syncIndexes(),
     Task.syncIndexes(),
-    Note.syncIndexes()
+    Note.syncIndexes(),
+    Activity.syncIndexes(),
+    Notification.syncIndexes()
   ]).then(() => void 0).catch((error) => {
     indexesReady = null;
     throw error;
@@ -326,6 +357,28 @@ function publicTask(task) {
     updatedAt: task.updatedAt.toISOString()
   };
 }
+function publicActivity(item) {
+  return {
+    id: item.id,
+    projectId: item.projectId.toString(),
+    type: item.type,
+    summary: item.summary,
+    createdAt: item.createdAt.toISOString()
+  };
+}
+function publicNotification(item) {
+  return {
+    id: item.id,
+    projectId: item.projectId.toString(),
+    taskId: item.taskId.toString(),
+    kind: item.kind,
+    title: item.title,
+    projectName: item.projectName,
+    dueDate: item.dueDate,
+    read: item.read,
+    createdAt: item.createdAt.toISOString()
+  };
+}
 function publicNote(note) {
   return {
     id: note.id,
@@ -523,6 +576,8 @@ function authRouter(limiter) {
       await Task.deleteMany({ userId });
       await Note.deleteMany({ userId });
       await Label.deleteMany({ userId });
+      await Activity.deleteMany({ userId });
+      await Notification.deleteMany({ userId });
       await Project.deleteMany({ userId });
       await User.deleteOne({ _id: userId });
       clearSession(res);
@@ -701,6 +756,21 @@ function labelsRouter() {
 
 // src/routes/notes.ts
 import { Router as Router4 } from "express";
+
+// src/activity.ts
+function quoteTitle(title) {
+  return `\u201C${title.replaceAll("\u201C", "").replaceAll("\u201D", "")}\u201D`;
+}
+async function recordActivity(input) {
+  await Activity.create({
+    userId: input.userId,
+    projectId: input.projectId,
+    type: input.type,
+    summary: input.summary.slice(0, 240)
+  });
+}
+
+// src/routes/notes.ts
 function notesRouter() {
   const router = Router4();
   router.use(requireAuth);
@@ -728,6 +798,12 @@ function notesRouter() {
       if (input.body !== void 0) note.body = input.body;
       await note.save();
       await touchProject(note.projectId, userId);
+      await recordActivity({
+        userId,
+        projectId: note.projectId,
+        type: "update",
+        summary: `Updated note ${quoteTitle(note.title)}`
+      });
       res.json(publicNote(note));
     })
   );
@@ -736,18 +812,104 @@ function notesRouter() {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req);
       const note = await requireNote(userId, req.params.id);
+      const projectId = note.projectId;
+      const title = note.title;
       await note.deleteOne();
-      await touchProject(note.projectId, userId);
+      await touchProject(projectId, userId);
+      await recordActivity({
+        userId,
+        projectId,
+        type: "delete",
+        summary: `Deleted note ${quoteTitle(title)}`
+      });
       res.status(204).send();
     })
   );
   return router;
 }
 
-// src/routes/projects.ts
+// src/routes/notifications.ts
 import { Router as Router5 } from "express";
-function projectsRouter() {
+
+// src/dates.ts
+function shiftISODate(iso, days) {
+  const [year, month, day] = iso.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+// src/routes/notifications.ts
+function notificationsRouter() {
   const router = Router5();
+  router.use(requireAuth);
+  router.get(
+    "/",
+    asyncHandler(async (req, res) => {
+      const userId = currentUserId(req);
+      const todayParam = typeof req.query.today === "string" ? req.query.today : "";
+      const today = normalizeDueDate(todayParam);
+      if (!today) throw new HttpError(400, "Use a valid date.");
+      const tomorrow = shiftISODate(today, 1);
+      const tasks = await Task.find({ userId, completed: false, dueDate: { $ne: null } });
+      const projects = await Project.find({ userId }).select("name");
+      const names = new Map(projects.map((project) => [project.id, project.name]));
+      await Promise.all(
+        tasks.map(async (task) => {
+          if (!task.dueDate) return;
+          const kind = task.dueDate < today ? "overdue" : task.dueDate <= tomorrow ? "due-soon" : null;
+          if (!kind) return;
+          const key = `${task.id}:${kind}:${task.dueDate}`;
+          await Notification.updateOne(
+            { userId, key },
+            {
+              $setOnInsert: {
+                userId,
+                projectId: task.projectId,
+                taskId: task._id,
+                kind,
+                dueDate: task.dueDate,
+                read: false,
+                key
+              },
+              $set: {
+                title: task.title,
+                projectName: names.get(task.projectId.toString()) ?? "Project"
+              }
+            },
+            { upsert: true }
+          );
+        })
+      );
+      const items = await Notification.find({ userId }).sort({ createdAt: -1 }).limit(50);
+      res.json(items.map(publicNotification));
+    })
+  );
+  router.post(
+    "/read-all",
+    asyncHandler(async (req, res) => {
+      await Notification.updateMany({ userId: currentUserId(req), read: false }, { read: true });
+      res.status(204).send();
+    })
+  );
+  router.post(
+    "/:id/read",
+    asyncHandler(async (req, res) => {
+      const userId = currentUserId(req);
+      const id = objectId(req.params.id);
+      if (!id) throw new HttpError(404, "Notification not found.");
+      const item = await Notification.findOneAndUpdate({ _id: id, userId }, { read: true }, { new: true });
+      if (!item) throw new HttpError(404, "Notification not found.");
+      res.json(publicNotification(item));
+    })
+  );
+  return router;
+}
+
+// src/routes/projects.ts
+import { Router as Router6 } from "express";
+function projectsRouter() {
+  const router = Router6();
   router.use(requireAuth);
   router.get(
     "/",
@@ -769,11 +931,18 @@ function projectsRouter() {
     "/",
     asyncHandler(async (req, res) => {
       const input = parseBody(projectCreateSchema, req.body);
+      const userId = currentUserId(req);
       const project = await Project.create({
-        userId: currentUserId(req),
+        userId,
         name: input.name,
         description: input.description ?? "",
         status: "active"
+      });
+      await recordActivity({
+        userId,
+        projectId: project._id,
+        type: "create",
+        summary: `Created project ${quoteTitle(project.name)}`
       });
       res.status(201).json(publicProject(project));
     })
@@ -807,6 +976,12 @@ function projectsRouter() {
         order: (latest?.order ?? 0) + 1
       });
       await touchProject(project._id, userId);
+      await recordActivity({
+        userId,
+        projectId: project._id,
+        type: "create",
+        summary: `Created task ${quoteTitle(task.title)}`
+      });
       res.status(201).json(publicTask(task));
     })
   );
@@ -832,7 +1007,22 @@ function projectsRouter() {
         body: input.body ?? ""
       });
       await touchProject(project._id, userId);
+      await recordActivity({
+        userId,
+        projectId: project._id,
+        type: "create",
+        summary: `Created note ${quoteTitle(note.title)}`
+      });
       res.status(201).json(publicNote(note));
+    })
+  );
+  router.get(
+    "/:id/activity",
+    asyncHandler(async (req, res) => {
+      const userId = currentUserId(req);
+      const project = await requireProject(userId, req.params.id);
+      const items = await Activity.find({ userId, projectId: project._id }).sort({ createdAt: -1, _id: -1 }).limit(100);
+      res.json(items.map(publicActivity));
     })
   );
   router.get(
@@ -850,6 +1040,12 @@ function projectsRouter() {
       if (input.name !== void 0) project.name = input.name;
       if (input.description !== void 0) project.description = input.description;
       await project.save();
+      await recordActivity({
+        userId: currentUserId(req),
+        projectId: project._id,
+        type: "update",
+        summary: `Updated project ${quoteTitle(project.name)}`
+      });
       res.json(publicProject(project));
     })
   );
@@ -859,6 +1055,12 @@ function projectsRouter() {
       const project = await requireProject(currentUserId(req), req.params.id);
       project.status = project.status === "active" ? "archived" : "active";
       await project.save();
+      await recordActivity({
+        userId: currentUserId(req),
+        projectId: project._id,
+        type: "update",
+        summary: project.status === "archived" ? `Archived project ${quoteTitle(project.name)}` : `Restored project ${quoteTitle(project.name)}`
+      });
       res.json(publicProject(project));
     })
   );
@@ -867,6 +1069,9 @@ function projectsRouter() {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req);
       const project = await requireProject(userId, req.params.id);
+      const taskIds = await Task.find({ userId, projectId: project._id }).distinct("_id");
+      await Notification.deleteMany({ userId, taskId: { $in: taskIds } });
+      await Activity.deleteMany({ userId, projectId: project._id });
       await Task.deleteMany({ userId, projectId: project._id });
       await Note.deleteMany({ userId, projectId: project._id });
       await project.deleteOne();
@@ -877,7 +1082,7 @@ function projectsRouter() {
 }
 
 // src/routes/search.ts
-import { Router as Router6 } from "express";
+import { Router as Router7 } from "express";
 var RESULT_LIMIT = 50;
 function queryText(value) {
   if (typeof value !== "string") return "";
@@ -906,7 +1111,7 @@ async function searchDocs(query, byText, byRegex) {
   return byRegex();
 }
 function searchRouter() {
-  const router = Router6();
+  const router = Router7();
   router.use(requireAuth);
   router.get(
     "/",
@@ -973,9 +1178,9 @@ function searchRouter() {
 }
 
 // src/routes/tasks.ts
-import { Router as Router7 } from "express";
+import { Router as Router8 } from "express";
 function tasksRouter() {
-  const router = Router7();
+  const router = Router8();
   router.use(requireAuth);
   router.patch(
     "/:id",
@@ -983,6 +1188,7 @@ function tasksRouter() {
       const userId = currentUserId(req);
       const task = await requireTask(userId, req.params.id);
       const input = parseBody(taskPatchSchema, req.body);
+      const wasCompleted = task.completed;
       if (input.title !== void 0) task.title = input.title;
       if (input.completed !== void 0) task.completed = input.completed;
       if (input.dueDate !== void 0) task.dueDate = normalizeDueDate(input.dueDate) ?? null;
@@ -991,6 +1197,14 @@ function tasksRouter() {
       if (input.order !== void 0) task.order = input.order;
       await task.save();
       await touchProject(task.projectId, userId);
+      const finished = !wasCompleted && task.completed;
+      await recordActivity({
+        userId,
+        projectId: task.projectId,
+        type: finished ? "complete" : "update",
+        summary: finished ? `Completed task ${quoteTitle(task.title)}` : `Updated task ${quoteTitle(task.title)}`
+      });
+      if (task.completed) await Notification.deleteMany({ userId, taskId: task._id, kind: "overdue" });
       res.json(publicTask(task));
     })
   );
@@ -999,8 +1213,17 @@ function tasksRouter() {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req);
       const task = await requireTask(userId, req.params.id);
+      const projectId = task.projectId;
+      const title = task.title;
+      await Notification.deleteMany({ userId, taskId: task._id });
       await task.deleteOne();
-      await touchProject(task.projectId, userId);
+      await touchProject(projectId, userId);
+      await recordActivity({
+        userId,
+        projectId,
+        type: "delete",
+        summary: `Deleted task ${quoteTitle(title)}`
+      });
       res.status(204).send();
     })
   );
@@ -1032,6 +1255,7 @@ function createApp(options = {}) {
   app2.use("/api/projects", projectsRouter());
   app2.use("/api/tasks", tasksRouter());
   app2.use("/api/notes", notesRouter());
+  app2.use("/api/notifications", notificationsRouter());
   app2.use("/api/dashboard", dashboardRouter());
   app2.use("/api/search", searchRouter());
   app2.use((_req, res) => {

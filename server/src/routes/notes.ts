@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { quoteTitle, recordActivity } from '../activity.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { Note } from '../models.ts'
 import { publicNote } from '../serialize.ts'
@@ -35,6 +36,12 @@ export function notesRouter(): Router {
       if (input.body !== undefined) note.body = input.body
       await note.save()
       await touchProject(note.projectId, userId)
+      await recordActivity({
+        userId,
+        projectId: note.projectId,
+        type: 'update',
+        summary: `Updated note ${quoteTitle(note.title)}`,
+      })
       res.json(publicNote(note))
     }),
   )
@@ -44,8 +51,16 @@ export function notesRouter(): Router {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req)
       const note = await requireNote(userId, req.params.id)
+      const projectId = note.projectId
+      const title = note.title
       await note.deleteOne()
-      await touchProject(note.projectId, userId)
+      await touchProject(projectId, userId)
+      await recordActivity({
+        userId,
+        projectId,
+        type: 'delete',
+        summary: `Deleted note ${quoteTitle(title)}`,
+      })
       res.status(204).send()
     }),
   )

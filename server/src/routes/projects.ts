@@ -1,7 +1,8 @@
 import { Router } from 'express'
+import { quoteTitle, recordActivity } from '../activity.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
-import { Note, Project, Task } from '../models.ts'
-import { publicNote, publicProject, publicTask } from '../serialize.ts'
+import { Activity, Note, Notification, Project, Task } from '../models.ts'
+import { publicActivity, publicNote, publicProject, publicTask } from '../serialize.ts'
 import { ownedLabelIds, requireProject, touchProject } from '../scope.ts'
 import {
   normalizeDueDate,
@@ -37,11 +38,18 @@ export function projectsRouter(): Router {
     '/',
     asyncHandler(async (req, res) => {
       const input = parseBody(projectCreateSchema, req.body)
+      const userId = currentUserId(req)
       const project = await Project.create({
-        userId: currentUserId(req),
+        userId,
         name: input.name,
         description: input.description ?? '',
         status: 'active',
+      })
+      await recordActivity({
+        userId,
+        projectId: project._id,
+        type: 'create',
+        summary: `Created project ${quoteTitle(project.name)}`,
       })
       res.status(201).json(publicProject(project))
     }),
@@ -77,6 +85,12 @@ export function projectsRouter(): Router {
         order: (latest?.order ?? 0) + 1,
       })
       await touchProject(project._id, userId)
+      await recordActivity({
+        userId,
+        projectId: project._id,
+        type: 'create',
+        summary: `Created task ${quoteTitle(task.title)}`,
+      })
       res.status(201).json(publicTask(task))
     }),
   )
@@ -104,7 +118,23 @@ export function projectsRouter(): Router {
         body: input.body ?? '',
       })
       await touchProject(project._id, userId)
+      await recordActivity({
+        userId,
+        projectId: project._id,
+        type: 'create',
+        summary: `Created note ${quoteTitle(note.title)}`,
+      })
       res.status(201).json(publicNote(note))
+    }),
+  )
+
+  router.get(
+    '/:id/activity',
+    asyncHandler(async (req, res) => {
+      const userId = currentUserId(req)
+      const project = await requireProject(userId, req.params.id)
+      const items = await Activity.find({ userId, projectId: project._id }).sort({ createdAt: -1, _id: -1 }).limit(100)
+      res.json(items.map(publicActivity))
     }),
   )
 
@@ -124,6 +154,12 @@ export function projectsRouter(): Router {
       if (input.name !== undefined) project.name = input.name
       if (input.description !== undefined) project.description = input.description
       await project.save()
+      await recordActivity({
+        userId: currentUserId(req),
+        projectId: project._id,
+        type: 'update',
+        summary: `Updated project ${quoteTitle(project.name)}`,
+      })
       res.json(publicProject(project))
     }),
   )
@@ -134,6 +170,12 @@ export function projectsRouter(): Router {
       const project = await requireProject(currentUserId(req), req.params.id)
       project.status = project.status === 'active' ? 'archived' : 'active'
       await project.save()
+      await recordActivity({
+        userId: currentUserId(req),
+        projectId: project._id,
+        type: 'update',
+        summary: project.status === 'archived' ? `Archived project ${quoteTitle(project.name)}` : `Restored project ${quoteTitle(project.name)}`,
+      })
       res.json(publicProject(project))
     }),
   )
@@ -143,6 +185,9 @@ export function projectsRouter(): Router {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req)
       const project = await requireProject(userId, req.params.id)
+      const taskIds = await Task.find({ userId, projectId: project._id }).distinct('_id')
+      await Notification.deleteMany({ userId, taskId: { $in: taskIds } })
+      await Activity.deleteMany({ userId, projectId: project._id })
       await Task.deleteMany({ userId, projectId: project._id })
       await Note.deleteMany({ userId, projectId: project._id })
       await project.deleteOne()
