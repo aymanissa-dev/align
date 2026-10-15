@@ -1,5 +1,8 @@
 import type { ReactNode } from 'react'
+import type { TaskPriority } from '../api/types.ts'
 import { cn } from '../lib/cn.ts'
+import { dueState } from '../lib/due.ts'
+import { formatDate } from '../lib/format.ts'
 
 export function Eyebrow({ children, className }: { children: ReactNode; className?: string }) {
   return (
@@ -39,6 +42,44 @@ export function Badge({ children, tone = 'outline' }: { children: ReactNode; ton
       )}
     >
       {children}
+    </span>
+  )
+}
+
+export function DueBadge({ dueDate }: { dueDate: string | null | undefined }) {
+  if (!dueDate) return null
+  const state = dueState(dueDate)
+  const date = formatDate(dueDate)
+  if (state === 'later' || state === 'none') {
+    return <span className="shrink-0 font-mono text-xs text-neutral-500">{date}</span>
+  }
+  return (
+    <span className="inline-flex shrink-0 items-center gap-2">
+      <span
+        className={cn(
+          'border px-1.5 py-0.5 font-pixel text-[10px] tracking-[0.14em] uppercase',
+          state === 'overdue' ? 'border-red-800 text-red-800' : 'border-amber-800 text-amber-900',
+        )}
+      >
+        {state === 'overdue' ? 'Overdue' : 'Due soon'}
+      </span>
+      <span className="font-mono text-xs text-neutral-500">{date}</span>
+    </span>
+  )
+}
+
+export function PriorityBadge({ priority }: { priority: TaskPriority }) {
+  if (priority === 'medium') return null
+  return (
+    <span
+      className={cn(
+        'border px-1.5 py-0.5 font-pixel text-[10px] tracking-[0.14em] uppercase',
+        priority === 'urgent' && 'border-red-800 text-red-800',
+        priority === 'high' && 'border-neutral-950 text-neutral-950',
+        priority === 'low' && 'border-neutral-300 text-neutral-500',
+      )}
+    >
+      {priority}
     </span>
   )
 }

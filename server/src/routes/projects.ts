@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { Note, Project, Task } from '../models.ts'
 import { publicNote, publicProject, publicTask } from '../serialize.ts'
-import { requireProject, touchProject } from '../scope.ts'
+import { ownedLabelIds, requireProject, touchProject } from '../scope.ts'
 import {
   normalizeDueDate,
   noteCreateSchema,
@@ -64,6 +64,7 @@ export function projectsRouter(): Router {
       const project = await requireProject(userId, req.params.id)
       const input = parseBody(taskCreateSchema, req.body)
       const dueDate = normalizeDueDate(input.dueDate) ?? null
+      const labelIds = await ownedLabelIds(userId, input.labelIds ?? [])
       const latest = await Task.findOne({ projectId: project._id }).sort({ order: -1 }).select('order')
       const task = await Task.create({
         userId,
@@ -71,6 +72,8 @@ export function projectsRouter(): Router {
         title: input.title,
         completed: false,
         dueDate,
+        priority: input.priority ?? 'medium',
+        labelIds,
         order: (latest?.order ?? 0) + 1,
       })
       await touchProject(project._id, userId)

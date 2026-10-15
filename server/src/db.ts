@@ -1,6 +1,6 @@
 import mongoose from 'mongoose'
 import { HttpError } from './errors.ts'
-import { Note, Project, Task, User } from './models.ts'
+import { Label, Note, Project, Task, User } from './models.ts'
 
 type Cache = {
   conn: typeof mongoose | null
@@ -20,6 +20,7 @@ function ensureIndexes(): Promise<void> {
   indexesReady ??= Promise.all([
     User.syncIndexes(),
     Project.syncIndexes(),
+    Label.syncIndexes(),
     Task.syncIndexes(),
     Note.syncIndexes(),
   ])

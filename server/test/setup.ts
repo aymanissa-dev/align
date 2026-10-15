@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, inject } from 'vitest'
 import { connectDb, disconnectDb } from '../src/db.ts'
-import { Note, Project, Task, User } from '../src/models.ts'
+import { Label, Note, Project, Task, User } from '../src/models.ts'
 
 process.env.NODE_ENV = 'test'
 process.env.JWT_SECRET ??= 'test-jwt-secret-value'
@@ -15,6 +15,7 @@ beforeEach(async () => {
   await Promise.all([
     User.deleteMany({}),
     Project.deleteMany({}),
+    Label.deleteMany({}),
     Task.deleteMany({}),
     Note.deleteMany({}),
   ])

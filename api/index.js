@@ -39,6 +39,15 @@ projectSchema.index(
   { name: "text", description: "text" },
   { weights: { name: 5, description: 1 }, name: "ProjectTextIndex" }
 );
+var labelSchema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    name: { type: String, required: true },
+    color: { type: String, required: true }
+  },
+  { timestamps: true }
+);
+labelSchema.index({ userId: 1, name: 1 }, { unique: true });
 var taskSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
@@ -46,12 +55,15 @@ var taskSchema = new Schema(
     title: { type: String, required: true },
     completed: { type: Boolean, default: false, required: true },
     dueDate: { type: String, default: null },
+    priority: { type: String, enum: ["low", "medium", "high", "urgent"], default: "medium", required: true },
+    labelIds: { type: [{ type: Schema.Types.ObjectId, ref: "Label" }], default: [] },
     order: { type: Number, required: true }
   },
   { timestamps: true }
 );
 taskSchema.index({ projectId: 1, completed: 1 });
 taskSchema.index({ userId: 1, projectId: 1 });
+taskSchema.index({ userId: 1, dueDate: 1 });
 taskSchema.index({ title: "text" }, { name: "TaskTextIndex" });
 var noteSchema = new Schema(
   {
@@ -75,6 +87,7 @@ function compile(name, factory) {
 }
 var User = compile("User", () => model("User", userSchema));
 var Project = compile("Project", () => model("Project", projectSchema));
+var Label = compile("Label", () => model("Label", labelSchema));
 var Task = compile("Task", () => model("Task", taskSchema));
 var Note = compile("Note", () => model("Note", noteSchema));
 
@@ -89,6 +102,7 @@ function ensureIndexes() {
   indexesReady ??= Promise.all([
     User.syncIndexes(),
     Project.syncIndexes(),
+    Label.syncIndexes(),
     Task.syncIndexes(),
     Note.syncIndexes()
   ]).then(() => void 0).catch((error) => {
@@ -290,6 +304,14 @@ function publicProject(project) {
     updatedAt: project.updatedAt.toISOString()
   };
 }
+function publicLabel(label) {
+  return {
+    id: label.id,
+    name: label.name,
+    color: label.color,
+    createdAt: label.createdAt.toISOString()
+  };
+}
 function publicTask(task) {
   return {
     id: task.id,
@@ -297,6 +319,8 @@ function publicTask(task) {
     title: task.title,
     completed: task.completed,
     dueDate: task.dueDate,
+    priority: task.priority,
+    labelIds: (task.labelIds ?? []).map((id) => id.toString()),
     order: task.order,
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString()
@@ -370,15 +394,33 @@ var projectPatchSchema = z.object({
   name: text("Project name", 120).optional(),
   description: description.optional()
 });
+var priorities = ["low", "medium", "high", "urgent"];
+var priority = z.enum(priorities, {
+  errorMap: () => ({ message: "Priority must be low, medium, high, or urgent." })
+});
+var labelIds = z.array(z.string({ invalid_type_error: "Unknown label." }), { invalid_type_error: "Unknown label." }).max(12, "Too many labels.");
+var labelColor = z.string({ required_error: "Choose a color.", invalid_type_error: "Choose a color." }).trim().regex(/^#[0-9a-fA-F]{6}$/, "Choose a color.");
 var taskCreateSchema = z.object({
   title: text("Task title", 200),
-  dueDate: dueDate.optional()
+  dueDate: dueDate.optional(),
+  priority: priority.optional(),
+  labelIds: labelIds.optional()
 });
 var taskPatchSchema = z.object({
   title: text("Task title", 200).optional(),
   completed: z.boolean({ invalid_type_error: "Completed must be true or false." }).optional(),
   dueDate: dueDate.optional(),
+  priority: priority.optional(),
+  labelIds: labelIds.optional(),
   order: z.number({ invalid_type_error: "Order must be a number." }).finite("Order must be a number.").optional()
+});
+var labelCreateSchema = z.object({
+  name: text("Label name", 40),
+  color: labelColor
+});
+var labelPatchSchema = z.object({
+  name: text("Label name", 40).optional(),
+  color: labelColor.optional()
 });
 var noteCreateSchema = z.object({
   title: z.string({ invalid_type_error: "Title is required." }).trim().max(160, "Title is too long.").optional(),
@@ -480,6 +522,7 @@ function authRouter(limiter) {
       const userId = currentUserId(req);
       await Task.deleteMany({ userId });
       await Note.deleteMany({ userId });
+      await Label.deleteMany({ userId });
       await Project.deleteMany({ userId });
       await User.deleteOne({ _id: userId });
       clearSession(res);
@@ -515,6 +558,7 @@ function dashboardRouter() {
         projectName: names.get(task.projectId.toString()) ?? "",
         title: task.title,
         dueDate: task.dueDate,
+        priority: task.priority,
         completed: false
       })).sort((a, b) => {
         if (a.dueDate && b.dueDate && a.dueDate !== b.dueDate) return a.dueDate < b.dueDate ? -1 : 1;
@@ -543,7 +587,7 @@ function dashboardRouter() {
   return router;
 }
 
-// src/routes/notes.ts
+// src/routes/labels.ts
 import { Router as Router3 } from "express";
 
 // src/scope.ts
@@ -573,13 +617,92 @@ async function requireNote(userId, id) {
   if (!note) throw new HttpError(404, "Note not found.");
   return note;
 }
+async function ownedLabelIds(userId, ids) {
+  const unique = [...new Set(ids)];
+  const objectIds = unique.map(objectId);
+  if (objectIds.some((id) => !id)) throw new HttpError(400, "Unknown label.");
+  const found = await Label.find({ userId, _id: { $in: objectIds } }).select("_id");
+  if (found.length !== objectIds.length) throw new HttpError(400, "Unknown label.");
+  return objectIds.filter((id) => id !== null);
+}
 async function touchProject(projectId, userId) {
   await Project.updateOne({ _id: projectId, userId }, { $currentDate: { updatedAt: true } });
 }
 
-// src/routes/notes.ts
-function notesRouter() {
+// src/routes/labels.ts
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function labelsRouter() {
   const router = Router3();
+  router.use(requireAuth);
+  router.get(
+    "/",
+    asyncHandler(async (req, res) => {
+      const labels = await Label.find({ userId: currentUserId(req) }).sort({ name: 1 });
+      res.json(labels.map(publicLabel));
+    })
+  );
+  router.post(
+    "/",
+    asyncHandler(async (req, res) => {
+      const userId = currentUserId(req);
+      const input = parseBody(labelCreateSchema, req.body);
+      const duplicate = await Label.findOne({
+        userId,
+        name: new RegExp(`^${escapeRegExp(input.name)}$`, "i")
+      });
+      if (duplicate) throw new HttpError(409, "A label with that name already exists.");
+      const label = await Label.create({
+        userId,
+        name: input.name,
+        color: input.color.toLowerCase()
+      });
+      res.status(201).json(publicLabel(label));
+    })
+  );
+  router.patch(
+    "/:id",
+    asyncHandler(async (req, res) => {
+      const userId = currentUserId(req);
+      const labelId = objectId(req.params.id);
+      if (!labelId) throw new HttpError(404, "Label not found.");
+      const label = await Label.findOne({ _id: labelId, userId });
+      if (!label) throw new HttpError(404, "Label not found.");
+      const input = parseBody(labelPatchSchema, req.body);
+      if (input.name !== void 0 && input.name.toLowerCase() !== label.name.toLowerCase()) {
+        const duplicate = await Label.findOne({
+          userId,
+          name: new RegExp(`^${escapeRegExp(input.name)}$`, "i")
+        });
+        if (duplicate) throw new HttpError(409, "A label with that name already exists.");
+        label.name = input.name;
+      }
+      if (input.color !== void 0) label.color = input.color.toLowerCase();
+      await label.save();
+      res.json(publicLabel(label));
+    })
+  );
+  router.delete(
+    "/:id",
+    asyncHandler(async (req, res) => {
+      const userId = currentUserId(req);
+      const labelId = objectId(req.params.id);
+      if (!labelId) throw new HttpError(404, "Label not found.");
+      const label = await Label.findOne({ _id: labelId, userId });
+      if (!label) throw new HttpError(404, "Label not found.");
+      await Task.updateMany({ userId, labelIds: label._id }, { $pull: { labelIds: label._id } });
+      await label.deleteOne();
+      res.status(204).send();
+    })
+  );
+  return router;
+}
+
+// src/routes/notes.ts
+import { Router as Router4 } from "express";
+function notesRouter() {
+  const router = Router4();
   router.use(requireAuth);
   router.get(
     "/",
@@ -622,9 +745,9 @@ function notesRouter() {
 }
 
 // src/routes/projects.ts
-import { Router as Router4 } from "express";
+import { Router as Router5 } from "express";
 function projectsRouter() {
-  const router = Router4();
+  const router = Router5();
   router.use(requireAuth);
   router.get(
     "/",
@@ -671,6 +794,7 @@ function projectsRouter() {
       const project = await requireProject(userId, req.params.id);
       const input = parseBody(taskCreateSchema, req.body);
       const dueDate2 = normalizeDueDate(input.dueDate) ?? null;
+      const labelIds2 = await ownedLabelIds(userId, input.labelIds ?? []);
       const latest = await Task.findOne({ projectId: project._id }).sort({ order: -1 }).select("order");
       const task = await Task.create({
         userId,
@@ -678,6 +802,8 @@ function projectsRouter() {
         title: input.title,
         completed: false,
         dueDate: dueDate2,
+        priority: input.priority ?? "medium",
+        labelIds: labelIds2,
         order: (latest?.order ?? 0) + 1
       });
       await touchProject(project._id, userId);
@@ -751,7 +877,7 @@ function projectsRouter() {
 }
 
 // src/routes/search.ts
-import { Router as Router5 } from "express";
+import { Router as Router6 } from "express";
 var RESULT_LIMIT = 50;
 function queryText(value) {
   if (typeof value !== "string") return "";
@@ -780,7 +906,7 @@ async function searchDocs(query, byText, byRegex) {
   return byRegex();
 }
 function searchRouter() {
-  const router = Router5();
+  const router = Router6();
   router.use(requireAuth);
   router.get(
     "/",
@@ -847,9 +973,9 @@ function searchRouter() {
 }
 
 // src/routes/tasks.ts
-import { Router as Router6 } from "express";
+import { Router as Router7 } from "express";
 function tasksRouter() {
-  const router = Router6();
+  const router = Router7();
   router.use(requireAuth);
   router.patch(
     "/:id",
@@ -860,6 +986,8 @@ function tasksRouter() {
       if (input.title !== void 0) task.title = input.title;
       if (input.completed !== void 0) task.completed = input.completed;
       if (input.dueDate !== void 0) task.dueDate = normalizeDueDate(input.dueDate) ?? null;
+      if (input.priority !== void 0) task.priority = input.priority;
+      if (input.labelIds !== void 0) task.labelIds = await ownedLabelIds(userId, input.labelIds);
       if (input.order !== void 0) task.order = input.order;
       await task.save();
       await touchProject(task.projectId, userId);
@@ -900,6 +1028,7 @@ function createApp(options = {}) {
     message: { error: "Too many attempts. Try again later." }
   });
   app2.use("/api/auth", authRouter(authLimiter));
+  app2.use("/api/labels", labelsRouter());
   app2.use("/api/projects", projectsRouter());
   app2.use("/api/tasks", tasksRouter());
   app2.use("/api/notes", notesRouter());

@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { publicTask } from '../serialize.ts'
-import { requireTask, touchProject } from '../scope.ts'
+import { ownedLabelIds, requireTask, touchProject } from '../scope.ts'
 import { normalizeDueDate, parseBody, taskPatchSchema } from '../validate.ts'
 
 export function tasksRouter(): Router {
@@ -17,6 +17,8 @@ export function tasksRouter(): Router {
       if (input.title !== undefined) task.title = input.title
       if (input.completed !== undefined) task.completed = input.completed
       if (input.dueDate !== undefined) task.dueDate = normalizeDueDate(input.dueDate) ?? null
+      if (input.priority !== undefined) task.priority = input.priority
+      if (input.labelIds !== undefined) task.labelIds = await ownedLabelIds(userId, input.labelIds)
       if (input.order !== undefined) task.order = input.order
       await task.save()
       await touchProject(task.projectId, userId)

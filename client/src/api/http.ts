@@ -2,6 +2,7 @@ import { ApiError } from './errors.ts'
 import type {
   AlignApi,
   DashboardData,
+  Label,
   Note,
   Project,
   SearchResults,
@@ -99,6 +100,18 @@ export const httpApi = {
   },
   async deleteTask(id) {
     await request<void>(`/api/tasks/${id}`, { method: 'DELETE' })
+  },
+  listLabels() {
+    return request<Label[]>('/api/labels')
+  },
+  createLabel(input) {
+    return request<Label>('/api/labels', { method: 'POST', body: JSON.stringify(input) })
+  },
+  updateLabel(id, input) {
+    return request<Label>(`/api/labels/${id}`, { method: 'PATCH', body: JSON.stringify(input) })
+  },
+  async deleteLabel(id) {
+    await request<void>(`/api/labels/${id}`, { method: 'DELETE' })
   },
   listNotes() {
     return request<Note[]>('/api/notes')

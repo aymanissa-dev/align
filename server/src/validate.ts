@@ -93,19 +93,48 @@ export const projectPatchSchema = z.object({
   description: description.optional(),
 })
 
+export const priorities = ['low', 'medium', 'high', 'urgent'] as const
+
+const priority = z.enum(priorities, {
+  errorMap: () => ({ message: 'Priority must be low, medium, high, or urgent.' }),
+})
+
+const labelIds = z
+  .array(z.string({ invalid_type_error: 'Unknown label.' }), { invalid_type_error: 'Unknown label.' })
+  .max(12, 'Too many labels.')
+
+const labelColor = z
+  .string({ required_error: 'Choose a color.', invalid_type_error: 'Choose a color.' })
+  .trim()
+  .regex(/^#[0-9a-fA-F]{6}$/, 'Choose a color.')
+
 export const taskCreateSchema = z.object({
   title: text('Task title', 200),
   dueDate: dueDate.optional(),
+  priority: priority.optional(),
+  labelIds: labelIds.optional(),
 })
 
 export const taskPatchSchema = z.object({
   title: text('Task title', 200).optional(),
   completed: z.boolean({ invalid_type_error: 'Completed must be true or false.' }).optional(),
   dueDate: dueDate.optional(),
+  priority: priority.optional(),
+  labelIds: labelIds.optional(),
   order: z
     .number({ invalid_type_error: 'Order must be a number.' })
     .finite('Order must be a number.')
     .optional(),
+})
+
+export const labelCreateSchema = z.object({
+  name: text('Label name', 40),
+  color: labelColor,
+})
+
+export const labelPatchSchema = z.object({
+  name: text('Label name', 40).optional(),
+  color: labelColor.optional(),
 })
 
 export const noteCreateSchema = z.object({

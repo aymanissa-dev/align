@@ -30,6 +30,7 @@ export function dashboardRouter(): Router {
           projectName: names.get(task.projectId.toString()) ?? '',
           title: task.title,
           dueDate: task.dueDate,
+          priority: task.priority,
           completed: false,
         }))
         .sort((a, b) => {

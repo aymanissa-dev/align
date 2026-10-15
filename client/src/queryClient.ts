@@ -20,6 +20,7 @@ export function invalidateWorkspace(): Promise<void> {
     queryClient.invalidateQueries({ queryKey: ['tasks'] }),
     queryClient.invalidateQueries({ queryKey: ['notes'] }),
     queryClient.invalidateQueries({ queryKey: ['note'] }),
+    queryClient.invalidateQueries({ queryKey: ['labels'] }),
     queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
     queryClient.invalidateQueries({ queryKey: ['search'] }),
   ]).then(() => undefined)

@@ -1,29 +1,17 @@
-import { useState, type FormEvent } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError } from '../api/errors.ts'
 import { api } from '../api/index.ts'
-import type { Note, Task } from '../api/types.ts'
+import type { Note } from '../api/types.ts'
 import { ProjectFormDialog } from '../components/ProjectFormDialog.tsx'
-import { IconPencil, IconTrash } from '../components/icons.tsx'
+import { TasksPanel } from '../components/TasksPanel.tsx'
 import { useToast } from '../components/toast-context.ts'
-import {
-  Button,
-  CheckButton,
-  ConfirmDialog,
-  EmptyState,
-  ErrorState,
-  Input,
-  ListSkeleton,
-  ProgressBar,
-  TextButton,
-} from '../components/ui.tsx'
+import { Button, ConfirmDialog, EmptyState, ErrorState, ListSkeleton, TextButton } from '../components/ui.tsx'
 import { Badge } from '../components/chrome.tsx'
-import { useToggleTask } from '../hooks/useToggleTask.ts'
 import { cn } from '../lib/cn.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { excerpt, formatDate } from '../lib/format.ts'
-import { compareTasks, taskProgress } from '../lib/tasks.ts'
 import { invalidateWorkspace } from '../queryClient.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
@@ -141,193 +129,6 @@ export function ProjectDetailPage() {
           if (!remove.isPending) setConfirmDelete(false)
         }}
       />
-    </div>
-  )
-}
-
-function TasksPanel({ projectId }: { projectId: string }) {
-  const toast = useToast()
-  const toggle = useToggleTask()
-  const [title, setTitle] = useState('')
-  const [due, setDue] = useState('')
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [draftTitle, setDraftTitle] = useState('')
-  const [draftDue, setDraftDue] = useState('')
-
-  const tasks = useQuery({
-    queryKey: ['tasks', projectId],
-    queryFn: () => api.listTasks(projectId),
-  })
-
-  const create = useMutation({
-    mutationFn: () => api.createTask(projectId, { title, dueDate: due || null }),
-    onSuccess: async () => {
-      setTitle('')
-      setDue('')
-      await invalidateWorkspace()
-    },
-    onError: (error) => toast(errorMessage(error)),
-  })
-
-  const update = useMutation({
-    mutationFn: (input: { id: string; title: string; dueDate: string | null }) =>
-      api.updateTask(input.id, { title: input.title, dueDate: input.dueDate }),
-    onSuccess: async () => {
-      setEditingId(null)
-      await invalidateWorkspace()
-    },
-    onError: (error) => toast(errorMessage(error)),
-  })
-
-  const remove = useMutation({
-    mutationFn: (taskId: string) => api.deleteTask(taskId),
-    onSuccess: () => invalidateWorkspace(),
-    onError: (error) => toast(errorMessage(error)),
-  })
-
-  function onCreate(event: FormEvent) {
-    event.preventDefault()
-    if (!title.trim()) return
-    create.mutate()
-  }
-
-  function startEdit(task: Task) {
-    setEditingId(task.id)
-    setDraftTitle(task.title)
-    setDraftDue(task.dueDate ?? '')
-  }
-
-  function saveEdit(taskId: string) {
-    if (!draftTitle.trim()) {
-      toast('Task title is required.')
-      return
-    }
-    update.mutate({ id: taskId, title: draftTitle, dueDate: draftDue || null })
-  }
-
-  if (tasks.isLoading) return <ListSkeleton rows={4} />
-  if (tasks.isError || !tasks.data) return <div className="mt-8"><ErrorState onRetry={() => void tasks.refetch()} /></div>
-
-  const sorted = [...tasks.data].sort(compareTasks)
-  const progress = taskProgress(sorted)
-
-  return (
-    <div className="mt-8">
-      <form onSubmit={onCreate} className="flex flex-col gap-2 sm:flex-row">
-        <Input
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          placeholder="Add a task"
-          aria-label="Task title"
-          className="sm:flex-1"
-        />
-        <Input
-          type="date"
-          value={due}
-          onChange={(event) => setDue(event.target.value)}
-          aria-label="Due date"
-          className="sm:w-40"
-        />
-        <Button type="submit" disabled={create.isPending || !title.trim()}>
-          {create.isPending ? 'Adding…' : 'Add'}
-        </Button>
-      </form>
-
-      {sorted.length === 0 ? (
-        <p className="mt-8 text-sm text-neutral-500">Tasks you add will show up here.</p>
-      ) : (
-        <>
-          <div className="mt-8">
-            <div className="mb-2 flex items-baseline justify-between text-sm">
-              <p className="text-neutral-500">
-                {progress.completed} of {progress.total} complete
-              </p>
-              <p className="text-neutral-900 tabular-nums">{progress.percent}%</p>
-            </div>
-            <ProgressBar value={progress.percent} label="Task progress" />
-          </div>
-          <ul className="mt-4 divide-y divide-neutral-200 border border-neutral-200">
-            {sorted.map((task) =>
-              editingId === task.id ? (
-                <li key={task.id} className="px-4 py-3">
-                  <form
-                    className="flex flex-col gap-2 sm:flex-row"
-                    onSubmit={(event) => {
-                      event.preventDefault()
-                      saveEdit(task.id)
-                    }}
-                  >
-                    <Input
-                      value={draftTitle}
-                      onChange={(event) => setDraftTitle(event.target.value)}
-                      aria-label="Task title"
-                      autoFocus
-                      onKeyDown={(event) => {
-                        if (event.key === 'Escape') setEditingId(null)
-                      }}
-                      className="sm:flex-1"
-                    />
-                    <Input
-                      type="date"
-                      value={draftDue}
-                      onChange={(event) => setDraftDue(event.target.value)}
-                      aria-label="Due date"
-                      className="sm:w-40"
-                    />
-                    <div className="flex gap-2">
-                      <Button type="submit" disabled={update.isPending}>
-                        Save
-                      </Button>
-                      <Button variant="secondary" onClick={() => setEditingId(null)}>
-                        Cancel
-                      </Button>
-                    </div>
-                  </form>
-                </li>
-              ) : (
-                <li key={task.id} className="flex items-start gap-3 px-4 py-3">
-                  <CheckButton
-                    checked={task.completed}
-                    label={task.completed ? `Mark “${task.title}” incomplete` : `Mark “${task.title}” complete`}
-                    onChange={() =>
-                      toggle.mutate(
-                        { id: task.id, projectId: task.projectId, completed: task.completed },
-                        { onError: (error) => toast(errorMessage(error)) },
-                      )
-                    }
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className={cn('text-sm', task.completed ? 'text-neutral-400 line-through' : 'text-neutral-950')}>
-                      {task.title}
-                    </p>
-                  </div>
-                  {task.dueDate ? (
-                    <span className="shrink-0 pt-0.5 font-mono text-xs text-neutral-500">{formatDate(task.dueDate)}</span>
-                  ) : null}
-                  <div className="flex shrink-0 gap-1">
-                    <button
-                      type="button"
-                      className="focus-ring p-1 text-neutral-400 hover:text-neutral-950"
-                      aria-label={`Edit “${task.title}”`}
-                      onClick={() => startEdit(task)}
-                    >
-                      <IconPencil />
-                    </button>
-                    <button
-                      type="button"
-                      className="focus-ring p-1 text-neutral-400 hover:text-neutral-950"
-                      aria-label={`Delete “${task.title}”`}
-                      onClick={() => remove.mutate(task.id)}
-                    >
-                      <IconTrash />
-                    </button>
-                  </div>
-                </li>
-              ),
-            )}
-          </ul>
-        </>
-      )}
     </div>
   )
 }

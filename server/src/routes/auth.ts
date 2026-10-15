@@ -1,7 +1,7 @@
 import { Router, type RequestHandler } from 'express'
 import { HttpError } from '../errors.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
-import { Note, Project, Task, User } from '../models.ts'
+import { Label, Note, Project, Task, User } from '../models.ts'
 import { checkPassword, dummyPasswordHash, hashPassword } from '../password.ts'
 import { publicUser } from '../serialize.ts'
 import { clearSession, setSession } from '../session.ts'
@@ -93,6 +93,7 @@ export function authRouter(limiter: RequestHandler): Router {
       const userId = currentUserId(req)
       await Task.deleteMany({ userId })
       await Note.deleteMany({ userId })
+      await Label.deleteMany({ userId })
       await Project.deleteMany({ userId })
       await User.deleteOne({ _id: userId })
       clearSession(res)

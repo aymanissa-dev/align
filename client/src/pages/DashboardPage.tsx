@@ -3,13 +3,14 @@ import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/auth-context.ts'
 import { api } from '../api/index.ts'
 import type { OpenTask } from '../api/types.ts'
-import { Badge, PageHeader, Stat } from '../components/chrome.tsx'
+import { Badge, DueBadge, PageHeader, PriorityBadge, Stat } from '../components/chrome.tsx'
 import { CheckButton, EmptyState, ErrorState, ListSkeleton, ProgressBar } from '../components/ui.tsx'
 import { buttonClass } from '../lib/buttonClass.ts'
 import { useToast } from '../components/toast-context.ts'
 import { useToggleTask } from '../hooks/useToggleTask.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
-import { firstName, formatDate, greeting } from '../lib/format.ts'
+import { isUpcoming } from '../lib/due.ts'
+import { firstName, greeting } from '../lib/format.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
 export function DashboardPage() {
@@ -40,6 +41,7 @@ export function DashboardPage() {
   }
 
   const completed = projects.reduce((sum, project) => sum + project.completedCount, 0)
+  const upcoming = openTasks.filter((task) => isUpcoming(task.dueDate))
 
   return (
     <div>
@@ -73,6 +75,39 @@ export function DashboardPage() {
           />
         </div>
       ) : (
+        <>
+        <section className="mt-8 border border-neutral-200">
+          <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
+            <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Upcoming</h2>
+            <Badge>{upcoming.length}</Badge>
+          </div>
+          {upcoming.length === 0 ? (
+            <p className="px-4 py-6 text-sm text-neutral-500">Nothing overdue or due in the next week.</p>
+          ) : (
+            <ul>
+              {upcoming.map((task) => (
+                <li key={task.id} className="flex items-start gap-3 border-b border-neutral-200 px-4 py-3 last:border-b-0">
+                  <CheckButton
+                    checked={task.completed}
+                    label={`Mark “${task.title}” complete`}
+                    onChange={() => onToggle(task)}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm text-neutral-950">{task.title}</p>
+                      <PriorityBadge priority={task.priority} />
+                    </div>
+                    <Link to={`/projects/${task.projectId}`} className="focus-ring text-sm text-neutral-500 hover:text-neutral-950">
+                      {task.projectName}
+                    </Link>
+                  </div>
+                  <DueBadge dueDate={task.dueDate} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
         <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
           <section className="border border-neutral-200">
             <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
@@ -132,15 +167,14 @@ export function DashboardPage() {
                         {task.projectName}
                       </Link>
                     </div>
-                    {task.dueDate ? (
-                      <span className="shrink-0 font-mono text-xs text-neutral-500">{formatDate(task.dueDate)}</span>
-                    ) : null}
+                    <DueBadge dueDate={task.dueDate} />
                   </li>
                 ))}
               </ul>
             )}
           </section>
         </div>
+        </>
       )}
     </div>
   )

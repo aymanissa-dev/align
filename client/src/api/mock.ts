@@ -2,11 +2,13 @@ import { ApiError } from './errors.ts'
 import type {
   AlignApi,
   DashboardData,
+  Label,
   Note,
   Project,
   ProjectStatus,
   SearchResults,
   Task,
+  TaskPriority,
   User,
 } from './types.ts'
 
@@ -23,12 +25,14 @@ type StoredUser = User & { password: string }
 type StoredProject = Project & { userId: string }
 type StoredTask = Task & { userId: string }
 type StoredNote = Note & { userId: string }
+type StoredLabel = Label & { userId: string }
 
 type Db = {
   users: StoredUser[]
   projects: StoredProject[]
   tasks: StoredTask[]
   notes: StoredNote[]
+  labels: StoredLabel[]
   sessionUserId: string | null
 }
 
@@ -60,7 +64,8 @@ function isDb(value: unknown): value is Db {
     Array.isArray(record.users) &&
     Array.isArray(record.projects) &&
     Array.isArray(record.tasks) &&
-    Array.isArray(record.notes)
+    Array.isArray(record.notes) &&
+    (record.labels === undefined || Array.isArray(record.labels))
   )
 }
 
@@ -120,6 +125,7 @@ function seed(): Db {
       task(userId, launch, 'tsk_note', 'Draft the launch note', false, '2026-10-17', 2, '2026-10-04T15:00:00.000Z'),
       task(userId, launch, 'tsk_video', 'Record the walkthrough', true, null, 3, '2026-10-06T15:00:00.000Z'),
     ],
+    labels: [],
     notes: [
       note(
         userId,
@@ -174,6 +180,8 @@ function task(
     title,
     completed,
     dueDate,
+    priority: 'medium',
+    labelIds: [],
     order,
     createdAt,
     updatedAt: createdAt,
@@ -200,6 +208,11 @@ function load(): Db {
       if (isDb(parsed)) {
         memory = parsed
         memory.sessionUserId ??= null
+        memory.labels ??= []
+        for (const item of memory.tasks) {
+          item.priority ??= 'medium'
+          item.labelIds ??= []
+        }
         return memory
       }
     }
@@ -242,10 +255,22 @@ function publicTask(item: StoredTask): Task {
     title: item.title,
     completed: item.completed,
     dueDate: item.dueDate,
+    priority: item.priority ?? 'medium',
+    labelIds: item.labelIds ?? [],
     order: item.order,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
   }
+}
+
+function publicLabel(item: StoredLabel): Label {
+  return { id: item.id, name: item.name, color: item.color, createdAt: item.createdAt }
+}
+
+function colorOf(value: string | undefined): string {
+  const color = (value ?? '').trim()
+  if (!/^#[0-9a-fA-F]{6}$/.test(color)) throw new ApiError(400, 'Choose a color.')
+  return color.toLowerCase()
 }
 
 function publicNote(item: StoredNote): Note {
@@ -302,6 +327,25 @@ function requirePassword(value: string, label = 'Password'): string {
   if (!value || value.length < 8) throw new ApiError(400, `${label} must be at least 8 characters.`)
   if (value.length > 128) throw new ApiError(400, `${label} is too long.`)
   return value
+}
+
+const PRIORITY_VALUES = new Set<TaskPriority>(['low', 'medium', 'high', 'urgent'])
+
+function priorityOf(value: string | undefined): TaskPriority {
+  if (value === undefined) return 'medium'
+  if (!PRIORITY_VALUES.has(value as TaskPriority)) {
+    throw new ApiError(400, 'Priority must be low, medium, high, or urgent.')
+  }
+  return value as TaskPriority
+}
+
+function labelsOf(state: Db, userId: string, ids: string[] | undefined): string[] {
+  if (!ids || ids.length === 0) return []
+  if (ids.length > 12) throw new ApiError(400, 'Too many labels.')
+  const unique = [...new Set(ids)]
+  const owned = new Set(state.labels.filter((label) => label.userId === userId).map((label) => label.id))
+  if (unique.some((id) => !owned.has(id))) throw new ApiError(400, 'Unknown label.')
+  return unique
 }
 
 function dueDateOf(value: string | null | undefined): string | null | undefined {
@@ -413,6 +457,7 @@ export const mockApi = {
       state.projects = state.projects.filter((project) => project.userId !== user.id)
       state.tasks = state.tasks.filter((item) => item.userId !== user.id && !projectIds.has(item.projectId))
       state.notes = state.notes.filter((item) => item.userId !== user.id && !projectIds.has(item.projectId))
+      state.labels = state.labels.filter((item) => item.userId !== user.id)
       state.users = state.users.filter((item) => item.id !== user.id)
       state.sessionUserId = null
     })
@@ -503,6 +548,8 @@ export const mockApi = {
         title,
         completed: false,
         dueDate: dueDateOf(input.dueDate) ?? null,
+        priority: priorityOf(input.priority),
+        labelIds: labelsOf(state, user.id, input.labelIds),
         order,
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -522,6 +569,8 @@ export const mockApi = {
         item.completed = input.completed
       }
       if (input.dueDate !== undefined) item.dueDate = dueDateOf(input.dueDate) ?? null
+      if (input.priority !== undefined) item.priority = priorityOf(input.priority)
+      if (input.labelIds !== undefined) item.labelIds = labelsOf(state, user.id, input.labelIds)
       if (input.order !== undefined) {
         if (!Number.isFinite(input.order)) throw new ApiError(400, 'Order must be a number.')
         item.order = input.order
@@ -537,6 +586,59 @@ export const mockApi = {
       const item = findTask(state, user.id, id)
       state.tasks = state.tasks.filter((taskItem) => taskItem.id !== id)
       touchProject(state, item.projectId)
+    })
+  },
+
+  async listLabels() {
+    return read((state, user) =>
+      state.labels
+        .filter((label) => label.userId === user.id)
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map(publicLabel),
+    )
+  },
+
+  async createLabel(input) {
+    return write((state, user) => {
+      const name = requireName(input.name ?? '', 'Label name', 40)
+      const color = colorOf(input.color)
+      if (state.labels.some((label) => label.userId === user.id && label.name.toLowerCase() === name.toLowerCase())) {
+        throw new ApiError(409, 'A label with that name already exists.')
+      }
+      const label: StoredLabel = { id: uid('lbl'), userId: user.id, name, color, createdAt: now() }
+      state.labels.push(label)
+      return publicLabel(label)
+    })
+  },
+
+  async updateLabel(id, input) {
+    return write((state, user) => {
+      const label = state.labels.find((item) => item.id === id && item.userId === user.id)
+      if (!label) throw new ApiError(404, 'Label not found.')
+      if (input.name !== undefined) {
+        const name = requireName(input.name, 'Label name', 40)
+        if (
+          state.labels.some(
+            (item) => item.userId === user.id && item.id !== id && item.name.toLowerCase() === name.toLowerCase(),
+          )
+        ) {
+          throw new ApiError(409, 'A label with that name already exists.')
+        }
+        label.name = name
+      }
+      if (input.color !== undefined) label.color = colorOf(input.color)
+      return publicLabel(label)
+    })
+  },
+
+  async deleteLabel(id) {
+    await write((state, user) => {
+      const label = state.labels.find((item) => item.id === id && item.userId === user.id)
+      if (!label) throw new ApiError(404, 'Label not found.')
+      state.labels = state.labels.filter((item) => item.id !== id)
+      for (const task of state.tasks) {
+        if (task.userId === user.id) task.labelIds = task.labelIds.filter((labelId) => labelId !== id)
+      }
     })
   },
 
@@ -614,6 +716,7 @@ export const mockApi = {
               projectName: project.name,
               title: item.title,
               dueDate: item.dueDate,
+              priority: item.priority ?? 'medium',
               completed: false as const,
             },
           ]

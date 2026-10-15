@@ -10,6 +10,7 @@
  */
 
 export type ProjectStatus = 'active' | 'archived'
+export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent'
 
 export type User = {
   id: string
@@ -27,12 +28,21 @@ export type Project = {
   updatedAt: string
 }
 
+export type Label = {
+  id: string
+  name: string
+  color: string
+  createdAt: string
+}
+
 export type Task = {
   id: string
   projectId: string
   title: string
   completed: boolean
   dueDate: string | null
+  priority: TaskPriority
+  labelIds: string[]
   order: number
   createdAt: string
   updatedAt: string
@@ -62,6 +72,7 @@ export type OpenTask = {
   projectName: string
   title: string
   dueDate: string | null
+  priority: TaskPriority
   completed: boolean
 }
 
@@ -116,13 +127,27 @@ export type ProjectPatch = {
 export type TaskInput = {
   title: string
   dueDate?: string | null
+  priority?: TaskPriority
+  labelIds?: string[]
 }
 
 export type TaskPatch = {
   title?: string
   completed?: boolean
   dueDate?: string | null
+  priority?: TaskPriority
+  labelIds?: string[]
   order?: number
+}
+
+export type LabelInput = {
+  name: string
+  color: string
+}
+
+export type LabelPatch = {
+  name?: string
+  color?: string
 }
 
 export type NoteInput = {
@@ -172,6 +197,15 @@ export interface AlignApi {
   updateTask(id: string, input: TaskPatch): Promise<Task>
   /** DELETE /api/tasks/:id */
   deleteTask(id: string): Promise<void>
+
+  /** GET /api/labels */
+  listLabels(): Promise<Label[]>
+  /** POST /api/labels */
+  createLabel(input: LabelInput): Promise<Label>
+  /** PATCH /api/labels/:id */
+  updateLabel(id: string, input: LabelPatch): Promise<Label>
+  /** DELETE /api/labels/:id */
+  deleteLabel(id: string): Promise<void>
 
   /** GET /api/notes */
   listNotes(): Promise<Note[]>

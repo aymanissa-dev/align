@@ -24,6 +24,16 @@ projectSchema.index(
   { weights: { name: 5, description: 1 }, name: 'ProjectTextIndex' },
 )
 
+const labelSchema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    name: { type: String, required: true },
+    color: { type: String, required: true },
+  },
+  { timestamps: true },
+)
+labelSchema.index({ userId: 1, name: 1 }, { unique: true })
+
 const taskSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
@@ -31,12 +41,15 @@ const taskSchema = new Schema(
     title: { type: String, required: true },
     completed: { type: Boolean, default: false, required: true },
     dueDate: { type: String, default: null },
+    priority: { type: String, enum: ['low', 'medium', 'high', 'urgent'], default: 'medium', required: true },
+    labelIds: { type: [{ type: Schema.Types.ObjectId, ref: 'Label' }], default: [] },
     order: { type: Number, required: true },
   },
   { timestamps: true },
 )
 taskSchema.index({ projectId: 1, completed: 1 })
 taskSchema.index({ userId: 1, projectId: 1 })
+taskSchema.index({ userId: 1, dueDate: 1 })
 taskSchema.index({ title: 'text' }, { name: 'TaskTextIndex' })
 
 const noteSchema = new Schema(
@@ -57,6 +70,7 @@ noteSchema.index(
 
 export type UserDoc = HydratedDocument<InferSchemaType<typeof userSchema>>
 export type ProjectDoc = HydratedDocument<InferSchemaType<typeof projectSchema>>
+export type LabelDoc = HydratedDocument<InferSchemaType<typeof labelSchema>>
 export type TaskDoc = HydratedDocument<InferSchemaType<typeof taskSchema>>
 export type NoteDoc = HydratedDocument<InferSchemaType<typeof noteSchema>>
 
@@ -68,5 +82,6 @@ function compile<T>(name: string, factory: () => T): T {
 
 export const User = compile('User', () => model('User', userSchema))
 export const Project = compile('Project', () => model('Project', projectSchema))
+export const Label = compile('Label', () => model('Label', labelSchema))
 export const Task = compile('Task', () => model('Task', taskSchema))
 export const Note = compile('Note', () => model('Note', noteSchema))

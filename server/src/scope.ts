@@ -1,6 +1,6 @@
 import { Types } from 'mongoose'
 import { HttpError } from './errors.ts'
-import { Note, Project, Task, type NoteDoc, type ProjectDoc, type TaskDoc } from './models.ts'
+import { Label, Note, Project, Task, type NoteDoc, type ProjectDoc, type TaskDoc } from './models.ts'
 
 export function objectId(id: string): Types.ObjectId | null {
   if (!/^[a-f\d]{24}$/i.test(id)) return null
@@ -29,6 +29,15 @@ export async function requireNote(userId: string, id: string): Promise<NoteDoc> 
   const note = await Note.findOne({ _id: noteId, userId })
   if (!note) throw new HttpError(404, 'Note not found.')
   return note
+}
+
+export async function ownedLabelIds(userId: string, ids: string[]): Promise<Types.ObjectId[]> {
+  const unique = [...new Set(ids)]
+  const objectIds = unique.map(objectId)
+  if (objectIds.some((id) => !id)) throw new HttpError(400, 'Unknown label.')
+  const found = await Label.find({ userId, _id: { $in: objectIds } }).select('_id')
+  if (found.length !== objectIds.length) throw new HttpError(400, 'Unknown label.')
+  return objectIds.filter((id): id is Types.ObjectId => id !== null)
 }
 
 export async function touchProject(projectId: Types.ObjectId, userId: string): Promise<void> {

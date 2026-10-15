@@ -4,6 +4,7 @@ import { connectDb } from './db.ts'
 import { errorHandler } from './middleware.ts'
 import { authRouter } from './routes/auth.ts'
 import { dashboardRouter } from './routes/dashboard.ts'
+import { labelsRouter } from './routes/labels.ts'
 import { notesRouter } from './routes/notes.ts'
 import { projectsRouter } from './routes/projects.ts'
 import { searchRouter } from './routes/search.ts'
@@ -36,6 +37,7 @@ export function createApp(options: AppOptions = {}): Express {
   })
 
   app.use('/api/auth', authRouter(authLimiter))
+  app.use('/api/labels', labelsRouter())
   app.use('/api/projects', projectsRouter())
   app.use('/api/tasks', tasksRouter())
   app.use('/api/notes', notesRouter())

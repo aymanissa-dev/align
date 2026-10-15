@@ -64,6 +64,7 @@ export function useToggleTask() {
                 projectName: project.name,
                 title: task.title,
                 dueDate: task.dueDate,
+                priority: task.priority,
                 completed: false,
               },
             ].sort(byDue)
