@@ -10,7 +10,9 @@ import { IconBell } from './icons.tsx'
 export function NotificationBell({ className, placement = 'down' }: { className?: string; placement?: 'down' | 'up' }) {
   const today = localISODate()
   const [open, setOpen] = useState(false)
+  const [panelStyle, setPanelStyle] = useState<{ top?: number; bottom?: number; left?: number; right?: number; width: number }>({ width: 320 })
   const root = useRef<HTMLDivElement>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
   const inbox = useQuery({
     queryKey: ['notifications', today],
     queryFn: () => api.listNotifications(today),
@@ -45,15 +47,28 @@ export function NotificationBell({ className, placement = 'down' }: { className?
   const items = inbox.data ?? []
   const unread = items.filter((item) => !item.read).length
 
+  function toggle() {
+    if (!open && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect()
+      setPanelStyle(
+        placement === 'up'
+          ? { left: 12, bottom: window.innerHeight - rect.top + 8, width: 240 }
+          : { top: rect.bottom + 8, right: 12, width: Math.min(320, window.innerWidth - 24) },
+      )
+    }
+    setOpen((value) => !value)
+  }
+
   return (
     <div ref={root} className={cn('relative', className)}>
       <button
+        ref={buttonRef}
         type="button"
         className="focus-ring relative inline-flex h-10 w-10 items-center justify-center"
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label={unread > 0 ? `Notifications, ${unread} unread` : 'Notifications'}
-        onClick={() => setOpen((value) => !value)}
+        onClick={toggle}
       >
         <IconBell />
         {unread > 0 ? (
@@ -66,10 +81,8 @@ export function NotificationBell({ className, placement = 'down' }: { className?
         <div
           role="dialog"
           aria-label="Notifications"
-          className={cn(
-            'absolute right-0 z-50 w-80 border border-neutral-200 bg-white shadow-md',
-            placement === 'down' ? 'top-11' : 'bottom-12',
-          )}
+          className="fixed z-50 border border-neutral-200 bg-white shadow-md"
+          style={panelStyle}
         >
           <div className="flex items-center justify-between border-b border-neutral-200 px-3 py-2">
             <p className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Inbox</p>
