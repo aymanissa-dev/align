@@ -42,14 +42,14 @@ export function MarketingLayout({ children }: { children: ReactNode }) {
         {children}
       </main>
       <footer className="border-t border-neutral-200">
-        <div className="mx-auto grid w-full max-w-6xl gap-10 px-5 py-12 sm:px-8 md:grid-cols-[1.4fr_1fr_1fr]">
-          <div>
+        <div className="mx-auto grid w-full max-w-6xl gap-8 px-5 py-8 sm:px-8 sm:py-10 md:grid-cols-[1.5fr_auto_auto] md:items-start md:gap-16">
+          <div className="border-b border-dashed border-neutral-200 pb-6 md:border-b-0 md:pb-0">
             <p className="text-sm font-medium tracking-[-0.03em]">Align</p>
-            <p className="mt-2 max-w-xs text-sm leading-6 text-neutral-600">Keep your work in alignment.</p>
+            <p className="mt-1.5 max-w-xs text-sm leading-6 text-neutral-600">Keep your work in alignment.</p>
           </div>
           <div>
             <Eyebrow>Product</Eyebrow>
-            <nav className="mt-3 flex flex-col gap-2 text-sm text-neutral-700" aria-label="Product">
+            <nav className="mt-3 flex flex-col gap-1.5 text-sm text-neutral-700" aria-label="Product">
               {user ? (
                 <Link to="/" className="focus-ring w-fit hover:text-neutral-950">
                   Workspace
@@ -68,7 +68,7 @@ export function MarketingLayout({ children }: { children: ReactNode }) {
           </div>
           <div>
             <Eyebrow>Legal</Eyebrow>
-            <nav className="mt-3 flex flex-col gap-2 text-sm text-neutral-700" aria-label="Footer">
+            <nav className="mt-3 flex flex-col gap-1.5 text-sm text-neutral-700" aria-label="Footer">
               <Link to="/privacy" className="focus-ring w-fit hover:text-neutral-950">
                 Privacy
               </Link>

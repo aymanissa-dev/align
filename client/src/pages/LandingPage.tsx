@@ -10,38 +10,38 @@ const AUDIENCES = ['makers', 'teams', 'writers', 'planners'] as const
 const FEATURES = [
   {
     title: 'Projects',
-    body: 'Group the work that belongs together. Archive a project when it is finished, and the tasks and notes stay with it.',
+    body: 'Hold a body of work together. Archive it when it is finished. Tasks and notes stay attached.',
   },
   {
     title: 'Tasks',
-    body: 'Break a project into tasks, give them a due date, and check them off as you go.',
+    body: 'Name the next action and give it a due date. Check it off when it is done.',
   },
   {
     title: 'Notes',
-    body: 'Keep the writing next to the work. A note lives on the project it belongs to.',
+    body: 'Keep the writing on the project it belongs to, not in a separate pile.',
   },
   {
     title: 'Dashboard',
-    body: 'Open Align and see your active projects and the tasks that are still open.',
+    body: 'See active projects and open tasks as soon as you open Align.',
   },
   {
     title: 'Search',
-    body: 'Find a project, task, or note from one field, across the whole workspace.',
+    body: 'Find a project, task, or note from one field across the workspace.',
   },
 ] as const
 
 const STEPS = [
   {
     title: 'Start a project',
-    body: 'Name the work and add a short description so you know what it is for.',
+    body: 'Name the work and add one sentence about what it is for.',
   },
   {
     title: 'Add tasks and notes',
-    body: 'Capture the next actions, and the context you will want when you come back.',
+    body: 'Tasks are the next actions. Notes are what you will want later.',
   },
   {
-    title: 'Stay aligned',
-    body: 'The dashboard shows what is active and what is still open.',
+    title: 'Check the dashboard',
+    body: 'What is active, and what is still open, sits in one view.',
   },
 ] as const
 
@@ -51,66 +51,79 @@ export function LandingPage() {
   return (
     <MarketingLayout>
       <section className="edge-mesh border-b border-neutral-200">
-        <div className="mx-auto w-full max-w-6xl px-5 pt-16 pb-16 sm:px-8 sm:pt-24 sm:pb-20">
-          <div className="flex flex-wrap items-center gap-2">
-            {['Projects', 'Tasks', 'Notes'].map((label) => (
-              <span key={label} className="border border-neutral-300 px-2 py-1 font-pixel text-[10px] tracking-[0.16em] uppercase">
-                {label}
-              </span>
-            ))}
+        <div className="mx-auto grid w-full max-w-6xl items-center gap-10 px-5 pt-12 pb-12 sm:px-8 sm:pt-16 sm:pb-14 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)] lg:gap-14 lg:pt-20 lg:pb-16">
+          <div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {['Projects', 'Tasks', 'Notes'].map((label) => (
+                <span
+                  key={label}
+                  className="border border-neutral-300 bg-white px-1.5 py-1 font-pixel text-[10px] tracking-[0.16em] uppercase"
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+            <p className="mt-5 flex flex-wrap items-center gap-2 text-sm text-neutral-600">
+              <span>Built for</span>
+              <AudienceWord />
+            </p>
+            <h1 className="mt-3 max-w-xl text-[2.75rem] leading-[0.94] font-medium tracking-[-0.05em] text-balance text-neutral-950 sm:text-6xl lg:text-[4.25rem]">
+              Keep your work in alignment.
+            </h1>
+            <p className="mt-4 max-w-md text-base leading-7 text-neutral-600 sm:text-lg">
+              Simple project management, thoughtfully organized.
+            </p>
+            <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:items-center">
+              <Link to="/register" className={buttonClass('primary', 'px-5 py-2.5')}>
+                Get started
+              </Link>
+              <Link to="/login" className={buttonClass('secondary', 'px-5 py-2.5')}>
+                Sign in
+              </Link>
+            </div>
           </div>
-          <p className="mt-8 flex flex-wrap items-center gap-2 text-sm text-neutral-600">
-            <span>Built for</span>
-            <AudienceWord />
-          </p>
-          <h1 className="mt-4 max-w-4xl text-5xl font-medium tracking-[-0.05em] text-balance text-neutral-950 sm:text-6xl lg:text-7xl lg:leading-[0.92]">
-            Keep your work in alignment.
-          </h1>
-          <p className="mt-6 max-w-xl text-lg leading-8 text-neutral-600">
-            Simple project management, thoughtfully organized.
-          </p>
-          <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-            <Link to="/register" className={buttonClass('primary', 'px-4 py-2.5')}>
-              Get started
-            </Link>
-            <Link to="/login" className={buttonClass('secondary', 'px-4 py-2.5')}>
-              Sign in
-            </Link>
-          </div>
+          <DashboardPreview />
         </div>
       </section>
 
-      <section className="mx-auto w-full max-w-6xl px-5 py-16 sm:px-8 sm:py-20" aria-labelledby="features-heading">
+      <section className="mx-auto w-full max-w-6xl px-5 py-14 sm:px-8 sm:py-16" aria-labelledby="features-heading">
         <Eyebrow>Workspace</Eyebrow>
-        <h2 id="features-heading" className="mt-3 max-w-xl text-3xl font-medium tracking-[-0.04em] sm:text-4xl">
+        <h2 id="features-heading" className="mt-2 max-w-xl text-3xl font-medium tracking-[-0.04em] sm:text-4xl">
           Everything in one quiet place
         </h2>
-        <p className="mt-3 max-w-xl text-sm leading-6 text-neutral-600">
-          Projects, tasks, and notes. No boards to configure and no feed to catch up on.
+        <p className="mt-2 max-w-lg text-sm leading-6 text-neutral-600">
+          Projects, tasks, and notes. No board to configure.
         </p>
-        <ul className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <ul className="mt-8 grid auto-rows-fr gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {FEATURES.map((feature, index) => (
-            <li key={feature.title} className="border border-neutral-200 bg-white p-6">
-              <p className="font-mono text-xs text-neutral-400 tabular-nums">0{index + 1}</p>
-              <h3 className="mt-4 text-lg font-medium tracking-[-0.03em]">{feature.title}</h3>
-              <p className="mt-2 text-sm leading-6 text-neutral-600">{feature.body}</p>
+            <li key={feature.title} className="h-full">
+              <article className="flex h-full flex-col border border-neutral-200 bg-white p-5 transition-colors hover:border-neutral-950 hover:bg-neutral-50">
+                <p className="font-mono text-xs text-neutral-400 tabular-nums">0{index + 1}</p>
+                <h3 className="mt-3 text-lg font-medium tracking-[-0.03em]">{feature.title}</h3>
+                <p className="mt-2 text-sm leading-6 text-neutral-600">{feature.body}</p>
+              </article>
             </li>
           ))}
         </ul>
       </section>
 
       <section className="border-t border-neutral-200" aria-labelledby="how-heading">
-        <div className="mx-auto w-full max-w-6xl px-5 py-16 sm:px-8 sm:py-20">
+        <div className="mx-auto w-full max-w-6xl px-5 py-14 sm:px-8 sm:py-16">
           <Eyebrow>How it works</Eyebrow>
-          <h2 id="how-heading" className="mt-3 text-3xl font-medium tracking-[-0.04em] sm:text-4xl">
+          <h2 id="how-heading" className="mt-2 max-w-xl text-3xl font-medium tracking-[-0.04em] sm:text-4xl">
             Three steps, then the work is visible.
           </h2>
-          <ol className="mt-10 grid border border-neutral-200 md:grid-cols-3">
+          <ol className="mt-8 grid auto-rows-fr border border-neutral-200 md:grid-cols-3">
             {STEPS.map((step, index) => (
-              <li key={step.title} className="border-neutral-200 border-b p-6 last:border-b-0 md:border-r md:border-b-0 md:last:border-r-0">
+              <li
+                key={step.title}
+                className="flex h-full flex-col border-b border-neutral-200 p-5 transition-colors last:border-b-0 hover:bg-neutral-50 md:border-r md:border-b-0 md:last:border-r-0"
+              >
                 <p className="font-mono text-xs text-neutral-400 tabular-nums">0{index + 1}</p>
-                <h3 className="mt-4 text-lg font-medium tracking-[-0.03em]">{step.title}</h3>
-                <p className="mt-2 border-t border-dashed border-neutral-200 pt-3 text-sm leading-6 text-neutral-600">{step.body}</p>
+                <h3 className="mt-3 text-lg font-medium tracking-[-0.03em]">{step.title}</h3>
+                <p className="mt-3 flex-1 border-t border-dashed border-neutral-200 pt-3 text-sm leading-6 text-neutral-600">
+                  {step.body}
+                </p>
               </li>
             ))}
           </ol>
@@ -118,18 +131,26 @@ export function LandingPage() {
       </section>
 
       <section className="border-t border-neutral-200" aria-labelledby="cta-heading">
-        <div className="edge-mesh mx-auto w-full max-w-6xl px-5 py-16 sm:px-8 sm:py-24">
-          <div className="border border-neutral-200 bg-white px-6 py-12 sm:px-10">
+        <div className="edge-mesh mx-auto w-full max-w-6xl px-5 py-14 sm:px-8 sm:py-16">
+          <div className="border border-neutral-200 bg-white px-5 py-8 sm:px-8 sm:py-10">
             <Eyebrow>Start</Eyebrow>
-            <h2 id="cta-heading" className="mt-3 max-w-xl text-3xl font-medium tracking-[-0.04em] text-balance sm:text-5xl">
+            <h2
+              id="cta-heading"
+              className="mt-2 max-w-lg text-3xl font-medium tracking-[-0.045em] text-balance sm:text-4xl"
+            >
               Put the work in one place.
             </h2>
-            <p className="mt-4 max-w-md text-sm leading-6 text-neutral-600">
-              Create an account and start with a single project.
+            <p className="mt-3 max-w-md text-sm leading-6 text-neutral-600">
+              Create an account and open your first project.
             </p>
-            <Link to="/register" className={buttonClass('primary', 'mt-8 px-4 py-2.5')}>
-              Get started
-            </Link>
+            <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:items-center">
+              <Link to="/register" className={buttonClass('primary', 'px-5 py-2.5')}>
+                Get started
+              </Link>
+              <Link to="/login" className={buttonClass('secondary', 'px-5 py-2.5')}>
+                Sign in
+              </Link>
+            </div>
           </div>
         </div>
       </section>
@@ -153,5 +174,80 @@ function AudienceWord() {
     <span className="inline-flex min-w-28 justify-center border border-neutral-950 bg-white px-2 py-0.5 text-sm font-medium text-neutral-950">
       {AUDIENCES[index]}
     </span>
+  )
+}
+
+function DashboardPreview() {
+  return (
+    <figure className="min-w-0">
+      <div aria-hidden="true" className="border border-neutral-200 bg-white">
+        <div className="flex items-end justify-between gap-4 border-b border-neutral-200 px-4 py-3">
+          <div>
+            <p className="font-pixel text-[10px] tracking-[0.16em] text-neutral-500 uppercase">Workspace</p>
+            <p className="mt-1 text-base font-medium tracking-[-0.03em]">Good morning, Ada</p>
+          </div>
+          <p className="hidden text-xs text-neutral-500 sm:block">Active projects and open tasks.</p>
+        </div>
+        <div className="grid grid-cols-3 divide-x divide-neutral-200 border-b border-neutral-200">
+          <PreviewStat label="Active" value="2" />
+          <PreviewStat label="Open" value="4" />
+          <PreviewStat label="Done" value="3" />
+        </div>
+        <div className="grid md:grid-cols-2 md:divide-x md:divide-neutral-200">
+          <div>
+            <p className="border-b border-neutral-200 px-4 py-2 font-pixel text-[10px] tracking-[0.16em] text-neutral-500 uppercase">
+              Active projects
+            </p>
+            <PreviewProject name="October release" percent={33} detail="1 of 3 tasks" />
+            <PreviewProject name="Website refresh" percent={50} detail="2 of 4 tasks" />
+          </div>
+          <div className="border-t border-neutral-200 md:border-t-0">
+            <p className="border-b border-neutral-200 px-4 py-2 font-pixel text-[10px] tracking-[0.16em] text-neutral-500 uppercase">
+              Open tasks
+            </p>
+            <PreviewTask title="Write the changelog" meta="Oct 16" />
+            <PreviewTask title="Draft the launch note" meta="Oct 17" />
+            <PreviewTask title="Set type and color" meta="Oct 18" />
+          </div>
+        </div>
+      </div>
+      <figcaption className="sr-only">
+        A preview of the Align dashboard, with active projects and open tasks.
+      </figcaption>
+    </figure>
+  )
+}
+
+function PreviewStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="px-3 py-3 sm:px-4">
+      <p className="font-pixel text-[10px] tracking-[0.14em] text-neutral-500 uppercase">{label}</p>
+      <p className="mt-1 font-mono text-xl tracking-tight tabular-nums">{value}</p>
+    </div>
+  )
+}
+
+function PreviewProject({ name, percent, detail }: { name: string; percent: number; detail: string }) {
+  return (
+    <div className="border-b border-neutral-200 px-4 py-3 last:border-b-0">
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="text-sm font-medium">{name}</p>
+        <p className="font-mono text-xs text-neutral-500 tabular-nums">{percent}%</p>
+      </div>
+      <div className="mt-2 h-1 bg-neutral-100">
+        <div className="h-1 bg-neutral-950" style={{ width: `${percent}%` }} />
+      </div>
+      <p className="mt-1.5 text-xs text-neutral-500">{detail}</p>
+    </div>
+  )
+}
+
+function PreviewTask({ title, meta }: { title: string; meta: string }) {
+  return (
+    <div className="flex items-center gap-2.5 border-b border-neutral-200 px-4 py-2.5 last:border-b-0">
+      <span className="h-3.5 w-3.5 shrink-0 border border-neutral-400" />
+      <span className="min-w-0 flex-1 truncate text-sm">{title}</span>
+      <span className="shrink-0 font-mono text-[11px] text-neutral-500">{meta}</span>
+    </div>
   )
 }
