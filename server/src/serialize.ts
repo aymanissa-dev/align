@@ -39,6 +39,7 @@ export function publicTask(task: TaskDoc) {
     dueDate: task.dueDate,
     priority: task.priority,
     labelIds: (task.labelIds ?? []).map((id) => id.toString()),
+    plannedFor: task.plannedFor ?? null,
     order: task.order,
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),

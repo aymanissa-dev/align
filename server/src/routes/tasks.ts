@@ -17,16 +17,25 @@ export function tasksRouter(): Router {
       const task = await requireTask(userId, req.params.id)
       const input = parseBody(taskPatchSchema, req.body)
       const wasCompleted = task.completed
+      const planningOnly =
+        input.plannedFor !== undefined &&
+        input.title === undefined &&
+        input.completed === undefined &&
+        input.dueDate === undefined &&
+        input.priority === undefined &&
+        input.labelIds === undefined &&
+        input.order === undefined
       if (input.title !== undefined) task.title = input.title
       if (input.completed !== undefined) task.completed = input.completed
       if (input.dueDate !== undefined) task.dueDate = normalizeDueDate(input.dueDate) ?? null
       if (input.priority !== undefined) task.priority = input.priority
       if (input.labelIds !== undefined) task.labelIds = await ownedLabelIds(userId, input.labelIds)
+      if (input.plannedFor !== undefined) task.plannedFor = normalizeDueDate(input.plannedFor) ?? null
       if (input.order !== undefined) task.order = input.order
       await task.save()
       await touchProject(task.projectId, userId)
       const finished = !wasCompleted && task.completed
-      await recordActivity({
+      if (!planningOnly) await recordActivity({
         userId,
         projectId: task.projectId,
         type: finished ? 'complete' : 'update',

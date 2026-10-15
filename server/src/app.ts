@@ -10,6 +10,7 @@ import { notificationsRouter } from './routes/notifications.ts'
 import { projectsRouter } from './routes/projects.ts'
 import { searchRouter } from './routes/search.ts'
 import { tasksRouter } from './routes/tasks.ts'
+import { todayRouter } from './routes/today.ts'
 import './types.ts'
 
 export type AppOptions = {
@@ -44,6 +45,7 @@ export function createApp(options: AppOptions = {}): Express {
   app.use('/api/notes', notesRouter())
   app.use('/api/notifications', notificationsRouter())
   app.use('/api/dashboard', dashboardRouter())
+  app.use('/api/today', todayRouter())
   app.use('/api/search', searchRouter())
 
   app.use((_req, res) => {

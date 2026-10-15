@@ -4,6 +4,7 @@ import type {
   AlignApi,
   AppNotification,
   DashboardData,
+  TodayData,
   Label,
   Note,
   Project,
@@ -147,6 +148,9 @@ export const httpApi = {
   },
   async markAllNotificationsRead() {
     await request<void>('/api/notifications/read-all', { method: 'POST' })
+  },
+  getToday(date) {
+    return request<TodayData>(withQuery('/api/today', { date }))
   },
   getDashboard() {
     return request<DashboardData>('/api/dashboard')

@@ -67,6 +67,7 @@ export type Task = {
   dueDate: string | null
   priority: TaskPriority
   labelIds: string[]
+  plannedFor: string | null
   order: number
   createdAt: string
   updatedAt: string
@@ -98,6 +99,15 @@ export type OpenTask = {
   dueDate: string | null
   priority: TaskPriority
   completed: boolean
+}
+
+export type TodayTask = Task & { projectName: string }
+
+export type TodayData = {
+  date: string
+  planned: TodayTask[]
+  carried: TodayTask[]
+  available: TodayTask[]
 }
 
 export type DashboardData = {
@@ -161,6 +171,7 @@ export type TaskPatch = {
   dueDate?: string | null
   priority?: TaskPriority
   labelIds?: string[]
+  plannedFor?: string | null
   order?: number
 }
 
@@ -253,6 +264,8 @@ export interface AlignApi {
   /** POST /api/notifications/read-all */
   markAllNotificationsRead(): Promise<void>
 
+  /** GET /api/today?date= */
+  getToday(date: string): Promise<TodayData>
   /** GET /api/dashboard */
   getDashboard(): Promise<DashboardData>
   /** GET /api/search?q= */

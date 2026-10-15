@@ -131,6 +131,7 @@ export const taskPatchSchema = z.object({
   dueDate: dueDate.optional(),
   priority: priority.optional(),
   labelIds: labelIds.optional(),
+  plannedFor: dueDate.optional(),
   order: z
     .number({ invalid_type_error: 'Order must be a number.' })
     .finite('Order must be a number.')

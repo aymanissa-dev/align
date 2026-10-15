@@ -44,6 +44,7 @@ const taskSchema = new Schema(
     dueDate: { type: String, default: null },
     priority: { type: String, enum: ['low', 'medium', 'high', 'urgent'], default: 'medium', required: true },
     labelIds: { type: [{ type: Schema.Types.ObjectId, ref: 'Label' }], default: [] },
+    plannedFor: { type: String, default: null },
     order: { type: Number, required: true },
   },
   { timestamps: true },

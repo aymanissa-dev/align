@@ -83,6 +83,7 @@ export function useToggleTask() {
     onSettled: (_data, _error, target) => {
       void queryClient.invalidateQueries({ queryKey: ['tasks', target.projectId] })
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      void queryClient.invalidateQueries({ queryKey: ['today'] })
     },
   })
 }

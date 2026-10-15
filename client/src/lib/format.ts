@@ -29,6 +29,10 @@ export function formatDateTime(value: string): string {
   }).format(date)
 }
 
+export function isEvening(date = new Date()): boolean {
+  return date.getHours() >= 17
+}
+
 export function greeting(date = new Date()): string {
   const hour = date.getHours()
   if (hour < 12) return 'Good morning'

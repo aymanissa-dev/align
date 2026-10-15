@@ -13,6 +13,7 @@ import type {
   SearchResults,
   Task,
   TaskPriority,
+  TodayData,
   User,
 } from './types.ts'
 
@@ -195,6 +196,7 @@ function task(
     dueDate,
     priority: 'medium',
     labelIds: [],
+    plannedFor: null,
     order,
     createdAt,
     updatedAt: createdAt,
@@ -227,6 +229,7 @@ function load(): Db {
         for (const item of memory.tasks) {
           item.priority ??= 'medium'
           item.labelIds ??= []
+          item.plannedFor ??= null
         }
         return memory
       }
@@ -272,6 +275,7 @@ function publicTask(item: StoredTask): Task {
     dueDate: item.dueDate,
     priority: item.priority ?? 'medium',
     labelIds: item.labelIds ?? [],
+    plannedFor: item.plannedFor ?? null,
     order: item.order,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
@@ -631,6 +635,7 @@ export const mockApi = {
         dueDate: dueDateOf(input.dueDate) ?? null,
         priority: priorityOf(input.priority),
         labelIds: labelsOf(state, user.id, input.labelIds),
+        plannedFor: null,
         order,
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -654,6 +659,7 @@ export const mockApi = {
       if (input.dueDate !== undefined) item.dueDate = dueDateOf(input.dueDate) ?? null
       if (input.priority !== undefined) item.priority = priorityOf(input.priority)
       if (input.labelIds !== undefined) item.labelIds = labelsOf(state, user.id, input.labelIds)
+      if (input.plannedFor !== undefined) item.plannedFor = dueDateOf(input.plannedFor) ?? null
       if (input.order !== undefined) {
         if (!Number.isFinite(input.order)) throw new ApiError(400, 'Order must be a number.')
         item.order = input.order
@@ -834,6 +840,27 @@ export const mockApi = {
       for (const item of state.notifications) {
         if (item.userId === user.id) item.read = true
       }
+    })
+  },
+
+  async getToday(date) {
+    return read((state, user) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new ApiError(400, 'Use a valid date.')
+      const projects = state.projects.filter((project) => project.userId === user.id && project.status === 'active')
+      const names = new Map(projects.map((project) => [project.id, project.name]))
+      const visible = state.tasks.filter((task) => task.userId === user.id && names.has(task.projectId))
+      const present = (task: StoredTask) => ({ ...publicTask(task), projectName: names.get(task.projectId) ?? '' })
+      const data: TodayData = {
+        date,
+        planned: visible.filter((task) => task.plannedFor === date).map(present),
+        carried: visible
+          .filter((task) => Boolean(task.plannedFor) && (task.plannedFor ?? '') < date && !task.completed)
+          .map(present),
+        available: visible
+          .filter((task) => !task.completed && task.plannedFor !== date && !(task.plannedFor && task.plannedFor < date))
+          .map(present),
+      }
+      return data
     })
   },
 

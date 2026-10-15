@@ -26,6 +26,15 @@ export function IconBell({ className }: { className?: string }) {
   )
 }
 
+export function IconToday({ className }: { className?: string }) {
+  return (
+    <Icon className={className}>
+      <rect x="4" y="5" width="16" height="15" />
+      <path d="M4 10h16M8 3v4M16 3v4" />
+    </Icon>
+  )
+}
+
 export function IconDashboard({ className }: { className?: string }) {
   return (
     <Icon className={className}>

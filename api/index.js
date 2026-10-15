@@ -58,6 +58,7 @@ var taskSchema = new Schema(
     dueDate: { type: String, default: null },
     priority: { type: String, enum: ["low", "medium", "high", "urgent"], default: "medium", required: true },
     labelIds: { type: [{ type: Schema.Types.ObjectId, ref: "Label" }], default: [] },
+    plannedFor: { type: String, default: null },
     order: { type: Number, required: true }
   },
   { timestamps: true }
@@ -354,6 +355,7 @@ function publicTask(task) {
     dueDate: task.dueDate,
     priority: task.priority,
     labelIds: (task.labelIds ?? []).map((id) => id.toString()),
+    plannedFor: task.plannedFor ?? null,
     order: task.order,
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString()
@@ -471,6 +473,7 @@ var taskPatchSchema = z.object({
   dueDate: dueDate.optional(),
   priority: priority.optional(),
   labelIds: labelIds.optional(),
+  plannedFor: dueDate.optional(),
   order: z.number({ invalid_type_error: "Order must be a number." }).finite("Order must be a number.").optional()
 });
 var labelCreateSchema = z.object({
@@ -1198,16 +1201,18 @@ function tasksRouter() {
       const task = await requireTask(userId, req.params.id);
       const input = parseBody(taskPatchSchema, req.body);
       const wasCompleted = task.completed;
+      const planningOnly = input.plannedFor !== void 0 && input.title === void 0 && input.completed === void 0 && input.dueDate === void 0 && input.priority === void 0 && input.labelIds === void 0 && input.order === void 0;
       if (input.title !== void 0) task.title = input.title;
       if (input.completed !== void 0) task.completed = input.completed;
       if (input.dueDate !== void 0) task.dueDate = normalizeDueDate(input.dueDate) ?? null;
       if (input.priority !== void 0) task.priority = input.priority;
       if (input.labelIds !== void 0) task.labelIds = await ownedLabelIds(userId, input.labelIds);
+      if (input.plannedFor !== void 0) task.plannedFor = normalizeDueDate(input.plannedFor) ?? null;
       if (input.order !== void 0) task.order = input.order;
       await task.save();
       await touchProject(task.projectId, userId);
       const finished = !wasCompleted && task.completed;
-      await recordActivity({
+      if (!planningOnly) await recordActivity({
         userId,
         projectId: task.projectId,
         type: finished ? "complete" : "update",
@@ -1234,6 +1239,39 @@ function tasksRouter() {
         summary: `Deleted task ${quoteTitle(title)}`
       });
       res.status(204).send();
+    })
+  );
+  return router;
+}
+
+// src/routes/today.ts
+import { Router as Router9 } from "express";
+function todayRouter() {
+  const router = Router9();
+  router.use(requireAuth);
+  router.get(
+    "/",
+    asyncHandler(async (req, res) => {
+      const date = typeof req.query.date === "string" ? normalizeDueDate(req.query.date) : null;
+      if (!date) throw new HttpError(400, "Use a valid date.");
+      const userId = currentUserId(req);
+      const [tasks, projects] = await Promise.all([
+        Task.find({ userId }).sort({ order: 1, createdAt: 1 }),
+        Project.find({ userId }).select("name status")
+      ]);
+      const names = new Map(projects.map((project) => [project.id, project.name]));
+      const active = new Set(projects.filter((project) => project.status === "active").map((project) => project.id));
+      const visible = tasks.filter((task) => active.has(task.projectId.toString()));
+      const withProject = (task) => ({
+        ...publicTask(task),
+        projectName: names.get(task.projectId.toString()) ?? ""
+      });
+      res.json({
+        date,
+        planned: visible.filter((task) => task.plannedFor === date).map(withProject),
+        carried: visible.filter((task) => task.plannedFor != null && task.plannedFor < date && !task.completed).map(withProject),
+        available: visible.filter((task) => !task.completed && task.plannedFor !== date && !(task.plannedFor && task.plannedFor < date)).map(withProject)
+      });
     })
   );
   return router;
@@ -1266,6 +1304,7 @@ function createApp(options = {}) {
   app2.use("/api/notes", notesRouter());
   app2.use("/api/notifications", notificationsRouter());
   app2.use("/api/dashboard", dashboardRouter());
+  app2.use("/api/today", todayRouter());
   app2.use("/api/search", searchRouter());
   app2.use((_req, res) => {
     res.status(404).json({ error: "Not found." });
