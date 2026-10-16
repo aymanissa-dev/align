@@ -73,7 +73,7 @@ export function ProjectDetailPage() {
 
   return (
     <div>
-      <Link to="/projects" className="focus-ring font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase hover:text-neutral-950">
+      <Link to="/projects" className="focus-ring inline-flex min-h-11 items-center font-pixel text-[11px] tracking-[0.16em] text-neutral-800 uppercase hover:text-neutral-950">
         Projects
       </Link>
       <div className="mt-4 flex flex-col gap-4 border-b border-neutral-200 pb-6 sm:flex-row sm:items-start sm:justify-between">

@@ -1,7 +1,8 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import type { Label, Task, TaskPriority } from '../api/types.ts'
 import { api } from '../api/index.ts'
+import { ApiError } from '../api/errors.ts'
 import { useToast } from './toast-context.ts'
 import { IconPencil, IconTrash } from './icons.tsx'
 import { Button, CheckButton, ConfirmDialog, ErrorState, Input, ListSkeleton, ProgressBar, Select } from './ui.tsx'
@@ -11,6 +12,7 @@ import { cn } from '../lib/cn.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { LABEL_COLORS, PRIORITIES, sortTasks, type TaskSort } from '../lib/priority.ts'
 import { taskProgress } from '../lib/tasks.ts'
+import { dropQueuedWrite, pendingTaskCreates, QUEUE_EVENT } from '../lib/offline.ts'
 import { invalidateWorkspace } from '../queryClient.ts'
 
 export function TasksPanel({ projectId }: { projectId: string }) {
@@ -31,6 +33,13 @@ export function TasksPanel({ projectId }: { projectId: string }) {
   const [draftDue, setDraftDue] = useState('')
   const [draftPriority, setDraftPriority] = useState<TaskPriority>('medium')
   const [draftLabels, setDraftLabels] = useState<string[]>([])
+  const [queueTick, setQueueTick] = useState(0)
+
+  useEffect(() => {
+    const sync = () => setQueueTick((value) => value + 1)
+    window.addEventListener(QUEUE_EVENT, sync)
+    return () => window.removeEventListener(QUEUE_EVENT, sync)
+  }, [])
 
   const tasks = useQuery({
     queryKey: ['tasks', projectId],
@@ -56,7 +65,17 @@ export function TasksPanel({ projectId }: { projectId: string }) {
       setPicked([])
       await invalidateWorkspace()
     },
-    onError: (error) => toast(errorMessage(error)),
+    onError: (error) => {
+      if (error instanceof ApiError && error.queued) {
+        setTitle('')
+        setDue('')
+        setPriority('medium')
+        setPicked([])
+        toast('Saved on this device. It will sync when you reconnect.')
+        return
+      }
+      toast(errorMessage(error))
+    },
   })
 
   const update = useMutation({
@@ -144,13 +163,31 @@ export function TasksPanel({ projectId }: { projectId: string }) {
 
   const catalog = labels.data
   const byId = new Map(catalog.map((label) => [label.id, label]))
-  const filtered = tasks.data.filter((task) => {
+  void queueTick
+  const queuedTasks: Task[] = pendingTaskCreates()
+    .filter((task) => task.projectId === projectId)
+    .map((task) => ({
+      id: task.id,
+      projectId: task.projectId,
+      title: task.title,
+      completed: false,
+      dueDate: task.dueDate,
+      priority: task.priority,
+      labelIds: task.labelIds,
+      plannedFor: task.plannedFor,
+      completedOn: null,
+      order: -1,
+      createdAt: '',
+      updatedAt: '',
+    }))
+  const visibleTasks = [...queuedTasks, ...tasks.data]
+  const filtered = visibleTasks.filter((task) => {
     if (priorityFilter !== 'all' && task.priority !== priorityFilter) return false
     if (labelFilter !== 'all' && !task.labelIds.includes(labelFilter)) return false
     return true
   })
   const sorted = sortTasks(filtered, sort)
-  const progress = taskProgress(tasks.data)
+  const progress = taskProgress(visibleTasks)
 
   return (
     <div className="mt-8">
@@ -193,7 +230,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
           </div>
         </div>
       </form>
-      <div className="flex items-center gap-1 border border-t-0 border-neutral-200 px-4 py-2" role="radiogroup" aria-label="Label color">
+      <div className="flex flex-wrap items-center gap-1 border border-t-0 border-neutral-200 px-4 py-2" role="radiogroup" aria-label="Label color">
             {LABEL_COLORS.map((color) => (
               <button
                 key={color}
@@ -201,7 +238,10 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                 role="radio"
                 aria-checked={labelColor === color}
                 aria-label={color}
-                className={cn('focus-ring h-11 w-11 border', labelColor === color ? 'border-neutral-950' : 'border-neutral-300')}
+                className={cn(
+                  'focus-ring h-11 w-11 shrink-0 border min-h-[44px] min-w-[44px]',
+                  labelColor === color ? 'border-neutral-950' : 'border-neutral-300',
+                )}
                 style={{ backgroundColor: color }}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={(event) => {
@@ -271,7 +311,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
         </Select>
       </div>
 
-      {tasks.data.length === 0 ? (
+      {visibleTasks.length === 0 ? (
         <p className="mt-8 text-sm text-neutral-500">Tasks you add will show up here.</p>
       ) : (
         <>
@@ -343,45 +383,61 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                     </form>
                   </li>
                 ) : (
-                  <li key={task.id} className="flex items-start gap-3 px-4 py-3">
+                  <li key={task.id} className="flex items-start gap-2 px-3 py-3 sm:gap-3 sm:px-4">
                     <CheckButton
                       checked={task.completed}
                       label={task.completed ? `Mark “${task.title}” incomplete` : `Mark “${task.title}” complete`}
-                      onChange={() =>
+                      onChange={() => {
+                        if (task.id.startsWith('queued:')) return
                         toggle.mutate(
                           { id: task.id, projectId: task.projectId, completed: task.completed },
                           { onError: (error) => toast(errorMessage(error)) },
                         )
-                      }
+                      }}
                     />
                     <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className={cn('text-sm', task.completed ? 'text-neutral-400 line-through' : 'text-neutral-950')}>
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <p className={cn('text-sm break-words', task.completed ? 'text-neutral-400 line-through' : 'text-neutral-950')}>
                           {task.title}
                         </p>
                         <PriorityBadge priority={task.priority} />
+                        {task.id.startsWith('queued:') ? (
+                          <span className="font-pixel text-[10px] tracking-[0.14em] text-neutral-500 uppercase">Queued</span>
+                        ) : null}
                         {task.labelIds.map((id) => {
                           const label = byId.get(id)
                           if (!label) return null
                           return <LabelSwatch key={id} label={label} named />
                         })}
                       </div>
+                      {task.completed ? null : (
+                        <div className="mt-1">
+                          <DueBadge dueDate={task.dueDate} />
+                        </div>
+                      )}
                     </div>
-                    {task.completed ? null : <DueBadge dueDate={task.dueDate} />}
                     <div className="flex shrink-0">
-                      <button
-                        type="button"
-                        className="focus-ring inline-flex h-11 w-11 items-center justify-center text-neutral-400 hover:text-neutral-950"
-                        aria-label={`Edit “${task.title}”`}
-                        onClick={() => startEdit(task)}
-                      >
-                        <IconPencil />
-                      </button>
+                      {task.id.startsWith('queued:') ? null : (
+                        <button
+                          type="button"
+                          className="focus-ring inline-flex h-11 w-11 items-center justify-center text-neutral-400 hover:text-neutral-950"
+                          aria-label={`Edit “${task.title}”`}
+                          onClick={() => startEdit(task)}
+                        >
+                          <IconPencil />
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="focus-ring inline-flex h-11 w-11 items-center justify-center text-neutral-400 hover:text-neutral-950"
                         aria-label={`Delete “${task.title}”`}
-                        onClick={() => setPendingDelete(task)}
+                        onClick={() => {
+                          if (task.id.startsWith('queued:')) {
+                            dropQueuedWrite(task.id.slice('queued:'.length))
+                            return
+                          }
+                          setPendingDelete(task)
+                        }}
                       >
                         <IconTrash />
                       </button>

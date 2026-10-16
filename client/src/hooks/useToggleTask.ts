@@ -22,39 +22,13 @@ function patchToday(data: TodayData, target: ToggleTarget): TodayData {
   const stamp = nextCompleted ? data.date : null
   const apply = (task: TodayTask): TodayTask =>
     task.id === target.id ? { ...task, completed: nextCompleted, completedOn: stamp } : task
-
-  const planned = data.planned.map(apply)
-  const carriedSource = data.carried.map(apply)
-  const availableSource = data.available.map(apply)
-  let finished = (data.finished ?? []).map(apply)
-
-  if (nextCompleted) {
-    const moved = [...availableSource, ...carriedSource].filter((task) => task.id === target.id)
-    const onPlan = planned.some((task) => task.id === target.id)
-    if (!onPlan && moved.length > 0) {
-      finished = [...moved, ...finished.filter((task) => task.id !== target.id)]
-    }
-    return {
-      ...data,
-      planned,
-      carried: carriedSource.filter((task) => !task.completed),
-      available: availableSource.filter((task) => !task.completed),
-      finished,
-    }
-  }
-
-  const restored = finished.filter((task) => task.id === target.id)
-  finished = finished.filter((task) => task.id !== target.id)
-  const available = [
-    ...availableSource.filter((task) => task.id !== target.id),
-    ...restored.filter((task) => !planned.some((item) => item.id === task.id)),
-  ]
   return {
     ...data,
-    planned,
-    carried: carriedSource.filter((task) => task.id !== target.id),
-    available,
-    finished,
+    planned: data.planned.map(apply),
+    carried: data.carried.map(apply),
+    overdue: (data.overdue ?? []).map(apply),
+    available: data.available.map(apply),
+    finished: (data.finished ?? []).map(apply),
   }
 }
 

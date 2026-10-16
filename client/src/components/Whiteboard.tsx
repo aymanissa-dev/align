@@ -87,6 +87,13 @@ export function Whiteboard({ projectId }: { projectId: string }) {
     colorRef.current = color
   })
   const drawing = useRef<{ kind: Tool; start: WhiteboardPoint; points: WhiteboardPoint[] } | null>(null)
+  const saveTimer = useRef<number | null>(null)
+  const revision = useRef(0)
+  const savingRevision = useRef(0)
+  const projectIdRef = useRef(projectId)
+  useEffect(() => {
+    projectIdRef.current = projectId
+  }, [projectId])
 
   const board = useQuery({
     queryKey: ['whiteboard', projectId],
@@ -95,7 +102,12 @@ export function Whiteboard({ projectId }: { projectId: string }) {
 
   const save = useMutation({
     mutationFn: (next: WhiteboardScene) => api.saveWhiteboard(projectId, next),
-    onSuccess: () => setStatus('saved'),
+    onSuccess: () => {
+      if (savingRevision.current === revision.current) {
+        dirty.current = false
+        setStatus('saved')
+      }
+    },
     onError: (error) => {
       setStatus('idle')
       toast(errorMessage(error))
@@ -114,9 +126,54 @@ export function Whiteboard({ projectId }: { projectId: string }) {
   useEffect(() => {
     if (!dirty.current) return
     setStatus('saving')
-    const timer = window.setTimeout(() => saveScene(sceneRef.current), 600)
-    return () => window.clearTimeout(timer)
+    if (saveTimer.current) window.clearTimeout(saveTimer.current)
+    saveTimer.current = window.setTimeout(() => {
+      saveTimer.current = null
+      savingRevision.current = revision.current
+      saveScene(sceneRef.current)
+    }, 250)
+    return () => {
+      if (saveTimer.current) window.clearTimeout(saveTimer.current)
+    }
   }, [scene, saveScene])
+
+  useEffect(() => {
+    const flush = () => {
+      if (!dirty.current) return
+      if (saveTimer.current) {
+        window.clearTimeout(saveTimer.current)
+        saveTimer.current = null
+      }
+      const body = JSON.stringify({ scene: sceneRef.current })
+      dirty.current = false
+      savingRevision.current = revision.current
+      void fetch(`/api/projects/${projectIdRef.current}/whiteboard`, {
+        method: 'PUT',
+        credentials: 'include',
+        keepalive: true,
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body,
+      })
+    }
+    const onLeave = (event: BeforeUnloadEvent) => {
+      if (!dirty.current) return
+      event.preventDefault()
+      event.returnValue = ''
+      flush()
+    }
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') flush()
+    }
+    window.addEventListener('beforeunload', onLeave)
+    window.addEventListener('pagehide', onLeave)
+    document.addEventListener('visibilitychange', onHide)
+    return () => {
+      window.removeEventListener('beforeunload', onLeave)
+      window.removeEventListener('pagehide', onLeave)
+      document.removeEventListener('visibilitychange', onHide)
+      flush()
+    }
+  }, [])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -146,6 +203,7 @@ export function Whiteboard({ projectId }: { projectId: string }) {
   }
 
   function commit(next: WhiteboardScene) {
+    revision.current += 1
     dirty.current = true
     sceneRef.current = next
     setScene(next)
@@ -260,7 +318,7 @@ export function Whiteboard({ projectId }: { projectId: string }) {
             type="button"
             aria-pressed={tool === item}
             className={cn(
-              'focus-ring inline-flex min-h-11 shrink-0 items-center border px-3 text-xs capitalize',
+              'focus-ring inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center border px-3 text-xs capitalize',
               tool === item ? 'border-neutral-950 bg-neutral-950 text-white' : 'border-neutral-300 text-neutral-600',
             )}
             onClick={() => setTool(item)}
@@ -309,14 +367,14 @@ export function Whiteboard({ projectId }: { projectId: string }) {
         </button>
         <span className="font-mono text-[11px] text-neutral-500">{status === 'saving' ? 'Saving…' : status === 'saved' ? 'Saved' : ''}</span>
       </div>
-      <div ref={wrapRef} className="relative h-[28rem] bg-white">
+      <div ref={wrapRef} className="board-surface relative h-[28rem]">
         <canvas ref={canvasRef} className="h-full w-full touch-none" aria-label="Project whiteboard" />
         {screenDraft ? (
           <input
             ref={textRef}
             value={draft?.value ?? ''}
             aria-label="Whiteboard text"
-            className="focus-ring absolute z-10 min-h-11 min-w-40 border border-neutral-950 bg-white px-2 text-sm"
+            className="board-surface focus-ring absolute z-10 min-h-11 min-w-40 border border-neutral-950 px-2 text-sm"
             style={{ left: screenDraft.left, top: screenDraft.top }}
             onPointerDown={(event) => event.stopPropagation()}
             onChange={(event) => setDraft((current) => (current ? { ...current, value: event.target.value } : current))}

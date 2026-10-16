@@ -1,5 +1,5 @@
 import { ApiError } from './errors.ts'
-import { enqueueWrite } from '../lib/offline.ts'
+import { enqueueWrite, markReachable, markUnreachable } from '../lib/offline.ts'
 import type {
   ActivityEvent,
   AlignApi,
@@ -34,6 +34,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const canQueue = queueable(path, method)
 
   if (canQueue && typeof navigator !== 'undefined' && navigator.onLine === false) {
+    markUnreachable()
     try {
       enqueueWrite({ path, method, body })
     } catch {
@@ -51,6 +52,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     response = await fetch(path, { ...init, method, headers, credentials: 'include' })
   } catch {
     if (canQueue) {
+      markUnreachable()
       try {
         enqueueWrite({ path, method, body })
       } catch {
@@ -60,6 +62,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
     throw new ApiError(0, 'Network error. Check your connection and try again.')
   }
+  if (response.ok) markReachable()
   if (!response.ok) {
     let message = 'Request failed.'
     try {

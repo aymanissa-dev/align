@@ -928,15 +928,26 @@ export const mockApi = {
       const names = new Map(projects.map((project) => [project.id, project.name]))
       const visible = state.tasks.filter((task) => task.userId === user.id && names.has(task.projectId))
       const present = (task: StoredTask) => ({ ...publicTask(task), projectName: names.get(task.projectId) ?? '' })
+      const planned = visible.filter((task) => task.plannedFor === date)
+      const overdue = visible.filter(
+        (task) => !task.completed && Boolean(task.dueDate) && (task.dueDate ?? '') < date && task.plannedFor !== date,
+      )
+      const overdueIds = new Set(overdue.map((task) => task.id))
+      const carried = visible.filter(
+        (task) =>
+          !task.completed &&
+          Boolean(task.plannedFor) &&
+          (task.plannedFor ?? '') < date &&
+          !overdueIds.has(task.id) &&
+          !(task.dueDate && task.dueDate > date),
+      )
+      const taken = new Set([...planned, ...overdue, ...carried].map((task) => task.id))
       const data: TodayData = {
         date,
-        planned: visible.filter((task) => task.plannedFor === date).map(present),
-        carried: visible
-          .filter((task) => Boolean(task.plannedFor) && (task.plannedFor ?? '') < date && !task.completed)
-          .map(present),
-        available: visible
-          .filter((task) => !task.completed && task.plannedFor !== date && !(task.plannedFor && task.plannedFor < date))
-          .map(present),
+        planned: planned.map(present),
+        carried: carried.map(present),
+        overdue: overdue.map(present),
+        available: visible.filter((task) => !task.completed && !taken.has(task.id)).map(present),
         finished: visible
           .filter((task) => task.completed && task.completedOn === date && task.plannedFor !== date)
           .map(present),

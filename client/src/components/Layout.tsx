@@ -4,6 +4,7 @@ import { useAuth } from '../auth/auth-context.ts'
 import { cn } from '../lib/cn.ts'
 import { useMediaQuery } from '../hooks/useMediaQuery.ts'
 import { Eyebrow } from './chrome.tsx'
+import { OfflineBanner } from './OfflineBanner.tsx'
 import { IconClose, IconDashboard, IconMenu, IconNotes, IconProjects, IconSearch, IconSettings, IconToday } from './icons.tsx'
 import { NotificationBell } from './NotificationBell.tsx'
 import { ThemeToggle } from './ThemeControls.tsx'
@@ -18,7 +19,7 @@ const NAV = [
 
 function navClass(isActive: boolean): string {
   return cn(
-    'focus-ring flex items-center gap-2.5 border-l-2 px-3 py-2 text-sm',
+    'focus-ring flex min-h-11 items-center gap-2.5 border-l-2 px-3 py-2 text-sm',
     isActive
       ? 'border-neutral-950 bg-neutral-50 font-medium text-neutral-950'
       : 'border-transparent text-neutral-800 hover:bg-neutral-50 hover:text-neutral-950',
@@ -182,6 +183,7 @@ export function Layout({ children }: { children?: ReactNode }) {
       </aside>
 
       <main id="main" className="min-h-screen pt-14 md:pt-0 md:pl-64">
+        <OfflineBanner />
         <div key={location.pathname} className="page-enter mx-auto w-full max-w-5xl px-5 py-8 md:px-8 md:py-10">
           {children ?? <Outlet />}
         </div>

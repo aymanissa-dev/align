@@ -126,7 +126,47 @@ html.dark .hover\:text-neutral-600:hover {
 html.dark .text-neutral-500,
 html.dark .text-neutral-400,
 html.dark .placeholder\:text-neutral-400::placeholder {
-  color: #a3a3a3;
+  color: #d4d4d4;
+}
+
+.font-pixel.text-neutral-500,
+.font-pixel.text-neutral-400 {
+  color: #292929;
+}
+
+html.dark .font-pixel.text-neutral-500,
+html.dark .font-pixel.text-neutral-400 {
+  color: #f5f5f5;
+}
+
+html.dark .text-red-800,
+html.dark .text-red-700 {
+  color: #fecaca;
+}
+
+html.dark .border-red-800,
+html.dark .border-red-700 {
+  border-color: #fca5a5;
+}
+
+html.dark .text-amber-900,
+html.dark .text-amber-800 {
+  color: #fde68a;
+}
+
+html.dark .border-amber-800,
+html.dark .border-amber-900 {
+  border-color: #fcd34d;
+}
+
+.board-surface {
+  background-color: #f7f7f5;
+  color: #171717;
+}
+
+html.dark .board-surface {
+  background-color: #f7f7f5;
+  color: #171717;
 }
 
 html.dark .border-neutral-200,
@@ -173,7 +213,7 @@ html.dark .bg-neutral-900\/30 {
 }
 
 .site-header {
-  background: rgb(255 255 255 / 0.92);
+  background: rgb(255 255 255 / 0.96);
   color: #171717;
   border-bottom: 1px solid #e5e5e5;
   backdrop-filter: blur(16px);
@@ -188,7 +228,7 @@ html.dark .bg-neutral-900\/30 {
 }
 
 html.dark .site-header {
-  background: rgb(12 12 12 / 0.88);
+  background: rgb(12 12 12 / 0.96);
   color: #f5f5f5;
   border-bottom-color: #2a2a2a;
 }

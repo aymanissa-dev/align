@@ -28,18 +28,30 @@ export function todayRouter(): Router {
         projectName: names.get(task.projectId.toString()) ?? '',
       })
 
+      const planned = visible.filter((task) => task.plannedFor === date)
+      const overdue = visible.filter(
+        (task) => !task.completed && Boolean(task.dueDate) && (task.dueDate ?? '') < date && task.plannedFor !== date,
+      )
+      const overdueIds = new Set(overdue.map((task) => task.id))
+      const carried = visible.filter(
+        (task) =>
+          !task.completed &&
+          task.plannedFor != null &&
+          task.plannedFor < date &&
+          !overdueIds.has(task.id) &&
+          !(task.dueDate && task.dueDate > date),
+      )
+      const taken = new Set([...planned, ...overdue, ...carried].map((task) => task.id))
+      const available = visible.filter((task) => !task.completed && !taken.has(task.id))
+      const finished = visible.filter((task) => task.completed && task.completedOn === date && task.plannedFor !== date)
+
       res.json({
         date,
-        planned: visible.filter((task) => task.plannedFor === date).map(withProject),
-        carried: visible
-          .filter((task) => task.plannedFor != null && task.plannedFor < date && !task.completed)
-          .map(withProject),
-        available: visible
-          .filter((task) => !task.completed && task.plannedFor !== date && !(task.plannedFor && task.plannedFor < date))
-          .map(withProject),
-        finished: visible
-          .filter((task) => task.completed && task.completedOn === date && task.plannedFor !== date)
-          .map(withProject),
+        planned: planned.map(withProject),
+        carried: carried.map(withProject),
+        overdue: overdue.map(withProject),
+        available: available.map(withProject),
+        finished: finished.map(withProject),
       })
     }),
   )

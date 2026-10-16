@@ -128,7 +128,7 @@ function Editor({ note }: { note: Note }) {
   return (
     <div>
       <div className="flex items-center justify-between gap-4 border-b border-neutral-200 pb-4 text-sm">
-        <Link to="/notes" className="focus-ring font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase hover:text-neutral-950">
+        <Link to="/notes" className="focus-ring inline-flex min-h-11 items-center font-pixel text-[11px] tracking-[0.16em] text-neutral-800 uppercase hover:text-neutral-950">
           Notes
         </Link>
         <span className="border border-neutral-300 px-2 py-0.5 font-pixel text-[10px] tracking-[0.14em] text-neutral-600 uppercase" role="status">

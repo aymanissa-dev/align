@@ -51,10 +51,10 @@ export function DueBadge({ dueDate }: { dueDate: string | null | undefined }) {
   const state = dueState(dueDate)
   const date = formatDate(dueDate)
   if (state === 'later' || state === 'none') {
-    return <span className="shrink-0 font-mono text-xs text-neutral-500">{date}</span>
+    return <span className="font-mono text-xs text-neutral-700">{date}</span>
   }
   return (
-    <span className="inline-flex shrink-0 items-center gap-2">
+    <span className="inline-flex max-w-full flex-wrap items-center gap-x-2 gap-y-1">
       <span
         className={cn(
           'border px-1.5 py-0.5 font-pixel text-[10px] tracking-[0.14em] uppercase',
@@ -63,7 +63,7 @@ export function DueBadge({ dueDate }: { dueDate: string | null | undefined }) {
       >
         {state === 'overdue' ? 'Overdue' : 'Due soon'}
       </span>
-      <span className="font-mono text-xs text-neutral-500">{date}</span>
+      <span className="font-mono text-xs text-neutral-700">{date}</span>
     </span>
   )
 }
@@ -76,7 +76,7 @@ export function PriorityBadge({ priority }: { priority: TaskPriority }) {
         'border px-1.5 py-0.5 font-pixel text-[10px] tracking-[0.14em] uppercase',
         priority === 'urgent' && 'border-red-800 text-red-800',
         priority === 'high' && 'border-neutral-950 text-neutral-950',
-        priority === 'low' && 'border-neutral-300 text-neutral-500',
+        priority === 'low' && 'border-neutral-300 text-neutral-800',
       )}
     >
       {priority}

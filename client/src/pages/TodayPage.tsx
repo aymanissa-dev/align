@@ -1,15 +1,17 @@
-import { useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../api/index.ts'
+import { ApiError } from '../api/errors.ts'
 import type { TodayData, TodayTask } from '../api/types.ts'
 import { useToast } from '../components/toast-context.ts'
 import { DueBadge, PageHeader, PriorityBadge } from '../components/chrome.tsx'
-import { Button, CheckButton, EmptyState, ErrorState, Field, Input, ListSkeleton, Select } from '../components/ui.tsx'
+import { Button, CheckButton, ErrorState, Field, Input, ListSkeleton, Select } from '../components/ui.tsx'
 import { buttonClass } from '../lib/buttonClass.ts'
 import { localISODate, shiftISODate } from '../lib/due.ts'
-import { isEvening } from '../lib/format.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
+import { pendingTaskCreates, QUEUE_EVENT } from '../lib/offline.ts'
+import { groupToday } from '../lib/todayGroups.ts'
 import { useToggleTask } from '../hooks/useToggleTask.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 import { cn } from '../lib/cn.ts'
@@ -19,9 +21,15 @@ export function TodayPage() {
   const queryClient = useQueryClient()
   const toggle = useToggleTask()
   const date = localISODate()
-  const evening = isEvening()
-  const scheduleDate = evening ? shiftISODate(date, 1) : date
+  const tomorrow = shiftISODate(date, 1)
   useDocumentTitle('Today')
+  const [queueTick, setQueueTick] = useState(0)
+
+  useEffect(() => {
+    const sync = () => setQueueTick((value) => value + 1)
+    window.addEventListener(QUEUE_EVENT, sync)
+    return () => window.removeEventListener(QUEUE_EVENT, sync)
+  }, [])
 
   const today = useQuery({
     queryKey: ['today', date],
@@ -38,10 +46,11 @@ export function TodayPage() {
     onMutate: async (input) => {
       await queryClient.cancelQueries({ queryKey: ['today', date] })
       const previous = queryClient.getQueryData<TodayData>(['today', date])
-      if (previous) queryClient.setQueryData(['today', date], movePlanned(previous, input.id, input.plannedFor, date))
+      if (previous) queryClient.setQueryData(['today', date], stampPlan(previous, input.id, input.plannedFor))
       return { previous }
     },
     onError: (error, _input, context) => {
+      if (error instanceof ApiError && error.queued) return
       if (context?.previous) queryClient.setQueryData(['today', date], context.previous)
       toast(errorMessage(error))
     },
@@ -53,202 +62,235 @@ export function TodayPage() {
   const selectedProject = projectId || projects.data?.[0]?.id || ''
 
   const create = useMutation({
-    mutationFn: () => api.createTask(selectedProject, { title: title.trim(), plannedFor: scheduleDate }),
-    onSuccess: async () => {
+    mutationFn: (plannedFor: string) => api.createTask(selectedProject, { title: title.trim(), plannedFor }),
+    onSuccess: async (_task, plannedFor) => {
       setTitle('')
-      toast(evening ? 'Added for tomorrow' : 'Added for today')
+      toast(plannedFor === tomorrow ? 'Added for tomorrow' : 'Added for today')
       await queryClient.invalidateQueries({ queryKey: ['today', date] })
     },
-    onError: (error) => toast(errorMessage(error)),
+    onError: (error) => {
+      if (error instanceof ApiError && error.queued) {
+        setTitle('')
+        toast('Saved on this device. It will sync when you reconnect.')
+        return
+      }
+      toast(errorMessage(error))
+    },
   })
 
   if (today.isLoading) return <ListSkeleton />
   if (today.isError || !today.data) return <ErrorState onRetry={() => void today.refetch()} />
 
-  const { planned, carried, available } = today.data
-  const finished = today.data.finished ?? []
-  const done = [...planned.filter((task) => task.completed), ...finished.filter((task) => !planned.some((item) => item.id === task.id))]
-  const open = planned.filter((task) => !task.completed)
-  const empty = planned.length === 0 && carried.length === 0 && available.length === 0 && finished.length === 0
-  const nothingPlanned = planned.length === 0
+  const names = new Map((projects.data ?? []).map((project) => [project.id, project.name]))
+  const queued: TodayTask[] = pendingTaskCreates().map((task) => ({
+    id: task.id,
+    projectId: task.projectId,
+    projectName: names.get(task.projectId) ?? 'Queued',
+    title: task.title,
+    completed: false,
+    dueDate: task.dueDate,
+    priority: task.priority,
+    labelIds: task.labelIds,
+    plannedFor: task.plannedFor,
+    completedOn: null,
+    order: -1,
+    createdAt: '',
+    updatedAt: '',
+  }))
+  void queueTick
+  const grouped = groupToday(
+    {
+      ...today.data,
+      available: [...today.data.available, ...queued],
+    },
+    date,
+  )
 
   function onToggle(task: TodayTask) {
+    if (task.id.startsWith('queued:')) return
     toggle.mutate(
       { id: task.id, projectId: task.projectId, completed: task.completed },
       { onError: (error) => toast(errorMessage(error)) },
     )
   }
 
-  function onCreate(event: FormEvent) {
+  function onCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!selectedProject || !title.trim()) return
-    create.mutate()
+    const submitter = (event.nativeEvent as SubmitEvent).submitter
+    const plannedFor = submitter instanceof HTMLButtonElement && submitter.dataset.when === 'tomorrow' ? tomorrow : date
+    create.mutate(plannedFor)
   }
 
   return (
     <div>
       <PageHeader
-        eyebrow={evening ? 'Evening' : 'Morning'}
+        eyebrow="Today"
         title="Today"
-        description={
-          evening ? 'What got done, and what carries into tomorrow.' : 'Pick the tasks you intend to finish today.'
-        }
+        description="Finish what’s on today’s list. Overdue work stays visible, and you can schedule the rest for tomorrow."
       />
 
-      <form onSubmit={onCreate} className="mt-6 flex flex-col gap-2 border border-neutral-200 p-4 sm:flex-row sm:items-end">
-        <div className="sm:flex-1">
-        <Field label={evening ? 'Add a task for tomorrow' : 'Add a task for today'} htmlFor="today-task">
-          <Input
-            id="today-task"
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder="Task title"
-            aria-label="New task title"
-          />
-        </Field>
+      <form onSubmit={onCreate} className="mt-6 flex flex-col gap-3 border border-neutral-200 p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="sm:flex-1">
+            <Field label="Task" htmlFor="today-task">
+              <Input
+                id="today-task"
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                placeholder="Task title"
+                aria-label="New task title"
+              />
+            </Field>
+          </div>
+          <div className="sm:w-56">
+            <label htmlFor="today-project" className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">
+              Project
+            </label>
+            <Select
+              id="today-project"
+              className="mt-1.5"
+              aria-label="Project"
+              value={selectedProject}
+              onChange={(event) => setProjectId(event.target.value)}
+              disabled={!projects.data?.length}
+            >
+              {(projects.data ?? []).map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </Select>
+          </div>
         </div>
-        <div className="sm:w-56">
-          <label htmlFor="today-project" className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">
-            Project
-          </label>
-          <Select
-            id="today-project"
-            className="mt-1.5"
-            aria-label="Project"
-            value={selectedProject}
-            onChange={(event) => setProjectId(event.target.value)}
-            disabled={!projects.data?.length}
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button type="submit" data-when="today" disabled={create.isPending || !title.trim() || !selectedProject} className="min-h-11">
+            Add for today
+          </Button>
+          <Button
+            type="submit"
+            data-when="tomorrow"
+            variant="secondary"
+            disabled={create.isPending || !title.trim() || !selectedProject}
+            className="min-h-11"
           >
-            {(projects.data ?? []).map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </Select>
+            Add for tomorrow
+          </Button>
         </div>
-        <Button type="submit" disabled={create.isPending || !title.trim() || !selectedProject}>
-          {create.isPending ? 'Adding…' : 'Add task'}
-        </Button>
       </form>
 
-      {empty ? (
-        <div className="mt-6">
-          <EmptyState
-            title="Nothing planned"
-            body="Add a task above, or open a project and choose work for today."
-            action={
-              <Link to="/projects" className={buttonClass('primary')}>
-                Go to projects
-              </Link>
-            }
-          />
-        </div>
-      ) : (
-        <div className="mt-8 grid gap-8 lg:grid-cols-2">
-          <section className="border border-neutral-200">
-            <header className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
-              <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">
-                {evening ? 'Done' : 'On today’s list'}
-              </h2>
-              <span className="font-mono text-xs text-neutral-500">{evening ? done.length : planned.length}</span>
-            </header>
+      <div className="mt-8 grid gap-8 lg:grid-cols-2">
+        <div className="space-y-8">
+          <Section title="On today’s list" count={grouped.open.length}>
             <TaskList
-              tasks={evening ? done : planned}
-              empty={evening ? (nothingPlanned && finished.length === 0 ? 'Nothing planned for today.' : 'Nothing finished yet.') : 'Nothing chosen yet.'}
+              tasks={grouped.open}
+              empty="Nothing chosen yet."
               onToggle={onToggle}
-              action={
-                evening
-                  ? undefined
-                  : (task) =>
-                      task.completed ? null : (
-                        <button
-                          type="button"
-                          className="focus-ring inline-flex min-h-11 items-center px-2 text-xs text-neutral-800 hover:text-neutral-950"
-                          onClick={() => plan.mutate({ id: task.id, plannedFor: null })}
-                        >
-                          Remove
-                        </button>
-                      )
-              }
-            />
-            {evening ? (
-              <>
-                <h3 className="border-t border-neutral-200 px-4 py-3 font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">
-                  Still open
-                </h3>
-                <TaskList
-                  tasks={open}
-                  empty={nothingPlanned ? 'Nothing planned for today.' : 'Everything on today’s list is done.'}
-                  onToggle={onToggle}
-                />
-              </>
-            ) : null}
-          </section>
-
-          <div className="space-y-8">
-            <section className="border border-neutral-200">
-              <header className="border-b border-neutral-200 px-4 py-3">
-                <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Carried over</h2>
-              </header>
-              <TaskList
-                tasks={carried}
-                empty="Nothing left from earlier days."
-                onToggle={onToggle}
-                action={(task) => (
+              action={(task) =>
+                task.id.startsWith('queued:') ? null : (
                   <button
                     type="button"
                     className="focus-ring inline-flex min-h-11 items-center px-2 text-xs text-neutral-800 hover:text-neutral-950"
-                    onClick={() => plan.mutate({ id: task.id, plannedFor: date })}
+                    onClick={() => plan.mutate({ id: task.id, plannedFor: null })}
                   >
-                    Keep today
+                    Remove
                   </button>
-                )}
-              />
-            </section>
-
-            <section className="border border-neutral-200">
-              <header className="border-b border-neutral-200 px-4 py-3">
-                <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">
-                  {evening ? 'Add for tomorrow' : 'Choose for today'}
-                </h2>
-              </header>
-              <TaskList
-                tasks={available}
-                empty="No other open tasks."
-                onToggle={onToggle}
-                action={(task) => (
-                  <button
-                    type="button"
-                    className={cn(buttonClass('secondary'), 'min-h-11 px-3 text-xs')}
-                    onClick={() => plan.mutate({ id: task.id, plannedFor: scheduleDate })}
-                  >
-                    Add
-                  </button>
-                )}
-              />
-            </section>
-          </div>
+                )
+              }
+            />
+          </Section>
+          <Section title="Done" count={grouped.done.length}>
+            <TaskList tasks={grouped.done} empty="Nothing finished yet." onToggle={onToggle} />
+          </Section>
         </div>
-      )}
+        <div className="space-y-8">
+          <Section title="Overdue" count={grouped.overdue.length}>
+            <TaskList
+              tasks={grouped.overdue}
+              empty="Nothing overdue."
+              onToggle={onToggle}
+              action={(task) => (
+                <button
+                  type="button"
+                  className="focus-ring inline-flex min-h-11 items-center px-2 text-xs text-neutral-800 hover:text-neutral-950"
+                  onClick={() => plan.mutate({ id: task.id, plannedFor: date })}
+                >
+                  Today
+                </button>
+              )}
+            />
+          </Section>
+          <Section title="Carried over" count={grouped.carried.length}>
+            <TaskList
+              tasks={grouped.carried}
+              empty="Nothing left from earlier days."
+              onToggle={onToggle}
+              action={(task) => (
+                <button
+                  type="button"
+                  className="focus-ring inline-flex min-h-11 items-center px-2 text-xs text-neutral-800 hover:text-neutral-950"
+                  onClick={() => plan.mutate({ id: task.id, plannedFor: date })}
+                >
+                  Keep today
+                </button>
+              )}
+            />
+          </Section>
+          <Section title="Add for tomorrow" count={grouped.available.length}>
+            <TaskList
+              tasks={grouped.available}
+              empty="No other open tasks."
+              onToggle={onToggle}
+              action={(task) =>
+                task.id.startsWith('queued:') ? null : (
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className={cn(buttonClass('secondary'), 'min-h-11 px-3 text-xs')}
+                      onClick={() => plan.mutate({ id: task.id, plannedFor: date })}
+                    >
+                      Today
+                    </button>
+                    <button
+                      type="button"
+                      className={cn(buttonClass('primary'), 'min-h-11 px-3 text-xs')}
+                      onClick={() => plan.mutate({ id: task.id, plannedFor: tomorrow })}
+                    >
+                      Add for tomorrow
+                    </button>
+                  </div>
+                )
+              }
+            />
+          </Section>
+        </div>
+      </div>
     </div>
   )
 }
 
-function movePlanned(data: TodayData, id: string, plannedFor: string | null, date: string): TodayData {
-  const all = [...data.planned, ...data.carried, ...data.available, ...(data.finished ?? [])]
-  const task = all.find((item) => item.id === id)
-  if (!task) return data
-  const next = { ...task, plannedFor }
-  const without = (items: TodayTask[]) => items.filter((item) => item.id !== id)
-  const planned = without(data.planned)
-  const carried = without(data.carried)
-  const available = without(data.available)
-  const finished = without(data.finished ?? [])
-  if (plannedFor === date) planned.push(next)
-  else if (plannedFor && plannedFor < date && !next.completed) carried.push(next)
-  else if (!next.completed) available.push(next)
-  else if (next.completedOn === date) finished.push(next)
-  return { ...data, planned, carried, available, finished }
+function stampPlan(data: TodayData, id: string, plannedFor: string | null): TodayData {
+  const apply = (task: TodayTask): TodayTask => (task.id === id ? { ...task, plannedFor } : task)
+  return {
+    ...data,
+    planned: data.planned.map(apply),
+    carried: data.carried.map(apply),
+    overdue: (data.overdue ?? []).map(apply),
+    available: data.available.map(apply),
+    finished: (data.finished ?? []).map(apply),
+  }
+}
+
+function Section({ title, count, children }: { title: string; count: number; children: ReactNode }) {
+  return (
+    <section className="border border-neutral-200">
+      <header className="flex items-center justify-between gap-3 border-b border-neutral-200 px-4 py-3">
+        <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">{title}</h2>
+        <span className="font-mono text-xs text-neutral-800 tabular-nums">{count}</span>
+      </header>
+      {children}
+    </section>
+  )
 }
 
 function TaskList({
@@ -262,27 +304,41 @@ function TaskList({
   onToggle: (task: TodayTask) => void
   action?: (task: TodayTask) => ReactNode
 }) {
-  if (tasks.length === 0) return <p className="px-4 py-6 text-sm text-neutral-500">{empty}</p>
+  if (tasks.length === 0) return <p className="px-4 py-6 text-sm text-neutral-600">{empty}</p>
   return (
     <ul>
       {tasks.map((task) => (
-        <li key={task.id} className="flex items-center gap-2 border-b border-neutral-200 px-3 py-1 last:border-b-0">
-          <CheckButton
-            checked={task.completed}
-            label={task.completed ? `Mark “${task.title}” incomplete` : `Mark “${task.title}” complete`}
-            onChange={() => onToggle(task)}
-          />
-          <div className="min-w-0 flex-1 py-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className={cn('text-sm', task.completed ? 'text-neutral-400 line-through' : 'text-neutral-950')}>{task.title}</p>
-              <PriorityBadge priority={task.priority} />
+        <li
+          key={task.id}
+          className="flex flex-col gap-2 border-b border-neutral-200 px-4 py-3 last:border-b-0 sm:flex-row sm:items-center"
+        >
+          <div className="flex min-w-0 flex-1 items-start gap-2">
+            <CheckButton
+              checked={task.completed}
+              label={task.completed ? `Mark “${task.title}” incomplete` : `Mark “${task.title}” complete`}
+              onChange={() => onToggle(task)}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <p className={cn('text-sm break-words', task.completed ? 'text-neutral-400 line-through' : 'text-neutral-950')}>
+                  {task.title}
+                </p>
+                <PriorityBadge priority={task.priority} />
+                {task.id.startsWith('queued:') ? (
+                  <span className="font-pixel text-[10px] tracking-[0.14em] text-neutral-500 uppercase">Queued</span>
+                ) : null}
+              </div>
+              <Link to={`/projects/${task.projectId}`} className="focus-ring text-sm text-neutral-600 hover:text-neutral-950">
+                {task.projectName}
+              </Link>
+              {task.completed ? null : (
+                <div className="mt-1">
+                  <DueBadge dueDate={task.dueDate} />
+                </div>
+              )}
             </div>
-            <Link to={`/projects/${task.projectId}`} className="focus-ring text-sm text-neutral-500 hover:text-neutral-950">
-              {task.projectName}
-            </Link>
           </div>
-          {task.completed ? null : <DueBadge dueDate={task.dueDate} />}
-          {action ? <div className="shrink-0">{action(task)}</div> : null}
+          {action ? <div className="shrink-0 sm:pl-2">{action(task)}</div> : null}
         </li>
       ))}
     </ul>

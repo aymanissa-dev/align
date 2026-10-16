@@ -97,11 +97,13 @@ export function DashboardPage() {
                       <p className="text-sm text-neutral-950">{task.title}</p>
                       <PriorityBadge priority={task.priority} />
                     </div>
-                    <Link to={`/projects/${task.projectId}`} className="focus-ring text-sm text-neutral-500 hover:text-neutral-950">
+                    <Link to={`/projects/${task.projectId}`} className="focus-ring text-sm text-neutral-600 hover:text-neutral-950">
                       {task.projectName}
                     </Link>
+                    <div className="mt-1">
+                      <DueBadge dueDate={task.dueDate} />
+                    </div>
                   </div>
-                  <DueBadge dueDate={task.dueDate} />
                 </li>
               ))}
             </ul>
@@ -163,11 +165,13 @@ export function DashboardPage() {
                     />
                     <div className="min-w-0 flex-1">
                       <p className="text-sm text-neutral-950">{task.title}</p>
-                      <Link to={`/projects/${task.projectId}`} className="focus-ring text-sm text-neutral-500 hover:text-neutral-950">
+                      <Link to={`/projects/${task.projectId}`} className="focus-ring text-sm text-neutral-600 hover:text-neutral-950">
                         {task.projectName}
                       </Link>
+                      <div className="mt-1">
+                        <DueBadge dueDate={task.dueDate} />
+                      </div>
                     </div>
-                    <DueBadge dueDate={task.dueDate} />
                   </li>
                 ))}
               </ul>

@@ -34,4 +34,32 @@ describe('today planner', () => {
     expect((await agent.get('/api/today')).status).toBe(400)
     expect((await agent.patch(`/api/tasks/${second.body.id}`).send({ plannedFor: '15-10-2026' })).status).toBe(400)
   })
+
+  it('keeps future due dates out of carried work and lists overdue separately', async () => {
+    const { agent } = await registerUser()
+    const project = await agent.post('/api/projects').send({ name: 'Launch' })
+    const id = project.body.id as string
+    await agent.post(`/api/projects/${id}/tasks`).send({ title: 'Due tomorrow', dueDate: '2026-10-16' })
+    await agent.post(`/api/projects/${id}/tasks`).send({ title: 'Past due', dueDate: '2026-10-13' })
+    await agent
+      .post(`/api/projects/${id}/tasks`)
+      .send({ title: 'Planned early, due later', dueDate: '2026-10-20', plannedFor: '2026-10-10' })
+    const carried = await agent.post(`/api/projects/${id}/tasks`).send({ title: 'Still open from yesterday' })
+    await agent.patch(`/api/tasks/${carried.body.id}`).send({ plannedFor: '2026-10-14' })
+
+    const today = await agent.get('/api/today').query({ date: '2026-10-15' })
+    expect(today.status).toBe(200)
+    expect(today.body.overdue.map((task: { title: string }) => task.title)).toEqual(['Past due'])
+    expect(today.body.carried.map((task: { title: string }) => task.title)).toEqual(['Still open from yesterday'])
+    expect(today.body.available.map((task: { title: string }) => task.title)).toEqual([
+      'Due tomorrow',
+      'Planned early, due later',
+    ])
+
+    const past = today.body.overdue[0] as { id: string }
+    await agent.patch(`/api/tasks/${past.id}`).send({ completed: true, completedOn: '2026-10-15' })
+    const done = await agent.get('/api/today').query({ date: '2026-10-15' })
+    expect(done.body.overdue).toEqual([])
+    expect(done.body.finished.map((task: { title: string }) => task.title)).toEqual(['Past due'])
+  })
 })

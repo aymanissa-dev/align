@@ -23,7 +23,7 @@ export function ThemeToggle({ className }: { className?: string }) {
           role="radio"
           aria-checked={choice === item.value}
           className={cn(
-            'focus-ring flex-1 px-2.5 py-1.5 text-xs',
+            'focus-ring min-h-[44px] min-w-[44px] flex-1 px-3 text-xs',
             choice === item.value ? 'bg-neutral-950 text-white' : 'text-neutral-600 hover:bg-neutral-50',
           )}
           onClick={() => {

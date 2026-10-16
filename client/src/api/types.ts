@@ -131,6 +131,7 @@ export type TodayData = {
   date: string
   planned: TodayTask[]
   carried: TodayTask[]
+  overdue: TodayTask[]
   available: TodayTask[]
   finished: TodayTask[]
 }
