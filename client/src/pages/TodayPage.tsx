@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../api/index.ts'
@@ -10,7 +10,7 @@ import { Button, CheckButton, ErrorState, Field, Input, ListSkeleton, Select } f
 import { buttonClass } from '../lib/buttonClass.ts'
 import { localISODate, shiftISODate } from '../lib/due.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
-import { pendingTaskCreates, QUEUE_EVENT } from '../lib/offline.ts'
+import { getQueueVersion, pendingTaskCreates, subscribeQueue } from '../lib/offline.ts'
 import { groupToday } from '../lib/todayGroups.ts'
 import { useToggleTask } from '../hooks/useToggleTask.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
@@ -23,17 +23,11 @@ export function TodayPage() {
   const date = localISODate()
   const tomorrow = shiftISODate(date, 1)
   useDocumentTitle('Today')
-  const [queueTick, setQueueTick] = useState(0)
-
-  useEffect(() => {
-    const sync = () => setQueueTick((value) => value + 1)
-    window.addEventListener(QUEUE_EVENT, sync)
-    return () => window.removeEventListener(QUEUE_EVENT, sync)
-  }, [])
+  const queueVersion = useSyncExternalStore(subscribeQueue, getQueueVersion, getQueueVersion)
 
   const today = useQuery({
     queryKey: ['today', date],
-    queryFn: () => api.getToday(date),
+    queryFn: ({ signal }) => api.getToday(date, { signal }),
   })
   const projects = useQuery({
     queryKey: ['projects', 'active'],
@@ -92,7 +86,15 @@ export function TodayPage() {
   }
 
   const names = new Map((projects.data ?? []).map((project) => [project.id, project.name]))
-  const queued: TodayTask[] = pendingTaskCreates().map((task) => ({
+  void queueVersion
+  const known = new Set(
+    [...today.data.planned, ...today.data.carried, ...(today.data.overdue ?? []), ...today.data.available, ...(today.data.finished ?? [])].map(
+      (task) => task.id,
+    ),
+  )
+  const queued: TodayTask[] = pendingTaskCreates()
+    .filter((task) => !known.has(task.id))
+    .map((task) => ({
     id: task.id,
     projectId: task.projectId,
     projectName: names.get(task.projectId) ?? 'Queued',
@@ -107,7 +109,6 @@ export function TodayPage() {
     createdAt: '',
     updatedAt: '',
   }))
-  void queueTick
   const grouped = groupToday(
     {
       ...today.data,
@@ -353,7 +354,7 @@ function TaskList({
                   {task.title}
                 </p>
                 <PriorityBadge priority={task.priority} />
-                {task.id.startsWith('queued:') ? (
+                {pendingTaskCreates().some((item) => item.id === task.id) ? (
                   <span className="font-pixel text-[10px] tracking-[0.14em] text-neutral-500 uppercase">Queued</span>
                 ) : null}
               </div>

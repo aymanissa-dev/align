@@ -21,7 +21,7 @@ export function DashboardPage() {
 
   const dashboard = useQuery({
     queryKey: ['dashboard'],
-    queryFn: () => api.getDashboard(),
+    queryFn: ({ signal }) => api.getDashboard({ signal }),
   })
 
   if (!user) return null

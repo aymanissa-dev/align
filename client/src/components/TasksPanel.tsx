@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState, useSyncExternalStore, type FormEvent } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import type { Label, Task, TaskPriority } from '../api/types.ts'
 import { api } from '../api/index.ts'
@@ -12,7 +12,7 @@ import { cn } from '../lib/cn.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { LABEL_COLORS, PRIORITIES, sortTasks, type TaskSort } from '../lib/priority.ts'
 import { taskProgress } from '../lib/tasks.ts'
-import { dropQueuedWrite, pendingTaskCreates, QUEUE_EVENT } from '../lib/offline.ts'
+import { dropQueuedWrite, getQueueVersion, pendingTaskCreates, subscribeQueue } from '../lib/offline.ts'
 import { invalidateWorkspace } from '../queryClient.ts'
 
 export function TasksPanel({ projectId }: { projectId: string }) {
@@ -33,17 +33,11 @@ export function TasksPanel({ projectId }: { projectId: string }) {
   const [draftDue, setDraftDue] = useState('')
   const [draftPriority, setDraftPriority] = useState<TaskPriority>('medium')
   const [draftLabels, setDraftLabels] = useState<string[]>([])
-  const [queueTick, setQueueTick] = useState(0)
-
-  useEffect(() => {
-    const sync = () => setQueueTick((value) => value + 1)
-    window.addEventListener(QUEUE_EVENT, sync)
-    return () => window.removeEventListener(QUEUE_EVENT, sync)
-  }, [])
+  const queueVersion = useSyncExternalStore(subscribeQueue, getQueueVersion, getQueueVersion)
 
   const tasks = useQuery({
     queryKey: ['tasks', projectId],
-    queryFn: () => api.listTasks(projectId),
+    queryFn: ({ signal }) => api.listTasks(projectId, { signal }),
   })
   const labels = useQuery({
     queryKey: ['labels'],
@@ -163,9 +157,12 @@ export function TasksPanel({ projectId }: { projectId: string }) {
 
   const catalog = labels.data
   const byId = new Map(catalog.map((label) => [label.id, label]))
-  void queueTick
-  const queuedTasks: Task[] = pendingTaskCreates()
-    .filter((task) => task.projectId === projectId)
+  void queueVersion
+  const pending = pendingTaskCreates()
+  const pendingIds = new Set(pending.map((task) => task.id))
+  const cachedIds = new Set(tasks.data.map((task) => task.id))
+  const queuedTasks: Task[] = pending
+    .filter((task) => task.projectId === projectId && !cachedIds.has(task.id))
     .map((task) => ({
       id: task.id,
       projectId: task.projectId,
@@ -401,7 +398,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                           {task.title}
                         </p>
                         <PriorityBadge priority={task.priority} />
-                        {task.id.startsWith('queued:') ? (
+                        {pendingIds.has(task.id) ? (
                           <span className="font-pixel text-[10px] tracking-[0.14em] text-neutral-500 uppercase">Queued</span>
                         ) : null}
                         {task.labelIds.map((id) => {

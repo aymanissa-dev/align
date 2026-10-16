@@ -661,7 +661,7 @@ export const mockApi = {
     })
   },
 
-  async listTasks(projectId) {
+  async listTasks(projectId, _init?: RequestInit) {
     return read((state, user) => {
       findProject(state, user.id, projectId)
       return state.tasks
@@ -921,7 +921,7 @@ export const mockApi = {
     })
   },
 
-  async getToday(date) {
+  async getToday(date, _init?: RequestInit) {
     return read((state, user) => {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new ApiError(400, 'Use a valid date.')
       const projects = state.projects.filter((project) => project.userId === user.id && project.status === 'active')
@@ -956,7 +956,7 @@ export const mockApi = {
     })
   },
 
-  async getDashboard() {
+  async getDashboard(_init?: RequestInit) {
     return read((state, user) => {
       const projects = sortByUpdated(
         state.projects.filter((project) => project.userId === user.id && project.status === 'active'),

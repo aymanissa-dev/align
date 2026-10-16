@@ -1,6 +1,6 @@
 import { onlineManager } from '@tanstack/react-query'
 import { queryClient } from '../queryClient.ts'
-import type { Task, TodayData, TodayTask } from '../api/types.ts'
+import type { DashboardData, OpenTask, Project, Task, TodayData, TodayTask } from '../api/types.ts'
 
 export type QueuedWrite = {
   id: string
@@ -29,6 +29,22 @@ const FLUSH_TIMEOUT_MS = 8_000
 let ownerId: string | null = null
 let unreachable = false
 let flushPromise: Promise<FlushResult> | null = null
+let queueVersion = 0
+const queueListeners = new Set<() => void>()
+
+function touchQueue() {
+  queueVersion += 1
+  for (const listener of queueListeners) listener()
+}
+
+export function subscribeQueue(listener: () => void): () => void {
+  queueListeners.add(listener)
+  return () => queueListeners.delete(listener)
+}
+
+export function getQueueVersion(): number {
+  return queueVersion
+}
 
 export function setQueueOwner(userId: string | null) {
   ownerId = userId
@@ -85,6 +101,7 @@ function readQueue(): QueuedWrite[] {
 
 function writeQueue(items: QueuedWrite[]) {
   localStorage.setItem(KEY, JSON.stringify(items))
+  touchQueue()
   window.dispatchEvent(new CustomEvent(QUEUE_EVENT, { detail: items.length }))
 }
 
@@ -108,12 +125,14 @@ export function enqueueWrite(input: { path: string; method: string; body?: strin
   const existing = items.find((item) => signature(item) === signature(next))
   if (existing) return existing.id
   const id = crypto.randomUUID()
-  items.push({ id, ...next, attempts: 0 })
+  const queued = { id, ...next, attempts: 0 }
+  items.push(queued)
   try {
     writeQueue(items.slice(-40))
   } catch {
     throw new Error('offline-full')
   }
+  seedQueuedTask(queued)
   return id
 }
 
@@ -173,18 +192,133 @@ function isTask(value: unknown): value is Task {
   return typeof task.id === 'string' && typeof task.title === 'string' && typeof task.projectId === 'string'
 }
 
+function queuedTask(item: QueuedWrite): Task | null {
+  if (item.method !== 'POST' || !item.body) return null
+  const match = /^\/api\/projects\/([^/]+)\/tasks$/.exec(item.path)
+  if (!match) return null
+  try {
+    const body = JSON.parse(item.body) as { title?: unknown; dueDate?: unknown; priority?: unknown; labelIds?: unknown; plannedFor?: unknown }
+    if (typeof body.title !== 'string' || !body.title.trim()) return null
+    const priority = body.priority
+    return {
+      id: `queued:${item.id}`,
+      projectId: match[1],
+      title: body.title,
+      completed: false,
+      dueDate: typeof body.dueDate === 'string' ? body.dueDate : null,
+      priority: priority === 'low' || priority === 'high' || priority === 'urgent' || priority === 'medium' ? priority : 'medium',
+      labelIds: Array.isArray(body.labelIds) ? body.labelIds.filter((id): id is string => typeof id === 'string') : [],
+      plannedFor: typeof body.plannedFor === 'string' ? body.plannedFor : null,
+      completedOn: null,
+      order: -1,
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+    }
+  } catch {
+    return null
+  }
+}
+
+function isAdoptedTemp(id: string): boolean {
+  return id.startsWith('queued:') && adopted.has(id.slice('queued:'.length))
+}
+
+function projectNameFor(projectId: string): string {
+  const lists = queryClient.getQueriesData<Project[]>({ queryKey: ['projects'] })
+  for (const [, projects] of lists) {
+    const found = projects?.find((project) => project.id === projectId)
+    if (found) return found.name
+  }
+  return ''
+}
+
+function replaceQueuedId(value: unknown, localId: string, server: Task): unknown {
+  if (Array.isArray(value)) {
+    let changed = false
+    const next = value.map((item) => {
+      const mapped = replaceQueuedId(item, localId, server)
+      if (mapped !== item) changed = true
+      return mapped
+    })
+    return changed ? next : value
+  }
+  if (!value || typeof value !== 'object') return value
+  const record = value as Record<string, unknown>
+  if (record.id === localId) {
+    return typeof record.projectName === 'string' ? { ...server, projectName: record.projectName } : { ...server }
+  }
+  let changed = false
+  const next: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(record)) {
+    const mapped = replaceQueuedId(child, localId, server)
+    next[key] = mapped
+    if (mapped !== child) changed = true
+  }
+  return changed ? next : value
+}
+
+function placeToday(current: TodayData, task: Task, projectName: string, dropIds: string[]): TodayData {
+  const drop = (items: TodayTask[] | undefined) => (items ?? []).filter((entry) => !dropIds.includes(entry.id))
+  const row: TodayTask = { ...task, projectName }
+  const planned = drop(current.planned)
+  const available = drop(current.available)
+  const carried = drop(current.carried)
+  const overdue = drop(current.overdue)
+  const finished = drop(current.finished)
+  if (task.completed) finished.push(row)
+  else if (task.plannedFor === current.date) planned.push(row)
+  else available.push(row)
+  return { ...current, planned, carried, overdue, available, finished }
+}
+
+function seedQueuedTask(item: QueuedWrite) {
+  const task = queuedTask(item)
+  if (!task) return
+  const name = projectNameFor(task.projectId)
+  queryClient.setQueryData<Task[]>(['tasks', task.projectId], (current) => {
+    const list = (current ?? []).filter((entry) => entry.id !== task.id)
+    return [task, ...list]
+  })
+  queryClient.setQueriesData<TodayData>({ queryKey: ['today'] }, (current) =>
+    current ? placeToday(current, task, name || projectNameFor(task.projectId), [task.id]) : current,
+  )
+  queryClient.setQueryData<DashboardData>(['dashboard'], (current) => {
+    if (!current || task.completed) return current
+    const openTasks = current.openTasks.filter((entry) => entry.id !== task.id)
+    const row: OpenTask = {
+      id: task.id,
+      projectId: task.projectId,
+      projectName: name,
+      title: task.title,
+      dueDate: task.dueDate,
+      priority: task.priority,
+      completed: false,
+    }
+    return { ...current, openTasks: [row, ...openTasks] }
+  })
+}
+
 async function keepSyncedTask(item: QueuedWrite, response: Response) {
   if (item.method !== 'POST' || !/^\/api\/projects\/[^/]+\/tasks$/.test(item.path)) return
   let body: unknown
   try {
-    body = await response.json()
+    body = await response.clone().json()
   } catch {
     return
   }
   if (!isTask(body)) return
-  adopted.add(item.id)
   const task = body
   const localId = `queued:${item.id}`
+  adopted.add(item.id)
+  landed.push({ localId, task })
+  await queryClient.cancelQueries({ queryKey: ['tasks'] })
+  await queryClient.cancelQueries({ queryKey: ['today'] })
+  await queryClient.cancelQueries({ queryKey: ['dashboard'] })
+  const name = projectNameFor(task.projectId)
+  const swap = (current: unknown) => replaceQueuedId(current, localId, task)
+  queryClient.setQueriesData({ queryKey: ['tasks'] }, swap)
+  queryClient.setQueriesData({ queryKey: ['today'] }, swap)
+  queryClient.setQueriesData({ queryKey: ['dashboard'] }, swap)
   queryClient.setQueryData<Task[]>(['tasks', task.projectId], (current) => {
     const list = (current ?? []).filter((entry) => entry.id !== localId && entry.id !== task.id)
     return [task, ...list]
@@ -192,22 +326,25 @@ async function keepSyncedTask(item: QueuedWrite, response: Response) {
   queryClient.setQueriesData<TodayData>({ queryKey: ['today'] }, (current) => {
     if (!current) return current
     const named = [...current.planned, ...current.carried, ...(current.overdue ?? []), ...current.available, ...(current.finished ?? [])].find(
-      (entry) => entry.id === localId,
+      (entry) => entry.id === localId || entry.id === task.id,
     )
-    const row: TodayTask = { ...task, projectName: named?.projectName ?? '' }
-    const strip = (items: TodayTask[] | undefined) => (items ?? []).filter((entry) => entry.id !== localId && entry.id !== task.id)
-    const planned = strip(current.planned)
-    const available = strip(current.available)
-    if (task.plannedFor === current.date && !task.completed) planned.push(row)
-    else if (!task.completed) available.push(row)
-    return {
-      ...current,
-      planned,
-      carried: strip(current.carried),
-      overdue: strip(current.overdue),
-      available,
-      finished: task.completed ? [...strip(current.finished), row] : strip(current.finished),
+    return placeToday(current, task, named?.projectName || name, [localId, task.id])
+  })
+  queryClient.setQueryData<DashboardData>(['dashboard'], (current) => {
+    if (!current) return current
+    const previous = current.openTasks.find((entry) => entry.id === localId || entry.id === task.id)
+    const openTasks = current.openTasks.filter((entry) => entry.id !== localId && entry.id !== task.id)
+    if (task.completed) return { ...current, openTasks }
+    const row: OpenTask = {
+      id: task.id,
+      projectId: task.projectId,
+      projectName: previous?.projectName || name,
+      title: task.title,
+      dueDate: task.dueDate,
+      priority: task.priority,
+      completed: task.completed,
     }
+    return { ...current, openTasks: [row, ...openTasks] }
   })
 }
 
@@ -221,6 +358,41 @@ async function errorMessage(response: Response): Promise<string> {
   return `Couldn’t sync a saved change (${response.status}).`
 }
 
+const landed: { localId: string; task: Task }[] = []
+
+function healSyncedTasks() {
+  for (const { localId, task } of landed) {
+    const name = projectNameFor(task.projectId)
+    queryClient.setQueryData<Task[]>(['tasks', task.projectId], (current) => {
+      const list = (current ?? []).filter((entry) => entry.id !== localId && entry.id !== task.id && !isAdoptedTemp(entry.id))
+      return [task, ...list]
+    })
+    queryClient.setQueriesData<TodayData>({ queryKey: ['today'] }, (current) => {
+      if (!current) return current
+      const named = [...current.planned, ...current.carried, ...(current.overdue ?? []), ...current.available, ...(current.finished ?? [])].find(
+        (entry) => entry.id === localId || entry.id === task.id,
+      )
+      return placeToday(current, task, named?.projectName || name, [localId, task.id])
+    })
+    queryClient.setQueryData<DashboardData>(['dashboard'], (current) => {
+      if (!current) return current
+      const previous = current.openTasks.find((entry) => entry.id === localId || entry.id === task.id)
+      const openTasks = current.openTasks.filter((entry) => entry.id !== localId && entry.id !== task.id && !isAdoptedTemp(entry.id))
+      if (task.completed) return { ...current, openTasks }
+      const row: OpenTask = {
+        id: task.id,
+        projectId: task.projectId,
+        projectName: previous?.projectName || name,
+        title: task.title,
+        dueDate: task.dueDate,
+        priority: task.priority,
+        completed: task.completed,
+      }
+      return { ...current, openTasks: [row, ...openTasks] }
+    })
+  }
+}
+
 async function runFlush(): Promise<FlushResult> {
   const items = readQueue()
   const owned = mine(items)
@@ -229,7 +401,6 @@ async function runFlush(): Promise<FlushResult> {
   if (owned.length === 0) {
     return { synced: 0, rejected: [] }
   }
-  const others = items.filter((item) => item.userId !== ownerId)
   const left: QueuedWrite[] = []
   const rejected: string[] = []
   let synced = 0
@@ -272,7 +443,18 @@ async function runFlush(): Promise<FlushResult> {
       stop = true
     }
   }
-  writeQueue([...others, ...left])
+  const failed = new Map(left.map((entry) => [entry.id, entry]))
+  const finished = new Set(owned.filter((entry) => !failed.has(entry.id)).map((entry) => entry.id))
+  const next: QueuedWrite[] = []
+  for (const entry of readQueue()) {
+    if (finished.has(entry.id)) continue
+    next.push(failed.get(entry.id) ?? entry)
+  }
+  for (const entry of left) {
+    if (!next.some((item) => item.id === entry.id)) next.push(entry)
+  }
+  writeQueue(next)
+  healSyncedTasks()
   if (synced > 0 && left.length === 0) markReachable()
   return { synced, rejected }
 }
@@ -315,7 +497,9 @@ export function flushOfflineQueue(): Promise<FlushResult> {
         synced += result.synced
         rejected.push(...result.rejected)
       } while (again)
-      if (synced > 0) void queryClient.invalidateQueries()
+      if (synced > 0) {
+        void queryClient.invalidateQueries().finally(() => healSyncedTasks())
+      }
       return { synced, rejected }
     } finally {
       emitFlush({ phase: 'end', result: { synced, rejected } })

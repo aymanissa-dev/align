@@ -50,7 +50,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response
   try {
     response = await fetch(path, { ...init, method, headers, credentials: 'include' })
-  } catch {
+  } catch (error) {
+    if (init.signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw error
     if (canQueue) {
       markUnreachable()
       try {
@@ -139,8 +140,8 @@ export const httpApi = {
   async deleteProject(id) {
     await request<void>(`/api/projects/${id}`, { method: 'DELETE' })
   },
-  listTasks(projectId) {
-    return request<Task[]>(`/api/projects/${projectId}/tasks`)
+  listTasks(projectId, init?: RequestInit) {
+    return request<Task[]>(`/api/projects/${projectId}/tasks`, init)
   },
   createTask(projectId, input) {
     return request<Task>(`/api/projects/${projectId}/tasks`, {
@@ -208,11 +209,11 @@ export const httpApi = {
   async markAllNotificationsRead() {
     await request<void>('/api/notifications/read-all', { method: 'POST' })
   },
-  getToday(date) {
-    return request<TodayData>(withQuery('/api/today', { date }))
+  getToday(date, init?: RequestInit) {
+    return request<TodayData>(withQuery('/api/today', { date }), init)
   },
-  getDashboard() {
-    return request<DashboardData>('/api/dashboard')
+  getDashboard(init?: RequestInit) {
+    return request<DashboardData>('/api/dashboard', init)
   },
   search(query) {
     return request<SearchResults>(withQuery('/api/search', { q: query }))

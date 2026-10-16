@@ -264,7 +264,7 @@ export interface AlignApi {
   deleteProject(id: string): Promise<void>
 
   /** GET /api/projects/:id/tasks */
-  listTasks(projectId: string): Promise<Task[]>
+  listTasks(projectId: string, init?: RequestInit): Promise<Task[]>
   /** POST /api/projects/:id/tasks */
   createTask(projectId: string, input: TaskInput): Promise<Task>
   /** PATCH /api/tasks/:id */
@@ -308,9 +308,9 @@ export interface AlignApi {
   markAllNotificationsRead(): Promise<void>
 
   /** GET /api/today?date= */
-  getToday(date: string): Promise<TodayData>
+  getToday(date: string, init?: RequestInit): Promise<TodayData>
   /** GET /api/dashboard */
-  getDashboard(): Promise<DashboardData>
+  getDashboard(init?: RequestInit): Promise<DashboardData>
   /** GET /api/search?q= */
   search(query: string): Promise<SearchResults>
 }
