@@ -1,5 +1,6 @@
 import { onlineManager } from '@tanstack/react-query'
 import { queryClient } from '../queryClient.ts'
+import { refreshSession } from './refresh.ts'
 import type { DashboardData, OpenTask, Project, Task, TodayData, TodayTask } from '../api/types.ts'
 
 export type QueuedWrite = {
@@ -478,18 +479,34 @@ async function runFlush(): Promise<FlushResult> {
       continue
     }
     try {
-      const response = await fetch(item.path, {
-        method: item.method,
-        credentials: 'include',
-        keepalive: true,
-        cache: 'no-store',
-        signal: AbortSignal.timeout(FLUSH_TIMEOUT_MS),
-        headers: {
-          Accept: 'application/json',
-          ...(item.body ? { 'Content-Type': 'application/json' } : {}),
-        },
-        body: item.body,
-      })
+      const send = () =>
+        fetch(item.path, {
+          method: item.method,
+          credentials: 'include',
+          keepalive: true,
+          cache: 'no-store',
+          signal: AbortSignal.timeout(FLUSH_TIMEOUT_MS),
+          headers: {
+            Accept: 'application/json',
+            ...(item.body ? { 'Content-Type': 'application/json' } : {}),
+          },
+          body: item.body,
+        })
+      let response = await send()
+      if (response.status === 401) {
+        const refreshed = await refreshSession()
+        if (!refreshed) {
+          left.push({ ...item, attempts: item.attempts + 1, lastError: 'Sign in to finish syncing this change.' })
+          stop = true
+          continue
+        }
+        response = await send()
+        if (response.status === 401) {
+          left.push({ ...item, attempts: item.attempts + 1, lastError: 'Sign in to finish syncing this change.' })
+          stop = true
+          continue
+        }
+      }
       if (response.ok) {
         try {
           await keepSyncedTask(item, response)

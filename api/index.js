@@ -1,6 +1,7 @@
 // src/app.ts
 import express from "express";
 import rateLimit from "express-rate-limit";
+import helmet from "helmet";
 
 // src/db.ts
 import mongoose2 from "mongoose";
@@ -46,10 +47,15 @@ var userSchema = new Schema(
     passwordHash: { type: String, required: true, select: false },
     accent: { type: String, default: "#171717" },
     resetTokenHash: { type: String, select: false },
-    resetTokenExpires: { type: Date, select: false }
+    resetTokenExpires: { type: Date, select: false },
+    emailVerifiedAt: { type: Date, default: null },
+    failedLogins: { type: Number, default: 0 },
+    lockUntil: { type: Date, default: null },
+    googleId: { type: String }
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );
+userSchema.index({ googleId: 1 }, { unique: true, sparse: true });
 var projectSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
@@ -161,6 +167,47 @@ var whiteboardSchema = new Schema(
   { timestamps: true }
 );
 whiteboardSchema.index({ userId: 1, projectId: 1 }, { unique: true });
+var sessionSchema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    familyId: { type: String, required: true },
+    tokenHash: { type: String, required: true },
+    expiresAt: { type: Date, required: true },
+    revokedAt: { type: Date, default: null },
+    replacedBy: { type: Schema.Types.ObjectId, default: null },
+    rotatedAt: { type: Date, default: null },
+    userAgent: { type: String, default: "" },
+    lastSeenAt: { type: Date, required: true }
+  },
+  { timestamps: { createdAt: true, updatedAt: false } }
+);
+sessionSchema.index({ tokenHash: 1 }, { unique: true });
+sessionSchema.index({ userId: 1, revokedAt: 1, lastSeenAt: -1 });
+sessionSchema.index({ familyId: 1 });
+sessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+var tokenSchema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    type: { type: String, enum: ["verify", "reset"], required: true },
+    tokenHash: { type: String, required: true },
+    expiresAt: { type: Date, required: true },
+    usedAt: { type: Date, default: null }
+  },
+  { timestamps: { createdAt: true, updatedAt: false } }
+);
+tokenSchema.index({ tokenHash: 1 }, { unique: true });
+tokenSchema.index({ userId: 1, type: 1 });
+tokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+var rateLimitSchema = new Schema(
+  {
+    key: { type: String, required: true },
+    count: { type: Number, required: true, default: 0 },
+    expiresAt: { type: Date, required: true }
+  },
+  { timestamps: false }
+);
+rateLimitSchema.index({ key: 1 }, { unique: true });
+rateLimitSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 slowQueries(userSchema, "User");
 slowQueries(projectSchema, "Project");
 slowQueries(labelSchema, "Label");
@@ -169,6 +216,9 @@ slowQueries(noteSchema, "Note");
 slowQueries(activitySchema, "Activity");
 slowQueries(notificationSchema, "Notification");
 slowQueries(whiteboardSchema, "Whiteboard");
+slowQueries(sessionSchema, "Session");
+slowQueries(tokenSchema, "Token");
+slowQueries(rateLimitSchema, "RateLimit");
 function compile(name, factory) {
   const existing = mongoose.models[name];
   if (existing) return existing;
@@ -182,6 +232,9 @@ var Note = compile("Note", () => model("Note", noteSchema));
 var Activity = compile("Activity", () => model("Activity", activitySchema));
 var Notification = compile("Notification", () => model("Notification", notificationSchema));
 var Whiteboard = compile("Whiteboard", () => model("Whiteboard", whiteboardSchema));
+var Session = compile("Session", () => model("Session", sessionSchema));
+var AuthToken = compile("AuthToken", () => model("AuthToken", tokenSchema));
+var RateLimit = compile("RateLimit", () => model("RateLimit", rateLimitSchema));
 
 // src/db.ts
 var globalCache = globalThis;
@@ -199,7 +252,10 @@ function ensureIndexes() {
     Note.syncIndexes(),
     Activity.syncIndexes(),
     Notification.syncIndexes(),
-    Whiteboard.syncIndexes()
+    Whiteboard.syncIndexes(),
+    Session.syncIndexes(),
+    AuthToken.syncIndexes(),
+    RateLimit.syncIndexes()
   ]).then(() => void 0).catch((error) => {
     indexesReady = null;
     throw error;
@@ -255,9 +311,14 @@ async function connectDb() {
 import { ZodError } from "zod";
 
 // src/session.ts
+import { createHash, randomBytes } from "node:crypto";
 import jwt from "jsonwebtoken";
-var COOKIE = "token";
-var WEEK_MS = 7 * 24 * 60 * 60 * 1e3;
+import "mongoose";
+var ACCESS_COOKIE = "token";
+var REFRESH_COOKIE = "refresh";
+var ACCESS_MS = 15 * 60 * 1e3;
+var REFRESH_MS = 30 * 24 * 60 * 60 * 1e3;
+var REUSE_GRACE_MS = process.env.NODE_ENV === "test" ? 0 : 15e3;
 function secret() {
   const value = process.env.JWT_SECRET;
   if (!value) throw new HttpError(500, "Auth is not configured.");
@@ -271,7 +332,7 @@ function cookieBase() {
     path: "/"
   };
 }
-function readCookie(header, name = COOKIE) {
+function readCookie(header, name = ACCESS_COOKIE) {
   if (!header) return void 0;
   for (const part of header.split(";")) {
     const separator = part.indexOf("=");
@@ -287,23 +348,76 @@ function readCookie(header, name = COOKIE) {
   }
   return void 0;
 }
-function setSession(res, userId) {
-  const token = jwt.sign({ sub: userId }, secret(), { expiresIn: "7d" });
-  res.cookie(COOKIE, token, { ...cookieBase(), maxAge: WEEK_MS });
+function hashToken(token) {
+  return createHash("sha256").update(token).digest("hex");
 }
 function clearSession(res) {
-  res.clearCookie(COOKIE, cookieBase());
+  res.clearCookie(ACCESS_COOKIE, cookieBase());
+  res.clearCookie(REFRESH_COOKIE, cookieBase());
 }
-function userIdFromRequest(req) {
+function writeCookies(res, userId, sessionId, refresh) {
+  const access = jwt.sign({ sub: userId, sid: sessionId, typ: "access" }, secret(), { expiresIn: "15m" });
+  res.cookie(ACCESS_COOKIE, access, { ...cookieBase(), maxAge: ACCESS_MS });
+  res.cookie(REFRESH_COOKIE, refresh, { ...cookieBase(), maxAge: REFRESH_MS });
+}
+async function startSession(res, userId, userAgent) {
+  await issueSession(res, userId, randomBytes(16).toString("hex"), userAgent);
+}
+async function issueSession(res, userId, familyId, userAgent, previousId) {
+  const refresh = randomBytes(32).toString("hex");
+  const session = await Session.create({
+    userId,
+    familyId,
+    tokenHash: hashToken(refresh),
+    expiresAt: new Date(Date.now() + REFRESH_MS),
+    userAgent: (userAgent ?? "").slice(0, 300),
+    lastSeenAt: /* @__PURE__ */ new Date()
+  });
+  if (previousId) {
+    await Session.updateOne({ _id: previousId }, { replacedBy: session._id, rotatedAt: /* @__PURE__ */ new Date() });
+  }
+  writeCookies(res, userId, session.id, refresh);
+}
+function accessFromRequest(req) {
   const token = readCookie(req.headers.cookie);
   if (!token) return null;
   try {
     const payload = jwt.verify(token, secret());
-    if (typeof payload === "string" || typeof payload.sub !== "string") return null;
-    return payload.sub;
+    if (typeof payload === "string" || payload.typ !== "access") return null;
+    if (typeof payload.sub !== "string" || typeof payload.sid !== "string") return null;
+    return { userId: payload.sub, sid: payload.sid };
   } catch {
     return null;
   }
+}
+async function rotateRefresh(req, res) {
+  const raw = readCookie(req.headers.cookie, REFRESH_COOKIE);
+  if (!raw) return null;
+  const current = await Session.findOne({ tokenHash: hashToken(raw) });
+  if (!current || current.revokedAt || current.expiresAt.getTime() <= Date.now()) {
+    clearSession(res);
+    return null;
+  }
+  if (current.replacedBy) {
+    const rotatedAt = current.rotatedAt?.getTime() ?? 0;
+    if (Date.now() - rotatedAt > REUSE_GRACE_MS) {
+      await Session.updateMany({ familyId: current.familyId, revokedAt: null }, { revokedAt: /* @__PURE__ */ new Date() });
+      clearSession(res);
+    }
+    return null;
+  }
+  await issueSession(res, current.userId.toString(), current.familyId, current.userAgent, current._id);
+  return current.userId.toString();
+}
+async function revokeRefreshCookie(req) {
+  const raw = readCookie(req.headers.cookie, REFRESH_COOKIE);
+  if (!raw) return;
+  await Session.updateOne({ tokenHash: hashToken(raw), revokedAt: null }, { revokedAt: /* @__PURE__ */ new Date() });
+}
+function deviceLabel(userAgent) {
+  const browser = /Edg\//.test(userAgent) ? "Edge" : /Chrome\//.test(userAgent) ? "Chrome" : /Firefox\//.test(userAgent) ? "Firefox" : /Safari\//.test(userAgent) ? "Safari" : "Browser";
+  const os = /Windows/.test(userAgent) ? "Windows" : /Mac OS/.test(userAgent) ? "macOS" : /Android/.test(userAgent) ? "Android" : /iPhone|iPad/.test(userAgent) ? "iOS" : /Linux/.test(userAgent) ? "Linux" : "Unknown device";
+  return `${browser} on ${os}`;
 }
 
 // src/middleware.ts
@@ -313,17 +427,25 @@ function asyncHandler(fn) {
   };
 }
 var requireAuth = (req, _res, next) => {
-  const userId = userIdFromRequest(req);
-  if (!userId) {
+  const access = accessFromRequest(req);
+  if (!access) {
     next(new HttpError(401, "Sign in to continue."));
     return;
   }
-  User.findById(userId).then((user) => {
-    if (!user) {
+  Promise.all([User.findById(access.userId), Session.findById(access.sid)]).then(([user, session]) => {
+    if (!user || !session || session.revokedAt || session.replacedBy || session.userId.toString() !== user.id) {
+      next(new HttpError(401, "Sign in to continue."));
+      return;
+    }
+    if (session.expiresAt.getTime() <= Date.now()) {
       next(new HttpError(401, "Sign in to continue."));
       return;
     }
     req.userId = user.id;
+    req.sessionId = session.id;
+    if (Date.now() - session.lastSeenAt.getTime() > 6e4) {
+      void Session.updateOne({ _id: session._id }, { lastSeenAt: /* @__PURE__ */ new Date() }).catch(() => void 0);
+    }
     next();
   }).catch(next);
 };
@@ -353,7 +475,12 @@ var errorHandler = (error, _req, res, _next) => {
     return;
   }
   if (isRecord(error) && error.code === 11e3) {
-    res.status(409).json({ error: "An account with this email already exists." });
+    const pattern = isRecord(error.keyPattern) ? error.keyPattern : null;
+    if (!pattern || "email" in pattern) {
+      res.status(409).json({ error: "An account with this email already exists." });
+      return;
+    }
+    res.status(409).json({ error: "That record already exists." });
     return;
   }
   if (isRecord(error) && error.name === "CastError") {
@@ -364,16 +491,95 @@ var errorHandler = (error, _req, res, _next) => {
   res.status(500).json({ error: "Something went wrong. Try again." });
 };
 
+// src/security.ts
+var EXTRA_ORIGINS = /* @__PURE__ */ new Set([
+  "https://align-hazel-kappa.vercel.app",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173"
+]);
+function originOf(value) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+function allowed(origin, host) {
+  if (EXTRA_ORIGINS.has(origin)) return true;
+  if (!host) return false;
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+var guardOrigin = (req, res, next) => {
+  const header = req.headers.origin;
+  const origin = typeof header === "string" && header !== "null" ? header : "";
+  res.setHeader("Access-Control-Expose-Headers", "X-Next-Cursor");
+  if (origin) {
+    if (!allowed(origin, req.get("host"))) {
+      res.status(403).json({ error: "Origin is not allowed." });
+      return;
+    }
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Vary", "Origin");
+  }
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Accept, Content-Type");
+    res.status(204).end();
+    return;
+  }
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    const referer = req.get("referer");
+    const source = origin || (referer ? originOf(referer) : "");
+    if (source && !allowed(source, req.get("host"))) {
+      res.status(403).json({ error: "Origin is not allowed." });
+      return;
+    }
+  }
+  next();
+};
+
 // src/routes/auth.ts
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes as randomBytes3 } from "node:crypto";
 import { Router } from "express";
+import jwt2 from "jsonwebtoken";
+
+// src/mail.ts
+async function deliverMail(input) {
+  const key = process.env.RESEND_API_KEY;
+  const from = process.env.MAIL_FROM;
+  if (!key || !from) return false;
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ from, to: [input.to], subject: input.subject, text: input.text }),
+      signal: AbortSignal.timeout(8e3)
+    });
+    if (!response.ok) {
+      console.error(JSON.stringify({ msg: "mail-failed", status: response.status }));
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error(error);
+    return false;
+  }
+}
 
 // src/password.ts
 import bcrypt from "bcryptjs";
 function bcryptRounds() {
   const configured = process.env.BCRYPT_ROUNDS;
   if (configured && /^\d+$/.test(configured)) return Number(configured);
-  return process.env.NODE_ENV === "test" ? 4 : 10;
+  return process.env.NODE_ENV === "test" ? 4 : 12;
 }
 function hashPassword(password2) {
   return bcrypt.hash(password2, bcryptRounds());
@@ -387,6 +593,45 @@ function dummyPasswordHash() {
   return dummyHash;
 }
 
+// src/rateLimit.ts
+var WINDOW_MS = 15 * 60 * 1e3;
+var PRODUCTION_MAX = {
+  login: 10,
+  register: 5,
+  forgot: 5,
+  reset: 10
+};
+function duplicateKey(error) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === 11e3;
+}
+async function hit(key, max) {
+  const now = Date.now();
+  const expiresAt = new Date(now + WINDOW_MS);
+  let doc;
+  try {
+    doc = await RateLimit.findOneAndUpdate(
+      { key },
+      { $inc: { count: 1 }, $setOnInsert: { expiresAt } },
+      { upsert: true, new: true }
+    );
+  } catch (error) {
+    if (!duplicateKey(error)) throw error;
+    doc = await RateLimit.findOneAndUpdate({ key }, { $inc: { count: 1 } }, { new: true });
+  }
+  if (doc && doc.expiresAt.getTime() <= now) {
+    doc = await RateLimit.findOneAndUpdate({ key }, { $set: { count: 1, expiresAt } }, { new: true });
+  }
+  return (doc?.count ?? 1) > max;
+}
+async function enforceAuthLimit(route, ip, email2) {
+  const max = process.env.NODE_ENV === "production" ? PRODUCTION_MAX[route] : 1e3;
+  const keys = [`${route}:ip:${ip || "unknown"}`];
+  if (email2) keys.push(`${route}:email:${email2}`);
+  for (const key of keys) {
+    if (await hit(key, max)) throw new HttpError(429, "Too many attempts. Try again later.");
+  }
+}
+
 // src/serialize.ts
 function docId(doc) {
   return doc.id || doc._id.toString();
@@ -397,6 +642,7 @@ function publicUser(user) {
     name: user.name,
     email: user.email,
     accent: user.accent || "#171717",
+    emailVerified: user.emailVerifiedAt !== null,
     createdAt: user.createdAt.toISOString()
   };
 }
@@ -467,6 +713,34 @@ function publicNote(note) {
   };
 }
 
+// src/tokens.ts
+import { randomBytes as randomBytes2 } from "node:crypto";
+var HOUR_MS = 60 * 60 * 1e3;
+async function issueAuthToken(userId, type) {
+  const token = randomBytes2(32).toString("hex");
+  const ttl = type === "verify" ? 24 * HOUR_MS : HOUR_MS;
+  await AuthToken.deleteMany({ userId, type, usedAt: null });
+  await AuthToken.create({
+    userId,
+    type,
+    tokenHash: hashToken(token),
+    expiresAt: new Date(Date.now() + ttl)
+  });
+  return token;
+}
+async function consumeAuthToken(token, type) {
+  const found = await AuthToken.findOne({
+    tokenHash: hashToken(token),
+    type,
+    usedAt: null,
+    expiresAt: { $gt: /* @__PURE__ */ new Date() }
+  });
+  if (!found) return null;
+  found.usedAt = /* @__PURE__ */ new Date();
+  await found.save();
+  return found.userId.toString();
+}
+
 // src/validate.ts
 import { z } from "zod";
 function parseBody(schema, body) {
@@ -519,6 +793,9 @@ var profileSchema = z.object({
   accent: accentColor.optional()
 }).refine((value) => value.name !== void 0 || value.accent !== void 0, {
   message: "Nothing to update."
+});
+var verifySchema = z.object({
+  token: z.string({ required_error: "This verification link is invalid or has expired." }).trim().min(20, "This verification link is invalid or has expired.").max(200, "This verification link is invalid or has expired.")
 });
 var passwordSchema = z.object({
   currentPassword: z.string({
@@ -633,25 +910,54 @@ function normalizeDueDate(value) {
 }
 
 // src/routes/auth.ts
-function hashResetToken(token) {
-  return createHash("sha256").update(token).digest("hex");
+var LOCK_AFTER = 5;
+function clientIp(req) {
+  return req.ip || req.socket.remoteAddress || "unknown";
+}
+function appOrigin(req) {
+  const configured = process.env.APP_ORIGIN?.replace(/\/$/, "");
+  if (configured) return configured;
+  return `${req.protocol}://${req.get("host")}`;
+}
+function googleConfigured() {
+  return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+}
+async function sendOrReveal(email2, subject, text2) {
+  return deliverMail({ to: email2, subject, text: text2 });
+}
+function lockDelay(failures) {
+  const steps = Math.min(6, Math.max(1, failures - LOCK_AFTER + 1));
+  return Math.min(60, 2 ** steps) * 60 * 1e3;
 }
 function authRouter(limiter) {
   const router = Router();
+  router.get("/providers", (_req, res) => {
+    res.json({ google: googleConfigured() });
+  });
   router.post(
     "/register",
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(registerSchema, req.body);
+      await enforceAuthLimit("register", clientIp(req), input.email);
       const existing = await User.findOne({ email: input.email });
       if (existing) throw new HttpError(409, "An account with this email already exists.");
       const user = await User.create({
         name: input.name,
         email: input.email,
-        passwordHash: await hashPassword(input.password)
+        passwordHash: await hashPassword(input.password),
+        emailVerifiedAt: null
       });
-      setSession(res, user.id);
-      res.status(201).json(publicUser(user));
+      const verifyToken = await issueAuthToken(user.id, "verify");
+      const link = `${appOrigin(req)}/verify?token=${encodeURIComponent(verifyToken)}`;
+      const mailed = await sendOrReveal(
+        user.email,
+        "Verify your Align email",
+        `Confirm your email by opening this link within 24 hours:
+${link}`
+      );
+      await startSession(res, user.id, req.get("user-agent"));
+      res.status(201).json(mailed ? publicUser(user) : { ...publicUser(user), verifyToken });
     })
   );
   router.post(
@@ -659,18 +965,44 @@ function authRouter(limiter) {
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(loginSchema, req.body);
+      await enforceAuthLimit("login", clientIp(req), input.email);
       const user = await User.findOne({ email: input.email }).select("+passwordHash");
+      if (user?.lockUntil && user.lockUntil.getTime() > Date.now()) {
+        throw new HttpError(429, "Too many attempts. Try again later.");
+      }
       const hash = user?.passwordHash ?? await dummyPasswordHash();
       const matches = await checkPassword(input.password, hash);
-      if (!user || !matches) throw new HttpError(401, "Email or password is incorrect.");
-      setSession(res, user.id);
+      if (!user || !matches) {
+        if (user) {
+          user.failedLogins = (user.failedLogins ?? 0) + 1;
+          if (user.failedLogins >= LOCK_AFTER) user.lockUntil = new Date(Date.now() + lockDelay(user.failedLogins));
+          await user.save();
+        }
+        throw new HttpError(401, "Email or password is incorrect.");
+      }
+      if (user.failedLogins || user.lockUntil) {
+        user.failedLogins = 0;
+        user.lockUntil = null;
+        await user.save();
+      }
+      await startSession(res, user.id, req.get("user-agent"));
       res.json(publicUser(user));
     })
   );
   router.get(
     "/session",
     asyncHandler(async (req, res) => {
-      const userId = userIdFromRequest(req);
+      const access = accessFromRequest(req);
+      if (access) {
+        const session = await Session.findById(access.sid);
+        const current = session && !session.revokedAt && !session.replacedBy && session.expiresAt.getTime() > Date.now() && session.userId.toString() === access.userId;
+        if (current) {
+          const user2 = await User.findById(access.userId);
+          res.json({ user: user2 ? publicUser(user2) : null });
+          return;
+        }
+      }
+      const userId = await rotateRefresh(req, res);
       if (!userId) {
         res.json({ user: null });
         return;
@@ -680,20 +1012,35 @@ function authRouter(limiter) {
     })
   );
   router.post(
+    "/refresh",
+    asyncHandler(async (req, res) => {
+      const userId = await rotateRefresh(req, res);
+      if (!userId) throw new HttpError(401, "Sign in to continue.");
+      const user = await User.findById(userId);
+      if (!user) throw new HttpError(401, "Sign in to continue.");
+      res.json(publicUser(user));
+    })
+  );
+  router.post(
     "/forgot",
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(forgotSchema, req.body);
-      const user = await User.findOne({ email: input.email }).select("+resetTokenHash +resetTokenExpires");
+      await enforceAuthLimit("forgot", clientIp(req), input.email);
+      const user = await User.findOne({ email: input.email });
       const body = {
         message: "If an account exists for that email, a reset link is ready."
       };
       if (user) {
-        const resetToken = randomBytes(32).toString("hex");
-        user.resetTokenHash = hashResetToken(resetToken);
-        user.resetTokenExpires = new Date(Date.now() + 60 * 60 * 1e3);
-        await user.save();
-        if (!process.env.SMTP_HOST) body.resetToken = resetToken;
+        const resetToken = await issueAuthToken(user.id, "reset");
+        const link = `${appOrigin(req)}/reset?token=${encodeURIComponent(resetToken)}`;
+        const mailed = await sendOrReveal(
+          user.email,
+          "Reset your Align password",
+          `Reset your password by opening this link within one hour:
+${link}`
+        );
+        if (!mailed) body.resetToken = resetToken;
       }
       res.json(body);
     })
@@ -703,24 +1050,197 @@ function authRouter(limiter) {
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(resetSchema, req.body);
-      const user = await User.findOne({
-        resetTokenHash: hashResetToken(input.token),
-        resetTokenExpires: { $gt: /* @__PURE__ */ new Date() }
-      }).select("+passwordHash +resetTokenHash +resetTokenExpires");
+      await enforceAuthLimit("reset", clientIp(req));
+      const userId = await consumeAuthToken(input.token, "reset");
+      const user = userId ? await User.findById(userId).select("+passwordHash") : null;
       if (!user) throw new HttpError(400, "This reset link is invalid or has expired.");
       user.passwordHash = await hashPassword(input.password);
-      user.set("resetTokenHash", void 0);
-      user.set("resetTokenExpires", void 0);
+      user.failedLogins = 0;
+      user.lockUntil = null;
       await user.save();
-      setSession(res, user.id);
+      await Session.updateMany({ userId: user._id, revokedAt: null }, { revokedAt: /* @__PURE__ */ new Date() });
+      await startSession(res, user.id, req.get("user-agent"));
       res.json(publicUser(user));
     })
   );
   router.post(
+    "/verify",
+    asyncHandler(async (req, res) => {
+      const input = parseBody(verifySchema, req.body);
+      const userId = await consumeAuthToken(input.token, "verify");
+      const user = userId ? await User.findById(userId) : null;
+      if (!user) throw new HttpError(400, "This verification link is invalid or has expired.");
+      if (!user.emailVerifiedAt) user.emailVerifiedAt = /* @__PURE__ */ new Date();
+      await user.save();
+      res.json(publicUser(user));
+    })
+  );
+  router.post(
+    "/verify/send",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const user = await User.findById(currentUserId(req));
+      if (!user) throw new HttpError(401, "Sign in to continue.");
+      if (user.emailVerifiedAt) {
+        res.json({ message: "This email is already verified." });
+        return;
+      }
+      const verifyToken = await issueAuthToken(user.id, "verify");
+      const link = `${appOrigin(req)}/verify?token=${encodeURIComponent(verifyToken)}`;
+      const mailed = await sendOrReveal(
+        user.email,
+        "Verify your Align email",
+        `Confirm your email by opening this link within 24 hours:
+${link}`
+      );
+      res.json(mailed ? { message: "Verification link sent." } : { message: "Verification link ready.", verifyToken });
+    })
+  );
+  router.post(
     "/logout",
-    asyncHandler(async (_req, res) => {
+    asyncHandler(async (req, res) => {
+      try {
+        await revokeRefreshCookie(req);
+      } catch {
+      }
       clearSession(res);
       res.status(204).send();
+    })
+  );
+  router.get(
+    "/sessions",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const sessions = await Session.find({
+        userId: currentUserId(req),
+        revokedAt: null,
+        replacedBy: null,
+        expiresAt: { $gt: /* @__PURE__ */ new Date() }
+      }).select("userAgent lastSeenAt createdAt").sort({ lastSeenAt: -1 }).lean();
+      res.json(
+        sessions.map((session) => ({
+          id: session._id.toString(),
+          current: session._id.toString() === req.sessionId,
+          device: deviceLabel(session.userAgent || ""),
+          lastSeenAt: session.lastSeenAt.toISOString(),
+          createdAt: session.createdAt.toISOString()
+        }))
+      );
+    })
+  );
+  router.delete(
+    "/sessions/:id",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const session = await Session.findOne({
+        _id: req.params.id,
+        userId: currentUserId(req),
+        revokedAt: null
+      });
+      if (!session || session.replacedBy) throw new HttpError(404, "Session not found.");
+      session.revokedAt = /* @__PURE__ */ new Date();
+      await session.save();
+      if (session.id === req.sessionId) clearSession(res);
+      res.status(204).send();
+    })
+  );
+  router.post(
+    "/sessions/revoke-all",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      await Session.updateMany({ userId: currentUserId(req), revokedAt: null }, { revokedAt: /* @__PURE__ */ new Date() });
+      clearSession(res);
+      res.status(204).send();
+    })
+  );
+  router.get(
+    "/google",
+    asyncHandler(async (req, res) => {
+      if (!googleConfigured()) throw new HttpError(404, "Google sign-in is not configured.");
+      const state = jwt2.sign({ typ: "google" }, process.env.JWT_SECRET ?? "", { expiresIn: "10m" });
+      const redirect = `${appOrigin(req)}/api/auth/google/callback`;
+      const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+      url.searchParams.set("client_id", process.env.GOOGLE_CLIENT_ID ?? "");
+      url.searchParams.set("redirect_uri", redirect);
+      url.searchParams.set("response_type", "code");
+      url.searchParams.set("scope", "openid email profile");
+      url.searchParams.set("state", state);
+      url.searchParams.set("prompt", "select_account");
+      res.redirect(url.toString());
+    })
+  );
+  router.get(
+    "/google/callback",
+    asyncHandler(async (req, res) => {
+      if (!googleConfigured()) throw new HttpError(404, "Google sign-in is not configured.");
+      const code = typeof req.query.code === "string" ? req.query.code : "";
+      const state = typeof req.query.state === "string" ? req.query.state : "";
+      const fail = () => {
+        res.redirect("/login?error=google");
+      };
+      try {
+        const payload = jwt2.verify(state, process.env.JWT_SECRET ?? "");
+        if (typeof payload === "string" || payload.typ !== "google" || !code) {
+          fail();
+          return;
+        }
+      } catch {
+        fail();
+        return;
+      }
+      const redirect = `${appOrigin(req)}/api/auth/google/callback`;
+      const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          code,
+          client_id: process.env.GOOGLE_CLIENT_ID ?? "",
+          client_secret: process.env.GOOGLE_CLIENT_SECRET ?? "",
+          redirect_uri: redirect,
+          grant_type: "authorization_code"
+        }),
+        signal: AbortSignal.timeout(8e3)
+      });
+      if (!tokenResponse.ok) {
+        fail();
+        return;
+      }
+      const tokenBody = await tokenResponse.json();
+      if (!tokenBody.access_token) {
+        fail();
+        return;
+      }
+      const profileResponse = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+        headers: { Authorization: `Bearer ${tokenBody.access_token}` },
+        signal: AbortSignal.timeout(8e3)
+      });
+      if (!profileResponse.ok) {
+        fail();
+        return;
+      }
+      const profile = await profileResponse.json();
+      const email2 = profile.email?.trim().toLowerCase();
+      if (!profile.sub || !email2 || profile.email_verified !== true) {
+        fail();
+        return;
+      }
+      let user = await User.findOne({ googleId: profile.sub });
+      if (!user) user = await User.findOne({ email: email2 });
+      if (user) {
+        if (!user.googleId) user.googleId = profile.sub;
+        if (!user.emailVerifiedAt) user.emailVerifiedAt = /* @__PURE__ */ new Date();
+        await user.save();
+      } else {
+        user = await User.create({
+          name: (profile.name || email2.split("@")[0] || "Align").slice(0, 80),
+          email: email2,
+          passwordHash: await hashPassword(randomBytes3(32).toString("hex")),
+          emailVerifiedAt: /* @__PURE__ */ new Date(),
+          googleId: profile.sub
+        });
+      }
+      await startSession(res, user.id, req.get("user-agent"));
+      res.redirect("/");
     })
   );
   router.get(
@@ -752,11 +1272,16 @@ function authRouter(limiter) {
     asyncHandler(async (req, res) => {
       const input = parseBody(passwordSchema, req.body);
       const user = await User.findById(currentUserId(req)).select("+passwordHash");
-      if (!user) throw new HttpError(401, "Sign in to continue.");
+      if (!user?.passwordHash) throw new HttpError(401, "Sign in to continue.");
       const matches = await checkPassword(input.currentPassword, user.passwordHash);
       if (!matches) throw new HttpError(400, "Current password is incorrect.");
       user.passwordHash = await hashPassword(input.newPassword);
       await user.save();
+      await Session.updateMany(
+        { userId: user._id, _id: { $ne: req.sessionId }, revokedAt: null },
+        { revokedAt: /* @__PURE__ */ new Date() }
+      );
+      await rotateRefresh(req, res);
       res.status(204).send();
     })
   );
@@ -772,6 +1297,8 @@ function authRouter(limiter) {
       await Notification.deleteMany({ userId });
       await Whiteboard.deleteMany({ userId });
       await Project.deleteMany({ userId });
+      await Session.deleteMany({ userId });
+      await AuthToken.deleteMany({ userId });
       await User.deleteOne({ _id: userId });
       clearSession(res);
       res.status(204).send();
@@ -782,14 +1309,14 @@ function authRouter(limiter) {
 
 // src/routes/dashboard.ts
 import { Router as Router2 } from "express";
-import { Types } from "mongoose";
+import { Types as Types2 } from "mongoose";
 function dashboardRouter() {
   const router = Router2();
   router.use(requireAuth);
   router.get(
     "/",
     asyncHandler(async (req, res) => {
-      const userId = new Types.ObjectId(currentUserId(req));
+      const userId = new Types2.ObjectId(currentUserId(req));
       const rows = await Project.aggregate([
         { $match: { userId, status: "active" } },
         { $sort: { updatedAt: -1 } },
@@ -882,10 +1409,10 @@ async function recordActivity(input) {
 }
 
 // src/scope.ts
-import { Types as Types2 } from "mongoose";
+import { Types as Types3 } from "mongoose";
 function objectId(id) {
   if (!/^[a-f\d]{24}$/i.test(id)) return null;
-  return new Types2.ObjectId(id);
+  return new Types3.ObjectId(id);
 }
 async function requireProject(userId, id) {
   const projectId = objectId(id);
@@ -1067,10 +1594,10 @@ function notesRouter() {
 
 // src/routes/notifications.ts
 import { Router as Router5 } from "express";
-import { Types as Types4 } from "mongoose";
+import { Types as Types5 } from "mongoose";
 
 // src/page.ts
-import { Types as Types3 } from "mongoose";
+import { Types as Types4 } from "mongoose";
 var PAGE_SIZE = 50;
 function pageLimit(value, fallback = PAGE_SIZE) {
   const parsed = typeof value === "string" ? Number(value) : fallback;
@@ -1092,7 +1619,7 @@ function decodeCursor(value) {
 }
 function objectIdFromCursor(value) {
   if (!/^[a-f\d]{24}$/i.test(value)) return null;
-  return new Types3.ObjectId(value);
+  return new Types4.ObjectId(value);
 }
 function beforeCursor(value) {
   const parts = decodeCursor(value);
@@ -1163,7 +1690,7 @@ function notificationsRouter() {
       const projects = await Project.find({ userId }).select("name").lean();
       const names = new Map(projects.map((project) => [project._id.toString(), project.name]));
       const expireAt = new Date(Date.now() + NINETY_DAYS_MS2);
-      const userObjectId = new Types4.ObjectId(userId);
+      const userObjectId = new Types5.ObjectId(userId);
       const writes = tasks.flatMap((task) => {
         if (!task.dueDate) return [];
         const kind = task.dueDate < today ? "overdue" : task.dueDate <= tomorrow ? "due-soon" : null;
@@ -1648,7 +2175,7 @@ function tasksRouter() {
 
 // src/routes/today.ts
 import { Router as Router9 } from "express";
-import { Types as Types5 } from "mongoose";
+import { Types as Types6 } from "mongoose";
 function present(task) {
   return {
     id: task._id.toString(),
@@ -1674,7 +2201,7 @@ function todayRouter() {
     asyncHandler(async (req, res) => {
       const date = typeof req.query.date === "string" ? normalizeDueDate(req.query.date) : null;
       if (!date) throw new HttpError(400, "Use a valid date.");
-      const userId = new Types5.ObjectId(currentUserId(req));
+      const userId = new Types6.ObjectId(currentUserId(req));
       const visible = await Task.aggregate([
         { $match: { userId } },
         { $sort: { order: 1, createdAt: 1 } },
@@ -1742,17 +2269,27 @@ function createApp(options = {}) {
   const app2 = express();
   app2.disable("x-powered-by");
   app2.set("trust proxy", 1);
+  app2.use(
+    helmet({
+      contentSecurityPolicy: false,
+      crossOriginEmbedderPolicy: false
+    })
+  );
   app2.use(express.json({ limit: "1mb" }));
+  app2.use(guardOrigin);
   app2.use((req, _res, next) => {
-    if (req.method === "POST" && req.path === "/api/auth/logout") {
-      next();
-      return;
-    }
-    connectDb().then(() => next(), next);
+    const logout = req.method === "POST" && req.path === "/api/auth/logout";
+    connectDb().then(
+      () => next(),
+      (error) => {
+        if (logout) next();
+        else next(error);
+      }
+    );
   });
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1e3,
-    max: options.authRateLimitMax ?? (process.env.NODE_ENV === "production" ? 20 : 1e3),
+    max: options.authRateLimitMax ?? 1e3,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "Too many attempts. Try again later." }

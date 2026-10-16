@@ -259,7 +259,14 @@ function persist(): void {
 }
 
 function publicUser(user: StoredUser): User {
-  return { id: user.id, name: user.name, email: user.email, accent: user.accent || '#171717', createdAt: user.createdAt }
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    accent: user.accent || '#171717',
+    emailVerified: true,
+    createdAt: user.createdAt,
+  }
 }
 
 function publicProject(project: StoredProject): Project {
@@ -495,6 +502,51 @@ export const mockApi = {
   },
 
   async logout() {
+    await wait()
+    const state = load()
+    state.sessionUserId = null
+    persist()
+  },
+
+  async authProviders() {
+    return { google: false }
+  },
+
+  async verifyEmail() {
+    await wait()
+    const state = load()
+    return publicUser(requireUser(state))
+  },
+
+  async sendVerification() {
+    await wait()
+    return { message: 'Verification link ready.', verifyToken: 'mock-verify-token' }
+  },
+
+  async listSessions() {
+    await wait()
+    const state = load()
+    const user = requireUser(state)
+    return [
+      {
+        id: 'local',
+        current: true,
+        device: 'This browser',
+        lastSeenAt: now(),
+        createdAt: user.createdAt,
+      },
+    ]
+  },
+
+  async revokeSession(id: string) {
+    await wait()
+    if (id !== 'local') return
+    const state = load()
+    state.sessionUserId = null
+    persist()
+  },
+
+  async revokeAllSessions() {
     await wait()
     const state = load()
     state.sessionUserId = null

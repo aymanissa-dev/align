@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api/index.ts'
 import { useAuth } from '../auth/auth-context.ts'
 import { AuthFrame } from '../components/AuthFrame.tsx'
+import { PasswordMeter } from '../components/PasswordMeter.tsx'
 import { Button, Field, Input } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
@@ -56,6 +57,7 @@ export function ResetPasswordPage() {
             onChange={(event) => setPassword(event.target.value)}
             required
           />
+          <PasswordMeter password={password} />
         </Field>
         <Field label="Confirm password" htmlFor="confirm">
           <Input

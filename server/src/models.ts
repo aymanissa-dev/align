@@ -11,9 +11,14 @@ const userSchema = new Schema(
     accent: { type: String, default: '#171717' },
     resetTokenHash: { type: String, select: false },
     resetTokenExpires: { type: Date, select: false },
+    emailVerifiedAt: { type: Date, default: null },
+    failedLogins: { type: Number, default: 0 },
+    lockUntil: { type: Date, default: null },
+    googleId: { type: String },
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 )
+userSchema.index({ googleId: 1 }, { unique: true, sparse: true })
 
 const projectSchema = new Schema(
   {
@@ -133,6 +138,50 @@ const whiteboardSchema = new Schema(
 )
 whiteboardSchema.index({ userId: 1, projectId: 1 }, { unique: true })
 
+const sessionSchema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    familyId: { type: String, required: true },
+    tokenHash: { type: String, required: true },
+    expiresAt: { type: Date, required: true },
+    revokedAt: { type: Date, default: null },
+    replacedBy: { type: Schema.Types.ObjectId, default: null },
+    rotatedAt: { type: Date, default: null },
+    userAgent: { type: String, default: '' },
+    lastSeenAt: { type: Date, required: true },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } },
+)
+sessionSchema.index({ tokenHash: 1 }, { unique: true })
+sessionSchema.index({ userId: 1, revokedAt: 1, lastSeenAt: -1 })
+sessionSchema.index({ familyId: 1 })
+sessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 })
+
+const tokenSchema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    type: { type: String, enum: ['verify', 'reset'], required: true },
+    tokenHash: { type: String, required: true },
+    expiresAt: { type: Date, required: true },
+    usedAt: { type: Date, default: null },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } },
+)
+tokenSchema.index({ tokenHash: 1 }, { unique: true })
+tokenSchema.index({ userId: 1, type: 1 })
+tokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 })
+
+const rateLimitSchema = new Schema(
+  {
+    key: { type: String, required: true },
+    count: { type: Number, required: true, default: 0 },
+    expiresAt: { type: Date, required: true },
+  },
+  { timestamps: false },
+)
+rateLimitSchema.index({ key: 1 }, { unique: true })
+rateLimitSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 })
+
 export type UserDoc = HydratedDocument<InferSchemaType<typeof userSchema>>
 export type ProjectDoc = HydratedDocument<InferSchemaType<typeof projectSchema>>
 export type LabelDoc = HydratedDocument<InferSchemaType<typeof labelSchema>>
@@ -141,6 +190,8 @@ export type NoteDoc = HydratedDocument<InferSchemaType<typeof noteSchema>>
 export type ActivityDoc = HydratedDocument<InferSchemaType<typeof activitySchema>>
 export type NotificationDoc = HydratedDocument<InferSchemaType<typeof notificationSchema>>
 export type WhiteboardDoc = HydratedDocument<InferSchemaType<typeof whiteboardSchema>>
+export type SessionDoc = HydratedDocument<InferSchemaType<typeof sessionSchema>>
+export type TokenDoc = HydratedDocument<InferSchemaType<typeof tokenSchema>>
 
 slowQueries(userSchema, 'User')
 slowQueries(projectSchema, 'Project')
@@ -150,6 +201,9 @@ slowQueries(noteSchema, 'Note')
 slowQueries(activitySchema, 'Activity')
 slowQueries(notificationSchema, 'Notification')
 slowQueries(whiteboardSchema, 'Whiteboard')
+slowQueries(sessionSchema, 'Session')
+slowQueries(tokenSchema, 'Token')
+slowQueries(rateLimitSchema, 'RateLimit')
 
 function compile<T>(name: string, factory: () => T): T {
   const existing = mongoose.models[name]
@@ -165,3 +219,6 @@ export const Note = compile('Note', () => model('Note', noteSchema))
 export const Activity = compile('Activity', () => model('Activity', activitySchema))
 export const Notification = compile('Notification', () => model('Notification', notificationSchema))
 export const Whiteboard = compile('Whiteboard', () => model('Whiteboard', whiteboardSchema))
+export const Session = compile('Session', () => model('Session', sessionSchema))
+export const AuthToken = compile('AuthToken', () => model('AuthToken', tokenSchema))
+export const RateLimit = compile('RateLimit', () => model('RateLimit', rateLimitSchema))

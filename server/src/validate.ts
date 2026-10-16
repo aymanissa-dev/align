@@ -96,6 +96,14 @@ export const profileSchema = z
     message: 'Nothing to update.',
   })
 
+export const verifySchema = z.object({
+  token: z
+    .string({ required_error: 'This verification link is invalid or has expired.' })
+    .trim()
+    .min(20, 'This verification link is invalid or has expired.')
+    .max(200, 'This verification link is invalid or has expired.'),
+})
+
 export const passwordSchema = z.object({
   currentPassword: z
     .string({

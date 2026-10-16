@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs'
 export function bcryptRounds(): number {
   const configured = process.env.BCRYPT_ROUNDS
   if (configured && /^\d+$/.test(configured)) return Number(configured)
-  return process.env.NODE_ENV === 'test' ? 4 : 10
+  return process.env.NODE_ENV === 'test' ? 4 : 12
 }
 
 export function hashPassword(password: string): Promise<string> {

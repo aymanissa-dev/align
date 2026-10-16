@@ -17,7 +17,25 @@ export type User = {
   name: string
   email: string
   accent: string
+  emailVerified?: boolean
   createdAt: string
+}
+
+export type AuthSession = {
+  id: string
+  current: boolean
+  device: string
+  lastSeenAt: string
+  createdAt: string
+}
+
+export type AuthProviders = {
+  google: boolean
+}
+
+export type VerifyLink = {
+  message: string
+  verifyToken?: string
 }
 
 export type Project = {
@@ -236,6 +254,18 @@ export interface AlignApi {
   login(input: LoginInput): Promise<User>
   /** POST /api/auth/logout */
   logout(): Promise<void>
+  /** GET /api/auth/providers */
+  authProviders(): Promise<AuthProviders>
+  /** POST /api/auth/verify */
+  verifyEmail(token: string): Promise<User>
+  /** POST /api/auth/verify/send */
+  sendVerification(): Promise<VerifyLink>
+  /** GET /api/auth/sessions */
+  listSessions(): Promise<AuthSession[]>
+  /** DELETE /api/auth/sessions/:id */
+  revokeSession(id: string): Promise<void>
+  /** POST /api/auth/sessions/revoke-all */
+  revokeAllSessions(): Promise<void>
   /** GET /api/auth/session — 200 even when signed out */
   session(): Promise<User | null>
   /** POST /api/auth/forgot */

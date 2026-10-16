@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, inject } from 'vitest'
 import { connectDb, disconnectDb } from '../src/db.ts'
-import { Activity, Label, Note, Notification, Project, Task, User, Whiteboard } from '../src/models.ts'
+import { Activity, AuthToken, Label, Note, Notification, Project, RateLimit, Session, Task, User, Whiteboard } from '../src/models.ts'
 
 process.env.NODE_ENV = 'test'
 process.env.JWT_SECRET ??= 'test-jwt-secret-value'
@@ -21,6 +21,9 @@ beforeEach(async () => {
     Activity.deleteMany({}),
     Notification.deleteMany({}),
     Whiteboard.deleteMany({}),
+    Session.deleteMany({}),
+    AuthToken.deleteMany({}),
+    RateLimit.deleteMany({}),
   ])
 })
 

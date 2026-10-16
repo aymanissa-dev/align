@@ -1,7 +1,9 @@
 import express, { type Express } from 'express'
 import rateLimit from 'express-rate-limit'
+import helmet from 'helmet'
 import { connectDb } from './db.ts'
 import { errorHandler } from './middleware.ts'
+import { guardOrigin } from './security.ts'
 import { authRouter } from './routes/auth.ts'
 import { dashboardRouter } from './routes/dashboard.ts'
 import { labelsRouter } from './routes/labels.ts'
@@ -21,18 +23,28 @@ export function createApp(options: AppOptions = {}): Express {
   const app = express()
   app.disable('x-powered-by')
   app.set('trust proxy', 1)
+  app.use(
+    helmet({
+      contentSecurityPolicy: false,
+      crossOriginEmbedderPolicy: false,
+    }),
+  )
   app.use(express.json({ limit: '1mb' }))
+  app.use(guardOrigin)
   app.use((req, _res, next) => {
-    if (req.method === 'POST' && req.path === '/api/auth/logout') {
-      next()
-      return
-    }
-    connectDb().then(() => next(), next)
+    const logout = req.method === 'POST' && req.path === '/api/auth/logout'
+    connectDb().then(
+      () => next(),
+      (error: unknown) => {
+        if (logout) next()
+        else next(error)
+      },
+    )
   })
 
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: options.authRateLimitMax ?? (process.env.NODE_ENV === 'production' ? 20 : 1000),
+    max: options.authRateLimitMax ?? 1000,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many attempts. Try again later.' },

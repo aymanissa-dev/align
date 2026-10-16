@@ -9,6 +9,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [ready, setReady] = useState(false)
   const ownerRef = useRef<string | null>(null)
+  const epoch = useRef(0)
   const nextOwner = user?.id ?? null
   if (ownerRef.current !== nextOwner) {
     ownerRef.current = nextOwner
@@ -17,10 +18,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false
+    const mine = epoch.current
     api
       .session()
       .then((next) => {
-        if (!cancelled) setUser(next)
+        if (!cancelled && epoch.current === mine) setUser(next)
       })
       .catch(() => {
         if (!cancelled) setUser(null)
@@ -35,17 +37,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (input: LoginInput) => {
     const next = await api.login(input)
+    epoch.current += 1
     queryClient.clear()
     setUser(next)
   }, [])
 
   const register = useCallback(async (input: RegisterInput) => {
     const next = await api.register(input)
+    epoch.current += 1
     queryClient.clear()
     setUser(next)
   }, [])
 
   const acceptSession = useCallback((next: User) => {
+    epoch.current += 1
     queryClient.clear()
     setUser(next)
   }, [])

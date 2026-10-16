@@ -1,9 +1,12 @@
 import { ApiError } from './errors.ts'
 import { enqueueWrite, markUnreachable, noteNetworkSuccess } from '../lib/offline.ts'
+import { refreshSession } from '../lib/refresh.ts'
 import type {
   ActivityEvent,
   AlignApi,
   AppNotification,
+  AuthProviders,
+  AuthSession,
   DashboardData,
   TodayData,
   Label,
@@ -13,6 +16,7 @@ import type {
   SearchResults,
   Task,
   User,
+  VerifyLink,
   WhiteboardScene,
 } from './types.ts'
 
@@ -28,7 +32,18 @@ function queueable(path: string, method: string): boolean {
   return !path.startsWith('/api/auth/')
 }
 
-async function fetchResponse(path: string, init: RequestInit = {}): Promise<Response> {
+function canRefresh(path: string): boolean {
+  return (
+    !path.startsWith('/api/auth/login') &&
+    !path.startsWith('/api/auth/register') &&
+    !path.startsWith('/api/auth/forgot') &&
+    !path.startsWith('/api/auth/reset') &&
+    !path.startsWith('/api/auth/refresh') &&
+    !path.startsWith('/api/auth/verify')
+  )
+}
+
+async function fetchResponse(path: string, init: RequestInit = {}, refreshed = false): Promise<Response> {
   const method = (init.method ?? 'GET').toUpperCase()
   const body = typeof init.body === 'string' ? init.body : undefined
   const canQueue = queueable(path, method)
@@ -63,6 +78,10 @@ async function fetchResponse(path: string, init: RequestInit = {}): Promise<Resp
   }
   // Any real response means this fetch reached something. Mutations prove the network;
   // GETs can still be a service-worker cache hit, so they only wake the flush.
+  if (response.status === 401 && !refreshed && canRefresh(path)) {
+    const ok = await refreshSession()
+    if (ok) return fetchResponse(path, init, true)
+  }
   if (response.ok) noteNetworkSuccess({ trusted: method !== 'GET' && method !== 'HEAD' })
   if (!response.ok) {
     let message = 'Request failed.'
@@ -126,6 +145,24 @@ export const httpApi = {
   },
   async logout() {
     await request<void>('/api/auth/logout', { method: 'POST' })
+  },
+  authProviders() {
+    return request<AuthProviders>('/api/auth/providers')
+  },
+  verifyEmail(token) {
+    return request<User>('/api/auth/verify', { method: 'POST', body: JSON.stringify({ token }) })
+  },
+  sendVerification() {
+    return request<VerifyLink>('/api/auth/verify/send', { method: 'POST' })
+  },
+  listSessions() {
+    return request<AuthSession[]>('/api/auth/sessions')
+  },
+  async revokeSession(id) {
+    await request<void>(`/api/auth/sessions/${id}`, { method: 'DELETE' })
+  },
+  async revokeAllSessions() {
+    await request<void>('/api/auth/sessions/revoke-all', { method: 'POST' })
   },
   async session() {
     const data = await request<{ user: User | null }>('/api/auth/session')

@@ -171,4 +171,75 @@ describe('auth', () => {
     expect(blocked.status).toBe(429)
     expect(blocked.body).toEqual({ error: 'Too many attempts. Try again later.' })
   })
+
+  it('verifies email with a single-use token', async () => {
+    const created = await request(app).post('/api/auth/register').send({
+      name: 'Verify',
+      email: `verify-${crypto.randomUUID()}@align.test`,
+      password: 'password1',
+    })
+    expect(created.status).toBe(201)
+    expect(created.body.emailVerified).toBe(false)
+    expect(typeof created.body.verifyToken).toBe('string')
+
+    const verified = await request(app).post('/api/auth/verify').send({ token: created.body.verifyToken })
+    expect(verified.status).toBe(200)
+    expect(verified.body.emailVerified).toBe(true)
+    expect((await request(app).post('/api/auth/verify').send({ token: created.body.verifyToken })).status).toBe(400)
+  })
+
+  it('rotates refresh tokens and revokes the family when an old token is reused', async () => {
+    const created = await request(app).post('/api/auth/register').send({
+      name: 'Refresh',
+      email: `refresh-${crypto.randomUUID()}@align.test`,
+      password: 'password1',
+    })
+    const issued = created.headers['set-cookie']
+    const cookies = Array.isArray(issued) ? issued : issued ? [issued] : []
+    const refresh = cookies.find((cookie) => cookie.startsWith('refresh='))?.split(';')[0]
+    expect(refresh).toBeTruthy()
+
+    const rotated = await request(app).post('/api/auth/refresh').set('Cookie', cookies)
+    expect(rotated.status).toBe(200)
+    const rotatedCookies = rotated.headers['set-cookie']
+    const nextCookies = Array.isArray(rotatedCookies) ? rotatedCookies : rotatedCookies ? [rotatedCookies] : []
+    const next = nextCookies.find((cookie) => cookie.startsWith('refresh='))?.split(';')[0]
+    expect(next).toBeTruthy()
+    expect(next).not.toBe(refresh)
+
+    const reused = await request(app).post('/api/auth/refresh').set('Cookie', refresh ?? '')
+    expect(reused.status).toBe(401)
+    const after = await request(app).post('/api/auth/refresh').set('Cookie', next ?? '')
+    expect(after.status).toBe(401)
+  })
+
+  it('lists sessions, revokes one, and signs out everywhere', async () => {
+    const { agent, email, password } = await registerUser('Sessions')
+    const first = await agent.get('/api/auth/sessions')
+    expect(first.status).toBe(200)
+    expect(first.body).toHaveLength(1)
+    expect(first.body[0].current).toBe(true)
+    expect(typeof first.body[0].device).toBe('string')
+
+    expect((await request(app).post('/api/auth/login').send({ email, password })).status).toBe(200)
+    const both = await agent.get('/api/auth/sessions')
+    expect(both.body).toHaveLength(2)
+    const other = both.body.find((session: { current: boolean }) => !session.current)
+    expect((await agent.delete(`/api/auth/sessions/${other.id}`)).status).toBe(204)
+    expect((await agent.get('/api/auth/sessions')).body).toHaveLength(1)
+
+    expect((await agent.post('/api/auth/sessions/revoke-all')).status).toBe(204)
+    expect((await agent.get('/api/auth/me')).status).toBe(401)
+  })
+
+  it('locks an account after repeated failed logins', async () => {
+    const email = `lock-${crypto.randomUUID()}@align.test`
+    await registerUser('Lock', email)
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expect((await request(app).post('/api/auth/login').send({ email, password: 'wrong-password' })).status).toBe(401)
+    }
+    const locked = await request(app).post('/api/auth/login').send({ email, password: 'password1' })
+    expect(locked.status).toBe(429)
+    expect(locked.body).toEqual({ error: 'Too many attempts. Try again later.' })
+  })
 })

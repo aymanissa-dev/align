@@ -1,8 +1,8 @@
 import type { ErrorRequestHandler, NextFunction, Request, RequestHandler, Response } from 'express'
 import { ZodError } from 'zod'
 import { HttpError } from './errors.ts'
-import { User } from './models.ts'
-import { userIdFromRequest } from './session.ts'
+import { Session, User } from './models.ts'
+import { accessFromRequest } from './session.ts'
 
 export function asyncHandler(
   fn: (req: Request, res: Response, next: NextFunction) => Promise<unknown>,
@@ -13,18 +13,26 @@ export function asyncHandler(
 }
 
 export const requireAuth: RequestHandler = (req, _res, next) => {
-  const userId = userIdFromRequest(req)
-  if (!userId) {
+  const access = accessFromRequest(req)
+  if (!access) {
     next(new HttpError(401, 'Sign in to continue.'))
     return
   }
-  User.findById(userId)
-    .then((user) => {
-      if (!user) {
+  Promise.all([User.findById(access.userId), Session.findById(access.sid)])
+    .then(([user, session]) => {
+      if (!user || !session || session.revokedAt || session.replacedBy || session.userId.toString() !== user.id) {
+        next(new HttpError(401, 'Sign in to continue.'))
+        return
+      }
+      if (session.expiresAt.getTime() <= Date.now()) {
         next(new HttpError(401, 'Sign in to continue.'))
         return
       }
       req.userId = user.id
+      req.sessionId = session.id
+      if (Date.now() - session.lastSeenAt.getTime() > 60_000) {
+        void Session.updateOne({ _id: session._id }, { lastSeenAt: new Date() }).catch(() => undefined)
+      }
       next()
     })
     .catch(next)
@@ -59,7 +67,12 @@ export const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
     return
   }
   if (isRecord(error) && error.code === 11000) {
-    res.status(409).json({ error: 'An account with this email already exists.' })
+    const pattern = isRecord(error.keyPattern) ? error.keyPattern : null
+    if (!pattern || 'email' in pattern) {
+      res.status(409).json({ error: 'An account with this email already exists.' })
+      return
+    }
+    res.status(409).json({ error: 'That record already exists.' })
     return
   }
   if (isRecord(error) && error.name === 'CastError') {

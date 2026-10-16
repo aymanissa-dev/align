@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/auth-context.ts'
 import { AuthFrame } from '../components/AuthFrame.tsx'
+import { PasswordMeter } from '../components/PasswordMeter.tsx'
 import { Button, Field, Input } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
@@ -71,6 +72,7 @@ export function RegisterPage() {
               onChange={(event) => setPassword(event.target.value)}
               required
             />
+            <PasswordMeter password={password} />
           </Field>
           {error ? (
             <p role="alert" className="text-sm text-neutral-800">

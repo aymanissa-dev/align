@@ -1,10 +1,13 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/auth-context.ts'
 import { api } from '../api/index.ts'
+import type { AuthSession } from '../api/types.ts'
 import { useToast } from '../components/toast-context.ts'
 import { PageHeader } from '../components/chrome.tsx'
 import { AccentPicker, ThemeToggle } from '../components/ThemeControls.tsx'
+import { PasswordMeter } from '../components/PasswordMeter.tsx'
 import { Button, ConfirmDialog, Field, Input } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { clearSignedOut, markSignedOut } from '../lib/signedOut.ts'
@@ -24,7 +27,27 @@ export function SettingsPage() {
   const [savingPassword, setSavingPassword] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [sessions, setSessions] = useState<AuthSession[]>([])
+  const [sessionsError, setSessionsError] = useState('')
+  const [verifyToken, setVerifyToken] = useState('')
+  const [verifyMessage, setVerifyMessage] = useState('')
+  const [sendingVerify, setSendingVerify] = useState(false)
   useDocumentTitle('Settings')
+
+  useEffect(() => {
+    let cancelled = false
+    api
+      .listSessions()
+      .then((items) => {
+        if (!cancelled) setSessions(items)
+      })
+      .catch((caught: unknown) => {
+        if (!cancelled) setSessionsError(errorMessage(caught))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   if (!user) return null
 
@@ -73,6 +96,46 @@ export function SettingsPage() {
       setPasswordError(errorMessage(caught))
     } finally {
       setSavingPassword(false)
+    }
+  }
+
+  async function onSendVerification() {
+    setSendingVerify(true)
+    setVerifyMessage('')
+    setVerifyToken('')
+    try {
+      const result = await api.sendVerification()
+      setVerifyMessage(result.message)
+      setVerifyToken(result.verifyToken ?? '')
+    } catch (caught) {
+      setVerifyMessage(errorMessage(caught))
+    } finally {
+      setSendingVerify(false)
+    }
+  }
+
+  async function onRevoke(session: AuthSession) {
+    try {
+      await api.revokeSession(session.id)
+      if (session.current) {
+        await onSignOut()
+        return
+      }
+      setSessions((current) => current.filter((item) => item.id !== session.id))
+    } catch (caught) {
+      toast(errorMessage(caught))
+    }
+  }
+
+  async function onSignOutEverywhere() {
+    markSignedOut()
+    try {
+      await api.revokeAllSessions()
+      await logout()
+      navigate('/', { replace: true })
+    } catch (caught) {
+      clearSignedOut()
+      toast(errorMessage(caught))
     }
   }
 
@@ -155,6 +218,7 @@ export function SettingsPage() {
               value={newPassword}
               onChange={(event) => setNewPassword(event.target.value)}
             />
+            <PasswordMeter password={newPassword} />
           </Field>
           <Field label="Confirm new password" htmlFor="confirm-password">
             <Input
@@ -176,11 +240,59 @@ export function SettingsPage() {
         </form>
       </section>
 
+      {user.emailVerified ? null : (
+        <section className="mt-4 max-w-lg border border-neutral-200 p-5">
+          <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Email</h2>
+          <p className="mt-2 text-sm leading-6 text-neutral-500">This address is not verified yet.</p>
+          <Button variant="secondary" className="mt-4" disabled={sendingVerify} onClick={() => void onSendVerification()}>
+            {sendingVerify ? 'Sending…' : 'Send verification link'}
+          </Button>
+          {verifyMessage ? <p className="mt-3 text-sm leading-6 text-neutral-700">{verifyMessage}</p> : null}
+          {verifyToken ? (
+            <Link
+              to={`/verify?token=${encodeURIComponent(verifyToken)}`}
+              className="focus-ring mt-2 inline-flex min-h-11 items-center text-sm text-neutral-950 underline underline-offset-4"
+            >
+              Verify email
+            </Link>
+          ) : null}
+        </section>
+      )}
+
       <section className="mt-4 max-w-lg border border-neutral-200 p-5">
-        <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Session</h2>
-        <Button variant="secondary" className="mt-4" onClick={() => void onSignOut()}>
-          Sign out
-        </Button>
+        <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Sessions</h2>
+        <p className="mt-2 text-sm leading-6 text-neutral-500">Devices that are signed in to this account.</p>
+        {sessionsError ? (
+          <p role="alert" className="mt-3 text-sm text-neutral-800">
+            {sessionsError}
+          </p>
+        ) : null}
+        <ul className="mt-4 divide-y divide-neutral-200 border border-neutral-200">
+          {sessions.map((session) => (
+            <li key={session.id} className="flex items-center justify-between gap-3 px-3 py-3">
+              <div>
+                <p className="text-sm text-neutral-950">
+                  {session.device}
+                  {session.current ? ' · This device' : ''}
+                </p>
+                <p className="mt-1 text-xs text-neutral-500">
+                  Last seen {new Date(session.lastSeenAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                </p>
+              </div>
+              <Button variant="secondary" onClick={() => void onRevoke(session)}>
+                Revoke
+              </Button>
+            </li>
+          ))}
+        </ul>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Button variant="secondary" onClick={() => void onSignOut()}>
+            Sign out
+          </Button>
+          <Button variant="secondary" onClick={() => void onSignOutEverywhere()}>
+            Sign out everywhere
+          </Button>
+        </div>
       </section>
 
       <section className="mt-4 max-w-lg border border-dashed border-neutral-300 p-5">
