@@ -75,6 +75,8 @@ export function Whiteboard({ projectId }: { projectId: string }) {
   const [status, setStatus] = useState<'saved' | 'saving' | 'idle'>('idle')
   const [draft, setDraft] = useState<{ x: number; y: number; value: string } | null>(null)
   const textRef = useRef<HTMLInputElement>(null)
+  const draftRef = useRef<{ x: number; y: number; value: string } | null>(null)
+  const draftId = useRef<string | null>(null)
   const textOpened = useRef(0)
   const hydrated = useRef(false)
   const dirty = useRef(false)
@@ -138,13 +140,27 @@ export function Whiteboard({ projectId }: { projectId: string }) {
   }, [scene, saveScene])
 
   useEffect(() => {
+    const sceneToSave = () => {
+      const live = textRef.current?.value ?? draftRef.current?.value ?? ''
+      const point = draftRef.current
+      if (!point || !live.trim()) return sceneRef.current
+      const id = draftId.current ?? uid()
+      draftId.current = id
+      const texts = sceneRef.current.texts.filter((item) => item.id !== id)
+      texts.push({ id, x: point.x, y: point.y, text: live.trim().slice(0, 280), color: colorRef.current })
+      const next = { ...sceneRef.current, texts }
+      sceneRef.current = next
+      dirty.current = true
+      return next
+    }
     const flush = () => {
-      if (!dirty.current) return
+      const scene = sceneToSave()
+      const uncommitted = (textRef.current?.value ?? draftRef.current?.value ?? '').trim()
+      if (!dirty.current && !uncommitted) return
       if (saveTimer.current) {
         window.clearTimeout(saveTimer.current)
         saveTimer.current = null
       }
-      const body = JSON.stringify({ scene: sceneRef.current })
       dirty.current = false
       savingRevision.current = revision.current
       void fetch(`/api/projects/${projectIdRef.current}/whiteboard`, {
@@ -152,11 +168,12 @@ export function Whiteboard({ projectId }: { projectId: string }) {
         credentials: 'include',
         keepalive: true,
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-        body,
+        body: JSON.stringify({ scene }),
       })
     }
     const onLeave = (event: BeforeUnloadEvent) => {
-      if (!dirty.current) return
+      const uncommitted = (textRef.current?.value ?? draftRef.current?.value ?? '').trim()
+      if (!dirty.current && !uncommitted) return
       event.preventDefault()
       event.returnValue = ''
       flush()
@@ -221,7 +238,10 @@ export function Whiteboard({ projectId }: { projectId: string }) {
       if (current === 'text') {
         event.preventDefault()
         textOpened.current = performance.now()
-        setDraft({ x: point.x, y: point.y, value: '' })
+        const next = { x: point.x, y: point.y, value: '' }
+        draftRef.current = next
+        draftId.current = uid()
+        setDraft(next)
         window.setTimeout(() => textRef.current?.focus(), 40)
         return
       }
@@ -282,15 +302,21 @@ export function Whiteboard({ projectId }: { projectId: string }) {
     }
   }, [])
 
+  function publishDraft(next: { x: number; y: number; value: string }) {
+    draftRef.current = next
+    const value = next.value.trim()
+    const id = draftId.current ?? uid()
+    draftId.current = id
+    const texts = sceneRef.current.texts.filter((item) => item.id !== id)
+    if (value) texts.push({ id, x: next.x, y: next.y, text: value.slice(0, 280), color: colorRef.current })
+    commit({ ...sceneRef.current, texts })
+  }
+
   function finishText() {
-    if (!draft) return
-    const value = draft.value.trim()
-    if (value) {
-      commit({
-        ...sceneRef.current,
-        texts: [...sceneRef.current.texts, { id: uid(), x: draft.x, y: draft.y, text: value.slice(0, 280), color }],
-      })
-    }
+    const current = draftRef.current
+    if (current?.value.trim()) publishDraft(current)
+    draftRef.current = null
+    draftId.current = null
     setDraft(null)
   }
 
@@ -377,7 +403,14 @@ export function Whiteboard({ projectId }: { projectId: string }) {
             className="board-surface focus-ring absolute z-10 min-h-11 min-w-40 border border-neutral-950 px-2 text-sm"
             style={{ left: screenDraft.left, top: screenDraft.top }}
             onPointerDown={(event) => event.stopPropagation()}
-            onChange={(event) => setDraft((current) => (current ? { ...current, value: event.target.value } : current))}
+            onChange={(event) => {
+              const value = event.target.value
+              const current = draftRef.current
+              if (!current) return
+              const next = { ...current, value }
+              setDraft(next)
+              publishDraft(next)
+            }}
             onBlur={() => {
               if (performance.now() - textOpened.current < 400) {
                 window.setTimeout(() => textRef.current?.focus(), 0)

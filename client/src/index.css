@@ -129,6 +129,14 @@ html.dark .placeholder\:text-neutral-400::placeholder {
   color: #d4d4d4;
 }
 
+.font-pixel {
+  font-family: var(--font-sans) !important;
+  font-weight: 600 !important;
+  font-size: 12px !important;
+  line-height: 1.35;
+  letter-spacing: 0.08em;
+}
+
 .font-pixel.text-neutral-500,
 .font-pixel.text-neutral-400 {
   color: #292929;

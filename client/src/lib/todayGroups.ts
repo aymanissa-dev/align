@@ -1,7 +1,9 @@
 import type { TodayData, TodayTask } from '../api/types.ts'
+import { shiftISODate } from './due.ts'
 
 export type TodayGroups = {
   open: TodayTask[]
+  tomorrow: TodayTask[]
   done: TodayTask[]
   overdue: TodayTask[]
   carried: TodayTask[]
@@ -29,6 +31,7 @@ function unique(data: TodayData): TodayTask[] {
  */
 export function groupToday(data: TodayData, date: string): TodayGroups {
   const all = unique(data)
+  const tomorrowDate = shiftISODate(date, 1)
   const onToday = all.filter((task) => task.plannedFor === date)
   const overdue = all.filter(
     (task) => !task.completed && Boolean(task.dueDate) && (task.dueDate ?? '') < date && task.plannedFor !== date,
@@ -42,9 +45,11 @@ export function groupToday(data: TodayData, date: string): TodayGroups {
       !overdueIds.has(task.id) &&
       !(task.dueDate && task.dueDate > date),
   )
-  const taken = new Set([...onToday, ...overdue, ...carried].map((task) => task.id))
+  const tomorrow = all.filter((task) => !task.completed && task.plannedFor === tomorrowDate && !overdueIds.has(task.id))
+  const taken = new Set([...onToday, ...overdue, ...carried, ...tomorrow].map((task) => task.id))
   return {
     open: onToday.filter((task) => !task.completed),
+    tomorrow,
     done: all.filter((task) => task.completed && (task.completedOn === date || task.plannedFor === date)),
     overdue,
     carried,

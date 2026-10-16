@@ -1,3 +1,6 @@
+import { queryClient } from '../queryClient.ts'
+import type { Task, TodayData, TodayTask } from '../api/types.ts'
+
 export type QueuedWrite = {
   id: string
   userId: string
@@ -14,6 +17,7 @@ export type FlushResult = {
 }
 
 const KEY = 'align-offline-queue'
+const adopted = new Set<string>()
 export const QUEUE_EVENT = 'align-offline-queue'
 export const REACH_EVENT = 'align-reachability'
 
@@ -129,7 +133,7 @@ export type PendingTaskCreate = {
 export function pendingTaskCreates(): PendingTaskCreate[] {
   const pending: PendingTaskCreate[] = []
   for (const item of mine()) {
-    if (item.method !== 'POST') continue
+    if (item.method !== 'POST' || adopted.has(item.id)) continue
     const match = /^\/api\/projects\/([^/]+)\/tasks$/.exec(item.path)
     if (!match || !item.body) continue
     try {
@@ -156,6 +160,50 @@ export function pendingTaskCreates(): PendingTaskCreate[] {
     }
   }
   return pending
+}
+
+function isTask(value: unknown): value is Task {
+  if (!value || typeof value !== 'object') return false
+  const task = value as Task
+  return typeof task.id === 'string' && typeof task.title === 'string' && typeof task.projectId === 'string'
+}
+
+async function keepSyncedTask(item: QueuedWrite, response: Response) {
+  if (item.method !== 'POST' || !/^\/api\/projects\/[^/]+\/tasks$/.test(item.path)) return
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    return
+  }
+  if (!isTask(body)) return
+  adopted.add(item.id)
+  const task = body
+  const localId = `queued:${item.id}`
+  queryClient.setQueryData<Task[]>(['tasks', task.projectId], (current) => {
+    const list = (current ?? []).filter((entry) => entry.id !== localId && entry.id !== task.id)
+    return [task, ...list]
+  })
+  queryClient.setQueriesData<TodayData>({ queryKey: ['today'] }, (current) => {
+    if (!current) return current
+    const named = [...current.planned, ...current.carried, ...(current.overdue ?? []), ...current.available, ...(current.finished ?? [])].find(
+      (entry) => entry.id === localId,
+    )
+    const row: TodayTask = { ...task, projectName: named?.projectName ?? '' }
+    const strip = (items: TodayTask[] | undefined) => (items ?? []).filter((entry) => entry.id !== localId && entry.id !== task.id)
+    const planned = strip(current.planned)
+    const available = strip(current.available)
+    if (task.plannedFor === current.date && !task.completed) planned.push(row)
+    else if (!task.completed) available.push(row)
+    return {
+      ...current,
+      planned,
+      carried: strip(current.carried),
+      overdue: strip(current.overdue),
+      available,
+      finished: task.completed ? [...strip(current.finished), row] : strip(current.finished),
+    }
+  })
 }
 
 async function errorMessage(response: Response): Promise<string> {
@@ -196,6 +244,7 @@ async function runFlush(): Promise<FlushResult> {
         body: item.body,
       })
       if (response.ok) {
+        await keepSyncedTask(item, response)
         synced += 1
         continue
       }

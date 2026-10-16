@@ -49,12 +49,20 @@ export function TodayPage() {
       if (previous) queryClient.setQueryData(['today', date], stampPlan(previous, input.id, input.plannedFor))
       return { previous }
     },
+    onSuccess: (task) => {
+      queryClient.setQueryData<TodayData>(['today', date], (current) =>
+        current ? stampPlan(current, task.id, task.plannedFor) : current,
+      )
+    },
     onError: (error, _input, context) => {
       if (error instanceof ApiError && error.queued) return
       if (context?.previous) queryClient.setQueryData(['today', date], context.previous)
       toast(errorMessage(error))
     },
-    onSettled: () => void queryClient.invalidateQueries({ queryKey: ['today', date] }),
+    onSettled: (_task, error) => {
+      if (error instanceof ApiError && error.queued) return
+      void queryClient.invalidateQueries({ queryKey: ['today', date] })
+    },
   })
 
   const [title, setTitle] = useState('')
@@ -238,6 +246,24 @@ export function TodayPage() {
               )}
             />
           </Section>
+          <Section title="Tomorrow" count={grouped.tomorrow.length}>
+            <TaskList
+              tasks={grouped.tomorrow}
+              empty="Nothing scheduled for tomorrow."
+              onToggle={onToggle}
+              action={(task) =>
+                task.id.startsWith('queued:') ? null : (
+                  <button
+                    type="button"
+                    className="focus-ring inline-flex min-h-11 items-center px-2 text-xs text-neutral-800 hover:text-neutral-950"
+                    onClick={() => plan.mutate({ id: task.id, plannedFor: date })}
+                  >
+                    Move to today
+                  </button>
+                )
+              }
+            />
+          </Section>
           <Section title="Add for tomorrow" count={grouped.available.length}>
             <TaskList
               tasks={grouped.available}
@@ -256,6 +282,7 @@ export function TodayPage() {
                     <button
                       type="button"
                       className={cn(buttonClass('primary'), 'min-h-11 px-3 text-xs')}
+                      aria-label={`Add “${task.title}” for tomorrow`}
                       onClick={() => plan.mutate({ id: task.id, plannedFor: tomorrow })}
                     >
                       Add for tomorrow
