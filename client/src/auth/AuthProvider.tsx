@@ -11,7 +11,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false
     api
-      .me()
+      .session()
       .then((next) => {
         if (!cancelled) setUser(next)
       })
@@ -38,6 +38,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(next)
   }, [])
 
+  const acceptSession = useCallback((next: User) => {
+    queryClient.clear()
+    setUser(next)
+  }, [])
+
   const logout = useCallback(async () => {
     await api.logout()
     setUser(null)
@@ -57,8 +62,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value = useMemo<AuthContextValue>(
-    () => ({ user, ready, login, register, logout, updateProfile, deleteAccount }),
-    [user, ready, login, register, logout, updateProfile, deleteAccount],
+    () => ({ user, ready, login, register, acceptSession, logout, updateProfile, deleteAccount }),
+    [user, ready, login, register, acceptSession, logout, updateProfile, deleteAccount],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/index.ts'
 import type { Project } from '../api/types.ts'
@@ -25,6 +26,7 @@ export function ProjectFormDialog({
 
 function ProjectForm({ project, onClose }: { project: Project | null; onClose: () => void }) {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const toast = useToast()
   const [name, setName] = useState(project?.name ?? '')
   const [description, setDescription] = useState(project?.description ?? '')
@@ -39,6 +41,8 @@ function ProjectForm({ project, onClose }: { project: Project | null; onClose: (
       return
     }
     setPending(true)
+    let previous: Project[] | undefined
+    let inserted = false
     try {
       if (project) {
         await api.updateProject(project.id, { name, description })
@@ -46,13 +50,33 @@ function ProjectForm({ project, onClose }: { project: Project | null; onClose: (
         toast('Project updated')
         onClose()
       } else {
-        const created = await api.createProject({ name, description })
-        await invalidateWorkspace()
+        const trimmed = name.trim()
+        const about = description.trim()
+        const tempId = `tmp-${crypto.randomUUID()}`
+        const optimistic: Project = {
+          id: tempId,
+          name: trimmed,
+          description: about,
+          status: 'active',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }
+        previous = queryClient.getQueryData<Project[]>(['projects', 'active'])
+        queryClient.setQueryData<Project[]>(['projects', 'active'], (current) => [optimistic, ...(current ?? [])])
+        inserted = true
+        const created = await api.createProject({ name: trimmed, description: about })
+        queryClient.setQueryData(['project', created.id], created)
+        queryClient.setQueryData<Project[]>(['projects', 'active'], (current) => [
+          created,
+          ...(current ?? []).filter((item) => item.id !== tempId),
+        ])
         toast('Project created')
         onClose()
         navigate(`/projects/${created.id}`)
+        void invalidateWorkspace()
       }
     } catch (caught) {
+      if (inserted) queryClient.setQueryData(['projects', 'active'], previous)
       setError(errorMessage(caught))
     } finally {
       setPending(false)

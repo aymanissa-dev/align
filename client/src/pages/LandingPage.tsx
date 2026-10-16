@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Eyebrow } from '../components/chrome.tsx'
+import { cn } from '../lib/cn.ts'
 import { MarketingLayout } from '../components/MarketingLayout.tsx'
 import { buttonClass } from '../lib/buttonClass.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
@@ -53,7 +54,7 @@ export function LandingPage() {
       <section className="edge-mesh border-b border-neutral-200">
         <div className="mx-auto grid w-full max-w-6xl items-center gap-10 px-5 pt-12 pb-12 sm:px-8 sm:pt-16 sm:pb-14 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)] lg:gap-14 lg:pt-20 lg:pb-16">
           <div>
-            <div className="flex flex-wrap items-center gap-1.5">
+            <div className="hero-line flex flex-wrap items-center gap-1.5">
               {['Projects', 'Tasks', 'Notes'].map((label) => (
                 <span
                   key={label}
@@ -63,17 +64,17 @@ export function LandingPage() {
                 </span>
               ))}
             </div>
-            <p className="mt-5 flex flex-wrap items-center gap-2 text-sm text-neutral-600">
+            <p className="hero-line hero-delay-1 mt-5 flex flex-wrap items-center gap-2 text-sm text-neutral-600">
               <span>Built for</span>
               <AudienceWord />
             </p>
-            <h1 className="mt-3 max-w-xl text-[2.75rem] leading-[0.94] font-medium tracking-[-0.05em] text-balance text-neutral-950 sm:text-6xl lg:text-[4.25rem]">
+            <h1 className="hero-line hero-delay-2 mt-3 max-w-xl text-[2.75rem] leading-[0.94] font-medium tracking-[-0.05em] text-balance text-neutral-950 sm:text-6xl lg:text-[4.25rem]">
               Keep your work in alignment.
             </h1>
-            <p className="mt-4 max-w-md text-base leading-7 text-neutral-600 sm:text-lg">
+            <p className="hero-line hero-delay-3 mt-4 max-w-md text-base leading-7 text-neutral-600 sm:text-lg">
               Simple project management, thoughtfully organized.
             </p>
-            <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="hero-line hero-delay-4 mt-6 flex flex-col gap-2 sm:flex-row sm:items-center">
               <Link to="/register" className={buttonClass('primary', 'px-5 py-2.5')}>
                 Get started
               </Link>
@@ -82,7 +83,9 @@ export function LandingPage() {
               </Link>
             </div>
           </div>
-          <DashboardPreview />
+          <div className="preview-float">
+            <DashboardPreview />
+          </div>
         </div>
       </section>
 
@@ -97,11 +100,13 @@ export function LandingPage() {
         <ul className="mt-8 grid auto-rows-fr gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {FEATURES.map((feature, index) => (
             <li key={feature.title} className="h-full">
-              <article className="flex h-full flex-col border border-neutral-200 bg-white p-5 transition-colors hover:border-neutral-950 hover:bg-neutral-50">
+              <Reveal delay={index * 70}>
+              <article className="hover-lift flex h-full flex-col border border-neutral-200 bg-white p-5">
                 <p className="font-mono text-xs text-neutral-400 tabular-nums">0{index + 1}</p>
                 <h3 className="mt-3 text-lg font-medium tracking-[-0.03em]">{feature.title}</h3>
                 <p className="mt-2 text-sm leading-6 text-neutral-600">{feature.body}</p>
               </article>
+              </Reveal>
             </li>
           ))}
         </ul>
@@ -117,13 +122,15 @@ export function LandingPage() {
             {STEPS.map((step, index) => (
               <li
                 key={step.title}
-                className="flex h-full flex-col border-b border-neutral-200 p-5 transition-colors last:border-b-0 hover:bg-neutral-50 md:border-r md:border-b-0 md:last:border-r-0"
+                className="flex h-full flex-col border-b border-neutral-200 last:border-b-0 md:border-r md:border-b-0 md:last:border-r-0"
               >
+                <Reveal delay={index * 80} className="flex h-full flex-col p-5 hover:bg-neutral-50">
                 <p className="font-mono text-xs text-neutral-400 tabular-nums">0{index + 1}</p>
                 <h3 className="mt-3 text-lg font-medium tracking-[-0.03em]">{step.title}</h3>
                 <p className="mt-3 flex-1 border-t border-dashed border-neutral-200 pt-3 text-sm leading-6 text-neutral-600">
                   {step.body}
                 </p>
+                </Reveal>
               </li>
             ))}
           </ol>
@@ -158,6 +165,36 @@ export function LandingPage() {
   )
 }
 
+function Reveal({ children, className, delay = 0 }: { children: ReactNode; className?: string; delay?: number }) {
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const node = ref.current
+    if (!node) return
+    const reveal = () => node.classList.add('is-in')
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      reveal()
+      return
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry?.isIntersecting) return
+        reveal()
+        observer.disconnect()
+      },
+      { threshold: 0.18 },
+    )
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
+
+  return (
+    <div ref={ref} className={cn('reveal', className)} style={{ transitionDelay: `${delay}ms` }}>
+      {children}
+    </div>
+  )
+}
+
 function AudienceWord() {
   const [index, setIndex] = useState(0)
 
@@ -171,8 +208,10 @@ function AudienceWord() {
   }, [])
 
   return (
-    <span className="inline-flex min-w-28 justify-center border border-neutral-950 bg-white px-2 py-0.5 text-sm font-medium text-neutral-950">
-      {AUDIENCES[index]}
+    <span className="relative inline-flex h-7 min-w-28 items-center justify-center overflow-hidden border border-neutral-950 bg-white px-2 text-sm font-medium text-neutral-950">
+      <span key={AUDIENCES[index]} className="word-swap">
+        {AUDIENCES[index]}
+      </span>
     </span>
   )
 }

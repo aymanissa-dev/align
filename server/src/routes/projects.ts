@@ -84,6 +84,7 @@ export function projectsRouter(): Router {
         dueDate,
         priority: input.priority ?? 'medium',
         labelIds,
+        plannedFor: normalizeDueDate(input.plannedFor) ?? null,
         order: (latest?.order ?? 0) + 1,
       })
       await touchProject(project._id, userId)
@@ -160,7 +161,12 @@ export function projectsRouter(): Router {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req)
       const project = await requireProject(userId, req.params.id)
-      const items = await Activity.find({ userId, projectId: project._id }).sort({ createdAt: -1, _id: -1 }).limit(100)
+      const items = await Activity.find({
+        userId,
+        $or: [{ projectId: project._id }, { projectId: null }],
+      })
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(100)
       res.json(items.map(publicActivity))
     }),
   )

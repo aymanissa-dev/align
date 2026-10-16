@@ -50,6 +50,19 @@ export const registerSchema = z.object({
   password: password(),
 })
 
+export const forgotSchema = z.object({
+  email,
+})
+
+export const resetSchema = z.object({
+  token: z
+    .string({ required_error: 'This reset link is invalid or has expired.' })
+    .trim()
+    .min(20, 'This reset link is invalid or has expired.')
+    .max(200, 'This reset link is invalid or has expired.'),
+  password: password(),
+})
+
 export const loginSchema = z.object({
   email: z
     .string({
@@ -123,6 +136,7 @@ export const taskCreateSchema = z.object({
   dueDate: dueDate.optional(),
   priority: priority.optional(),
   labelIds: labelIds.optional(),
+  plannedFor: dueDate.optional(),
 })
 
 export const taskPatchSchema = z.object({
@@ -132,6 +146,7 @@ export const taskPatchSchema = z.object({
   priority: priority.optional(),
   labelIds: labelIds.optional(),
   plannedFor: dueDate.optional(),
+  completedOn: dueDate.optional(),
   order: z
     .number({ invalid_type_error: 'Order must be a number.' })
     .finite('Order must be a number.')

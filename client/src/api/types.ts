@@ -68,6 +68,7 @@ export type Task = {
   priority: TaskPriority
   labelIds: string[]
   plannedFor: string | null
+  completedOn: string | null
   order: number
   createdAt: string
   updatedAt: string
@@ -131,6 +132,7 @@ export type TodayData = {
   planned: TodayTask[]
   carried: TodayTask[]
   available: TodayTask[]
+  finished: TodayTask[]
 }
 
 export type DashboardData = {
@@ -186,6 +188,7 @@ export type TaskInput = {
   dueDate?: string | null
   priority?: TaskPriority
   labelIds?: string[]
+  plannedFor?: string | null
 }
 
 export type TaskPatch = {
@@ -195,7 +198,13 @@ export type TaskPatch = {
   priority?: TaskPriority
   labelIds?: string[]
   plannedFor?: string | null
+  completedOn?: string | null
   order?: number
+}
+
+export type ResetResult = {
+  message: string
+  resetToken?: string
 }
 
 export type LabelInput = {
@@ -225,6 +234,12 @@ export interface AlignApi {
   login(input: LoginInput): Promise<User>
   /** POST /api/auth/logout */
   logout(): Promise<void>
+  /** GET /api/auth/session — 200 even when signed out */
+  session(): Promise<User | null>
+  /** POST /api/auth/forgot */
+  forgotPassword(email: string): Promise<ResetResult>
+  /** POST /api/auth/reset */
+  resetPassword(input: { token: string; password: string }): Promise<User>
   /** GET /api/auth/me */
   me(): Promise<User>
   /** PATCH /api/auth/me */

@@ -113,6 +113,49 @@ describe('auth', () => {
     expect(gone.status).toBe(401)
   })
 
+  it('starts signed out without a 401 and resets a password with a token', async () => {
+    const signedOut = await request(app).get('/api/auth/session')
+    expect(signedOut.status).toBe(200)
+    expect(signedOut.body).toEqual({ user: null })
+
+    const email = `reset-${crypto.randomUUID()}@align.test`
+    const registered = await request(app).post('/api/auth/register').send({
+      name: 'Reset',
+      email,
+      password: 'password1',
+    })
+    expect(registered.status).toBe(201)
+    const agent = request.agent(app)
+    await agent.post('/api/auth/logout')
+
+    const missing = await request(app).post('/api/auth/forgot').send({ email: 'nobody@align.test' })
+    expect(missing.status).toBe(200)
+    expect(missing.body.resetToken).toBeUndefined()
+
+    const forgot = await request(app).post('/api/auth/forgot').send({ email })
+    expect(forgot.status).toBe(200)
+    expect(typeof forgot.body.resetToken).toBe('string')
+
+    const bad = await request(app).post('/api/auth/reset').send({ token: forgot.body.resetToken, password: 'short' })
+    expect(bad.status).toBe(400)
+
+    const reset = await request(app).post('/api/auth/reset').send({
+      token: forgot.body.resetToken,
+      password: 'password2',
+    })
+    expect(reset.status).toBe(200)
+    expect(reset.body.email).toBe(email)
+
+    const reused = await request(app).post('/api/auth/reset').send({
+      token: forgot.body.resetToken,
+      password: 'password3',
+    })
+    expect(reused.status).toBe(400)
+
+    expect((await request(app).post('/api/auth/login').send({ email, password: 'password1' })).status).toBe(401)
+    expect((await request(app).post('/api/auth/login').send({ email, password: 'password2' })).status).toBe(200)
+  })
+
   it('rate-limits repeated auth attempts', async () => {
     const limited = createApp({ authRateLimitMax: 3 })
     const email = `limit-${crypto.randomUUID()}@align.test`

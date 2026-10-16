@@ -74,6 +74,8 @@ export function Whiteboard({ projectId }: { projectId: string }) {
   const [color, setColor] = useState(COLORS[0])
   const [status, setStatus] = useState<'saved' | 'saving' | 'idle'>('idle')
   const [draft, setDraft] = useState<{ x: number; y: number; value: string } | null>(null)
+  const textRef = useRef<HTMLInputElement>(null)
+  const textOpened = useRef(0)
   const hydrated = useRef(false)
   const dirty = useRef(false)
   const sceneRef = useRef(scene)
@@ -159,7 +161,10 @@ export function Whiteboard({ projectId }: { projectId: string }) {
       const point = worldPoint(event)
       const current = toolRef.current
       if (current === 'text') {
+        event.preventDefault()
+        textOpened.current = performance.now()
         setDraft({ x: point.x, y: point.y, value: '' })
+        window.setTimeout(() => textRef.current?.focus(), 40)
         return
       }
       drawing.current = { kind: current, start: point, points: [point] }
@@ -248,14 +253,14 @@ export function Whiteboard({ projectId }: { projectId: string }) {
 
   return (
     <div className="mt-8 border border-neutral-200">
-      <div className="flex flex-wrap items-center gap-2 border-b border-neutral-200 px-3 py-2">
+      <div className="flex items-center gap-2 overflow-x-auto border-b border-neutral-200 px-3 py-2 whitespace-nowrap">
         {(['pen', 'rect', 'ellipse', 'text', 'eraser', 'pan'] as const).map((item) => (
           <button
             key={item}
             type="button"
             aria-pressed={tool === item}
             className={cn(
-              'focus-ring border px-2 py-1 text-xs capitalize',
+              'focus-ring inline-flex min-h-11 shrink-0 items-center border px-3 text-xs capitalize',
               tool === item ? 'border-neutral-950 bg-neutral-950 text-white' : 'border-neutral-300 text-neutral-600',
             )}
             onClick={() => setTool(item)}
@@ -270,14 +275,14 @@ export function Whiteboard({ projectId }: { projectId: string }) {
             type="button"
             aria-label={swatch}
             aria-pressed={color === swatch}
-            className={cn('focus-ring h-6 w-6 border', color === swatch ? 'border-neutral-950' : 'border-transparent')}
+            className={cn('focus-ring h-11 w-11 shrink-0 border', color === swatch ? 'border-neutral-950' : 'border-transparent')}
             style={{ backgroundColor: swatch }}
             onClick={() => setColor(swatch)}
           />
         ))}
         <button
           type="button"
-          className="focus-ring ml-auto border border-neutral-300 px-2 py-1 text-xs"
+          className="focus-ring ml-auto inline-flex min-h-11 shrink-0 items-center border border-neutral-300 px-3 text-xs"
           onClick={() =>
             commit({
               ...scene,
@@ -292,7 +297,7 @@ export function Whiteboard({ projectId }: { projectId: string }) {
         </button>
         <button
           type="button"
-          className="focus-ring border border-neutral-300 px-2 py-1 text-xs"
+          className="focus-ring inline-flex min-h-11 shrink-0 items-center border border-neutral-300 px-3 text-xs"
           onClick={() =>
             commit({
               ...scene,
@@ -308,15 +313,26 @@ export function Whiteboard({ projectId }: { projectId: string }) {
         <canvas ref={canvasRef} className="h-full w-full touch-none" aria-label="Project whiteboard" />
         {screenDraft ? (
           <input
-            autoFocus
+            ref={textRef}
             value={draft?.value ?? ''}
             aria-label="Whiteboard text"
-            className="focus-ring absolute border border-neutral-950 bg-white px-1 text-sm"
+            className="focus-ring absolute z-10 min-h-11 min-w-40 border border-neutral-950 bg-white px-2 text-sm"
             style={{ left: screenDraft.left, top: screenDraft.top }}
+            onPointerDown={(event) => event.stopPropagation()}
             onChange={(event) => setDraft((current) => (current ? { ...current, value: event.target.value } : current))}
-            onBlur={finishText}
+            onBlur={() => {
+              if (performance.now() - textOpened.current < 400) {
+                window.setTimeout(() => textRef.current?.focus(), 0)
+                return
+              }
+              finishText()
+            }}
             onKeyDown={(event) => {
-              if (event.key === 'Enter') finishText()
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                textOpened.current = 0
+                finishText()
+              }
               if (event.key === 'Escape') setDraft(null)
             }}
           />

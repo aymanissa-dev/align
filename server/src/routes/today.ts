@@ -37,6 +37,9 @@ export function todayRouter(): Router {
         available: visible
           .filter((task) => !task.completed && task.plannedFor !== date && !(task.plannedFor && task.plannedFor < date))
           .map(withProject),
+        finished: visible
+          .filter((task) => task.completed && task.completedOn === date && task.plannedFor !== date)
+          .map(withProject),
       })
     }),
   )

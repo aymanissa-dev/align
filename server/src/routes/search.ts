@@ -3,7 +3,8 @@ import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { Note, Project, Task } from '../models.ts'
 import { publicProject } from '../serialize.ts'
 
-const RESULT_LIMIT = 50
+const RESULT_LIMIT = 20
+const TIME_MS = 800
 
 function queryText(value: unknown): string {
   if (typeof value !== 'string') return ''
@@ -23,23 +24,33 @@ function textSearch(value: string): string | null {
   return cleaned
 }
 
-async function searchDocs<T extends { updatedAt: Date }>(
-  query: string,
-  byText: (text: string) => Promise<T[]>,
-  byRegex: () => Promise<T[]>,
-): Promise<T[]> {
-  const text = textSearch(query)
-  if (text) {
-    try {
-      const hits = await byText(text)
-      if (hits.length > 0) {
-        return hits.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
-      }
-    } catch (error) {
-      console.error(error)
+async function settle<T>(query: Promise<T[]>): Promise<T[]> {
+  try {
+    return await query
+  } catch (error) {
+    console.error(error)
+    return []
+  }
+}
+
+function mergeById<T>(groups: T[][], idOf: (item: T) => string): T[] {
+  const seen = new Set<string>()
+  const merged: T[] = []
+  for (const group of groups) {
+    for (const item of group) {
+      const id = idOf(item)
+      if (seen.has(id)) continue
+      seen.add(id)
+      merged.push(item)
+      if (merged.length >= RESULT_LIMIT) return merged
     }
   }
-  return byRegex()
+  return merged
+}
+
+async function whenText<T>(text: string | null, query: () => Promise<T[]>): Promise<T[]> {
+  if (!text) return []
+  return settle(query())
 }
 
 export function searchRouter(): Router {
@@ -56,32 +67,27 @@ export function searchRouter(): Router {
       }
 
       const userId = currentUserId(req)
-      const pattern = escapeRegex(query)
-      const contains = { $regex: pattern, $options: 'i' }
-      const [projects, tasks, notes, ownedProjects] = await Promise.all([
-        searchDocs(
-          query,
-          (text) => Project.find({ userId, $text: { $search: text } }).limit(RESULT_LIMIT),
-          () =>
-            Project.find({ userId, $or: [{ name: contains }, { description: contains }] })
-              .sort({ updatedAt: -1 })
-              .limit(RESULT_LIMIT),
+      const prefix = { $regex: `^${escapeRegex(query)}`, $options: 'i' }
+      const text = textSearch(query)
+
+      const [projectText, projectName, taskText, taskTitle, noteText, noteTitle, ownedProjects] = await Promise.all([
+        whenText(text, () => Project.find({ userId, $text: { $search: text ?? '' } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
+        settle(
+          Project.find({ userId, name: prefix })
+            .sort({ updatedAt: -1 })
+            .limit(RESULT_LIMIT)
+            .maxTimeMS(TIME_MS),
         ),
-        searchDocs(
-          query,
-          (text) => Task.find({ userId, $text: { $search: text } }).limit(RESULT_LIMIT),
-          () => Task.find({ userId, title: contains }).sort({ updatedAt: -1 }).limit(RESULT_LIMIT),
-        ),
-        searchDocs(
-          query,
-          (text) => Note.find({ userId, $text: { $search: text } }).limit(RESULT_LIMIT),
-          () =>
-            Note.find({ userId, $or: [{ title: contains }, { body: contains }] })
-              .sort({ updatedAt: -1 })
-              .limit(RESULT_LIMIT),
-        ),
-        Project.find({ userId }).select('name'),
+        whenText(text, () => Task.find({ userId, $text: { $search: text ?? '' } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
+        settle(Task.find({ userId, title: prefix }).sort({ updatedAt: -1 }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
+        whenText(text, () => Note.find({ userId, $text: { $search: text ?? '' } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
+        settle(Note.find({ userId, title: prefix }).sort({ updatedAt: -1 }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
+        Project.find({ userId }).select('name').maxTimeMS(TIME_MS),
       ])
+
+      const projects = mergeById([projectText, projectName], (item) => item.id)
+      const tasks = mergeById([taskText, taskTitle], (item) => item.id)
+      const notes = mergeById([noteText, noteTitle], (item) => item.id)
       const names = new Map(ownedProjects.map((project) => [project.id, project.name]))
 
       res.json({

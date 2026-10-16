@@ -6,6 +6,8 @@ const userSchema = new Schema(
     email: { type: String, required: true, unique: true },
     passwordHash: { type: String, required: true, select: false },
     accent: { type: String, default: '#171717' },
+    resetTokenHash: { type: String, select: false },
+    resetTokenExpires: { type: Date, select: false },
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 )
@@ -20,6 +22,7 @@ const projectSchema = new Schema(
   { timestamps: true },
 )
 projectSchema.index({ userId: 1, status: 1 })
+projectSchema.index({ userId: 1, name: 1 })
 projectSchema.index(
   { name: 'text', description: 'text' },
   { weights: { name: 5, description: 1 }, name: 'ProjectTextIndex' },
@@ -45,6 +48,7 @@ const taskSchema = new Schema(
     priority: { type: String, enum: ['low', 'medium', 'high', 'urgent'], default: 'medium', required: true },
     labelIds: { type: [{ type: Schema.Types.ObjectId, ref: 'Label' }], default: [] },
     plannedFor: { type: String, default: null },
+    completedOn: { type: String, default: null },
     order: { type: Number, required: true },
   },
   { timestamps: true },
@@ -52,6 +56,8 @@ const taskSchema = new Schema(
 taskSchema.index({ projectId: 1, completed: 1 })
 taskSchema.index({ userId: 1, projectId: 1 })
 taskSchema.index({ userId: 1, dueDate: 1 })
+taskSchema.index({ userId: 1, title: 1 })
+taskSchema.index({ userId: 1, completedOn: 1 })
 taskSchema.index({ title: 'text' }, { name: 'TaskTextIndex' })
 
 const noteSchema = new Schema(
@@ -65,6 +71,7 @@ const noteSchema = new Schema(
 )
 noteSchema.index({ projectId: 1 })
 noteSchema.index({ userId: 1, updatedAt: -1 })
+noteSchema.index({ userId: 1, title: 1 })
 noteSchema.index(
   { title: 'text', body: 'text' },
   { weights: { title: 5, body: 1 }, name: 'NoteTextIndex' },
@@ -73,7 +80,7 @@ noteSchema.index(
 const activitySchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-    projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true },
+    projectId: { type: Schema.Types.ObjectId, ref: 'Project', default: null },
     type: { type: String, enum: ['create', 'update', 'delete', 'complete'], required: true },
     summary: { type: String, required: true },
   },
@@ -81,6 +88,7 @@ const activitySchema = new Schema(
 )
 activitySchema.index({ projectId: 1, createdAt: -1 })
 activitySchema.index({ userId: 1, projectId: 1 })
+activitySchema.index({ userId: 1, createdAt: -1 })
 
 const notificationSchema = new Schema(
   {

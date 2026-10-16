@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { quoteTitle, recordActivity } from '../activity.ts'
 import { HttpError } from '../errors.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { Label, Task } from '../models.ts'
@@ -37,6 +38,11 @@ export function labelsRouter(): Router {
         name: input.name,
         color: input.color.toLowerCase(),
       })
+      await recordActivity({
+        userId,
+        type: 'create',
+        summary: `Created label ${quoteTitle(label.name)}`,
+      })
       res.status(201).json(publicLabel(label))
     }),
   )
@@ -60,6 +66,11 @@ export function labelsRouter(): Router {
       }
       if (input.color !== undefined) label.color = input.color.toLowerCase()
       await label.save()
+      await recordActivity({
+        userId,
+        type: 'update',
+        summary: `Updated label ${quoteTitle(label.name)}`,
+      })
       res.json(publicLabel(label))
     }),
   )
@@ -73,7 +84,13 @@ export function labelsRouter(): Router {
       const label = await Label.findOne({ _id: labelId, userId })
       if (!label) throw new HttpError(404, 'Label not found.')
       await Task.updateMany({ userId, labelIds: label._id }, { $pull: { labelIds: label._id } })
+      const name = label.name
       await label.deleteOne()
+      await recordActivity({
+        userId,
+        type: 'delete',
+        summary: `Deleted label ${quoteTitle(name)}`,
+      })
       res.status(204).send()
     }),
   )

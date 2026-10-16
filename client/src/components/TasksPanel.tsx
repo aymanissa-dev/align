@@ -4,7 +4,7 @@ import type { Label, Task, TaskPriority } from '../api/types.ts'
 import { api } from '../api/index.ts'
 import { useToast } from './toast-context.ts'
 import { IconPencil, IconTrash } from './icons.tsx'
-import { Button, CheckButton, ErrorState, Input, ListSkeleton, ProgressBar, Select } from './ui.tsx'
+import { Button, CheckButton, ConfirmDialog, ErrorState, Input, ListSkeleton, ProgressBar, Select } from './ui.tsx'
 import { DueBadge, PriorityBadge } from './chrome.tsx'
 import { useToggleTask } from '../hooks/useToggleTask.ts'
 import { cn } from '../lib/cn.ts'
@@ -26,6 +26,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
   const [labelName, setLabelName] = useState('')
   const [labelColor, setLabelColor] = useState<string>(LABEL_COLORS[0])
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<Task | null>(null)
   const [draftTitle, setDraftTitle] = useState('')
   const [draftDue, setDraftDue] = useState('')
   const [draftPriority, setDraftPriority] = useState<TaskPriority>('medium')
@@ -168,7 +169,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                   <span className="text-sm text-neutral-950">{label.name}</span>
                   <button
                     type="button"
-                    className="focus-ring text-neutral-400 hover:text-neutral-950"
+                    className="focus-ring inline-flex h-11 w-11 items-center justify-center text-neutral-400 hover:text-neutral-950"
                     aria-label={`Delete label ${label.name}`}
                     onClick={() => removeLabel.mutate(label.id)}
                   >
@@ -186,26 +187,30 @@ export function TasksPanel({ projectId }: { projectId: string }) {
               aria-label="Label name"
               className="sm:max-w-xs"
             />
-            <div className="flex items-center gap-1" role="radiogroup" aria-label="Label color">
-              {LABEL_COLORS.map((color) => (
-                <button
-                  key={color}
-                  type="button"
-                  role="radio"
-                  aria-checked={labelColor === color}
-                  aria-label={color}
-                  className={cn('focus-ring h-6 w-6 border', labelColor === color ? 'border-neutral-950' : 'border-transparent')}
-                  style={{ backgroundColor: color }}
-                  onClick={() => setLabelColor(color)}
-                />
-              ))}
-            </div>
             <Button type="submit" variant="secondary" disabled={createLabel.isPending || !labelName.trim()}>
               Add label
             </Button>
           </div>
         </div>
       </form>
+      <div className="flex items-center gap-1 border border-t-0 border-neutral-200 px-4 py-2" role="radiogroup" aria-label="Label color">
+            {LABEL_COLORS.map((color) => (
+              <button
+                key={color}
+                type="button"
+                role="radio"
+                aria-checked={labelColor === color}
+                aria-label={color}
+                className={cn('focus-ring h-11 w-11 border', labelColor === color ? 'border-neutral-950' : 'border-neutral-300')}
+                style={{ backgroundColor: color }}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={(event) => {
+                  event.preventDefault()
+                  setLabelColor(color)
+                }}
+              />
+            ))}
+      </div>
 
       <form onSubmit={onCreate} className="mt-4 flex flex-col gap-2">
         <div className="flex flex-col gap-2 sm:flex-row">
@@ -362,11 +367,11 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                         })}
                       </div>
                     </div>
-                    <DueBadge dueDate={task.dueDate} />
-                    <div className="flex shrink-0 gap-1">
+                    {task.completed ? null : <DueBadge dueDate={task.dueDate} />}
+                    <div className="flex shrink-0">
                       <button
                         type="button"
-                        className="focus-ring p-1 text-neutral-400 hover:text-neutral-950"
+                        className="focus-ring inline-flex h-11 w-11 items-center justify-center text-neutral-400 hover:text-neutral-950"
                         aria-label={`Edit “${task.title}”`}
                         onClick={() => startEdit(task)}
                       >
@@ -374,9 +379,9 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                       </button>
                       <button
                         type="button"
-                        className="focus-ring p-1 text-neutral-400 hover:text-neutral-950"
+                        className="focus-ring inline-flex h-11 w-11 items-center justify-center text-neutral-400 hover:text-neutral-950"
                         aria-label={`Delete “${task.title}”`}
-                        onClick={() => remove.mutate(task.id)}
+                        onClick={() => setPendingDelete(task)}
                       >
                         <IconTrash />
                       </button>
@@ -388,6 +393,20 @@ export function TasksPanel({ projectId }: { projectId: string }) {
           )}
         </>
       )}
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Delete task"
+        body={pendingDelete ? `Delete “${pendingDelete.title}”? This cannot be undone.` : ''}
+        confirmLabel="Delete"
+        pending={remove.isPending}
+        onConfirm={() => {
+          if (!pendingDelete) return
+          remove.mutate(pendingDelete.id, { onSuccess: () => setPendingDelete(null) })
+        }}
+        onClose={() => {
+          if (!remove.isPending) setPendingDelete(null)
+        }}
+      />
     </div>
   )
 }
@@ -421,7 +440,7 @@ function LabelPicker({
             aria-pressed={on}
             onClick={() => onChange(on ? selected.filter((id) => id !== label.id) : [...selected, label.id])}
             className={cn(
-              'focus-ring inline-flex items-center gap-1.5 border px-2 py-1 text-xs',
+              'focus-ring inline-flex min-h-11 items-center gap-1.5 border px-3 text-xs',
               on ? 'border-neutral-950 bg-neutral-950 text-white' : 'border-neutral-300 text-neutral-700',
             )}
           >

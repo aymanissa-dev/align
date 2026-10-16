@@ -87,7 +87,7 @@ export function PriorityBadge({ priority }: { priority: TaskPriority }) {
 export function Stat({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="border-neutral-200 px-4 py-4 sm:px-5">
-      <p className="font-pixel text-[10px] tracking-[0.16em] text-neutral-500 uppercase">{label}</p>
+      <p className="font-pixel text-[10px] tracking-[0.16em] text-neutral-800 uppercase">{label}</p>
       <p className="mt-2 font-mono text-2xl tracking-tight text-neutral-950 tabular-nums">{value}</p>
     </div>
   )

@@ -27,7 +27,7 @@ import type {
 const STORAGE_KEY = 'align.db.v1'
 const DELAY_MS = 120
 
-type StoredUser = User & { password: string }
+type StoredUser = User & { password: string; resetToken?: string | null; resetExpires?: string | null }
 type StoredProject = Project & { userId: string }
 type StoredTask = Task & { userId: string }
 type StoredNote = Note & { userId: string }
@@ -202,6 +202,7 @@ function task(
     priority: 'medium',
     labelIds: [],
     plannedFor: null,
+    completedOn: null,
     order,
     createdAt,
     updatedAt: createdAt,
@@ -282,6 +283,7 @@ function publicTask(item: StoredTask): Task {
     priority: item.priority ?? 'medium',
     labelIds: item.labelIds ?? [],
     plannedFor: item.plannedFor ?? null,
+    completedOn: item.completedOn ?? null,
     order: item.order,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
@@ -505,6 +507,48 @@ export const mockApi = {
     return publicUser(requireUser(state))
   },
 
+  async session() {
+    await wait()
+    const state = load()
+    const user = state.users.find((item) => item.id === state.sessionUserId)
+    return user ? publicUser(user) : null
+  },
+
+  async forgotPassword(email) {
+    await wait()
+    const state = load()
+    const normalized = email.trim().toLowerCase()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) throw new ApiError(400, 'Enter a valid email.')
+    const user = state.users.find((item) => item.email === normalized)
+    const body: { message: string; resetToken?: string } = {
+      message: 'If an account exists for that email, a reset link is ready.',
+    }
+    if (user) {
+      const resetToken = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '')
+      user.resetToken = resetToken
+      user.resetExpires = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+      body.resetToken = resetToken
+      persist()
+    }
+    return body
+  },
+
+  async resetPassword(input) {
+    await wait()
+    const state = load()
+    const password = requirePassword(input.password ?? '', 'Password')
+    const user = state.users.find((item) => item.resetToken && item.resetToken === input.token)
+    if (!user || !user.resetExpires || new Date(user.resetExpires).getTime() < Date.now()) {
+      throw new ApiError(400, 'This reset link is invalid or has expired.')
+    }
+    user.password = password
+    user.resetToken = null
+    user.resetExpires = null
+    state.sessionUserId = user.id
+    persist()
+    return publicUser(user)
+  },
+
   async updateProfile(input) {
     return write((_state, user) => {
       if (input.name === undefined && input.accent === undefined) throw new ApiError(400, 'Nothing to update.')
@@ -643,7 +687,8 @@ export const mockApi = {
         dueDate: dueDateOf(input.dueDate) ?? null,
         priority: priorityOf(input.priority),
         labelIds: labelsOf(state, user.id, input.labelIds),
-        plannedFor: null,
+        plannedFor: dueDateOf(input.plannedFor) ?? null,
+        completedOn: null,
         order,
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -663,6 +708,7 @@ export const mockApi = {
       if (input.completed !== undefined) {
         if (typeof input.completed !== 'boolean') throw new ApiError(400, 'Completed must be true or false.')
         item.completed = input.completed
+        item.completedOn = input.completed ? (dueDateOf(input.completedOn) ?? item.completedOn ?? new Date().toISOString().slice(0, 10)) : null
       }
       if (input.dueDate !== undefined) item.dueDate = dueDateOf(input.dueDate) ?? null
       if (input.priority !== undefined) item.priority = priorityOf(input.priority)
@@ -717,6 +763,7 @@ export const mockApi = {
       }
       const label: StoredLabel = { id: uid('lbl'), userId: user.id, name, color, createdAt: now() }
       state.labels.push(label)
+      pushActivity(state, user.id, '', 'create', `Created label ${quoteTitle(label.name)}`)
       return publicLabel(label)
     })
   },
@@ -737,6 +784,7 @@ export const mockApi = {
         label.name = name
       }
       if (input.color !== undefined) label.color = colorOf(input.color)
+      pushActivity(state, user.id, '', 'update', `Updated label ${quoteTitle(label.name)}`)
       return publicLabel(label)
     })
   },
@@ -749,6 +797,7 @@ export const mockApi = {
       for (const task of state.tasks) {
         if (task.userId === user.id) task.labelIds = task.labelIds.filter((labelId) => labelId !== id)
       }
+      pushActivity(state, user.id, '', 'delete', `Deleted label ${quoteTitle(label.name)}`)
     })
   },
 
@@ -816,7 +865,7 @@ export const mockApi = {
     return read((state, user) => {
       findProject(state, user.id, projectId)
       return state.activities
-        .filter((item) => item.userId === user.id && item.projectId === projectId)
+        .filter((item) => item.userId === user.id && (item.projectId === projectId || item.projectId === ''))
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
         .map(({ userId: _userId, ...item }) => item)
     })
@@ -887,6 +936,9 @@ export const mockApi = {
           .map(present),
         available: visible
           .filter((task) => !task.completed && task.plannedFor !== date && !(task.plannedFor && task.plannedFor < date))
+          .map(present),
+        finished: visible
+          .filter((task) => task.completed && task.completedOn === date && task.plannedFor !== date)
           .map(present),
       }
       return data

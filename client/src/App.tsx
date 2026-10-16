@@ -5,6 +5,9 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-route
 import { AuthProvider } from './auth/AuthProvider.tsx'
 import { useAuth } from './auth/auth-context.ts'
 import { BootScreen } from './components/BootScreen.tsx'
+import { OfflineBanner } from './components/OfflineBanner.tsx'
+import { ForgotPasswordPage } from './pages/ForgotPasswordPage.tsx'
+import { ResetPasswordPage } from './pages/ResetPasswordPage.tsx'
 import { Layout } from './components/Layout.tsx'
 import { MarketingLayout } from './components/MarketingLayout.tsx'
 import { ToastProvider } from './components/ToastProvider.tsx'
@@ -112,6 +115,7 @@ export default function App() {
         <ThemeSync />
         <ToastProvider>
           <BrowserRouter>
+            <OfflineBanner />
             <Routes>
               <Route
                 path="/login"
@@ -121,6 +125,15 @@ export default function App() {
                   </Guest>
                 }
               />
+              <Route
+                path="/forgot"
+                element={
+                  <Guest>
+                    <ForgotPasswordPage />
+                  </Guest>
+                }
+              />
+              <Route path="/reset" element={<ResetPasswordPage />} />
               <Route
                 path="/register"
                 element={

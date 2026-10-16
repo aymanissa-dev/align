@@ -9,13 +9,13 @@ export function quoteTitle(title: string): string {
 
 export async function recordActivity(input: {
   userId: string
-  projectId: Types.ObjectId | string
+  projectId?: Types.ObjectId | string | null
   type: ActivityType
   summary: string
 }): Promise<void> {
   await Activity.create({
     userId: input.userId,
-    projectId: input.projectId,
+    projectId: input.projectId ?? null,
     type: input.type,
     summary: input.summary.slice(0, 240),
   })

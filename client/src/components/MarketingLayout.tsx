@@ -15,9 +15,9 @@ export function MarketingLayout({ children }: { children: ReactNode }) {
       >
         Skip to content
       </a>
-      <header className="sticky top-0 z-20 border-b border-neutral-200 bg-white/95 backdrop-blur-sm">
+      <header className="site-header sticky top-0 z-20">
         <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between gap-3 px-5 sm:px-8">
-          <Link to="/" className="focus-ring text-sm font-medium tracking-[-0.03em]">
+          <Link to="/" className="focus-ring text-sm font-medium tracking-[-0.03em] text-current">
             Align
           </Link>
           <nav className="flex items-center gap-1 sm:gap-2" aria-label="Account">
@@ -27,7 +27,7 @@ export function MarketingLayout({ children }: { children: ReactNode }) {
               </Link>
             ) : (
               <>
-                <Link to="/login" className="focus-ring px-3 py-2 text-sm text-neutral-700 hover:text-neutral-950">
+                <Link to="/login" className="nav-link focus-ring inline-flex min-h-11 items-center px-3 text-sm font-medium">
                   Sign in
                 </Link>
                 <Link to="/register" className={buttonClass('primary', 'px-3.5')}>

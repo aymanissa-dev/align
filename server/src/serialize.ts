@@ -40,6 +40,7 @@ export function publicTask(task: TaskDoc) {
     priority: task.priority,
     labelIds: (task.labelIds ?? []).map((id) => id.toString()),
     plannedFor: task.plannedFor ?? null,
+    completedOn: task.completedOn ?? null,
     order: task.order,
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),
@@ -49,7 +50,7 @@ export function publicTask(task: TaskDoc) {
 export function publicActivity(item: ActivityDoc) {
   return {
     id: item.id,
-    projectId: item.projectId.toString(),
+    projectId: item.projectId ? item.projectId.toString() : '',
     type: item.type,
     summary: item.summary,
     createdAt: item.createdAt.toISOString(),

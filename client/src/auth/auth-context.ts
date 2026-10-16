@@ -6,6 +6,7 @@ export type AuthContextValue = {
   ready: boolean
   login: (input: LoginInput) => Promise<void>
   register: (input: RegisterInput) => Promise<void>
+  acceptSession: (user: User) => void
   logout: () => Promise<void>
   updateProfile: (input: { name?: string; accent?: string }) => Promise<User>
   deleteAccount: () => Promise<void>

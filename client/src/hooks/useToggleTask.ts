@@ -1,6 +1,8 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/index.ts'
-import type { DashboardData, OpenTask, Task } from '../api/types.ts'
+import { ApiError } from '../api/errors.ts'
+import type { DashboardData, OpenTask, Task, TodayData, TodayTask } from '../api/types.ts'
+import { localISODate } from '../lib/due.ts'
 
 type ToggleTarget = {
   id: string
@@ -15,23 +17,74 @@ function byDue(a: OpenTask, b: OpenTask): number {
   return a.title.localeCompare(b.title)
 }
 
+function patchToday(data: TodayData, target: ToggleTarget): TodayData {
+  const nextCompleted = !target.completed
+  const stamp = nextCompleted ? data.date : null
+  const apply = (task: TodayTask): TodayTask =>
+    task.id === target.id ? { ...task, completed: nextCompleted, completedOn: stamp } : task
+
+  const planned = data.planned.map(apply)
+  const carriedSource = data.carried.map(apply)
+  const availableSource = data.available.map(apply)
+  let finished = (data.finished ?? []).map(apply)
+
+  if (nextCompleted) {
+    const moved = [...availableSource, ...carriedSource].filter((task) => task.id === target.id)
+    const onPlan = planned.some((task) => task.id === target.id)
+    if (!onPlan && moved.length > 0) {
+      finished = [...moved, ...finished.filter((task) => task.id !== target.id)]
+    }
+    return {
+      ...data,
+      planned,
+      carried: carriedSource.filter((task) => !task.completed),
+      available: availableSource.filter((task) => !task.completed),
+      finished,
+    }
+  }
+
+  const restored = finished.filter((task) => task.id === target.id)
+  finished = finished.filter((task) => task.id !== target.id)
+  const available = [
+    ...availableSource.filter((task) => task.id !== target.id),
+    ...restored.filter((task) => !planned.some((item) => item.id === task.id)),
+  ]
+  return {
+    ...data,
+    planned,
+    carried: carriedSource.filter((task) => task.id !== target.id),
+    available,
+    finished,
+  }
+}
+
 export function useToggleTask() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (target: ToggleTarget) => api.updateTask(target.id, { completed: !target.completed }),
+    mutationFn: (target: ToggleTarget) =>
+      api.updateTask(target.id, {
+        completed: !target.completed,
+        completedOn: target.completed ? null : localISODate(),
+      }),
     onMutate: async (target) => {
       await queryClient.cancelQueries({ queryKey: ['tasks', target.projectId] })
       await queryClient.cancelQueries({ queryKey: ['dashboard'] })
+      await queryClient.cancelQueries({ queryKey: ['today'] })
 
       const previousTasks = queryClient.getQueryData<Task[]>(['tasks', target.projectId])
       const previousDashboard = queryClient.getQueryData<DashboardData>(['dashboard'])
+      const previousToday = queryClient.getQueriesData<TodayData>({ queryKey: ['today'] })
       const nextCompleted = !target.completed
 
       if (previousTasks) {
         queryClient.setQueryData<Task[]>(
           ['tasks', target.projectId],
-          previousTasks.map((task) => (task.id === target.id ? { ...task, completed: nextCompleted } : task)),
+          previousTasks.map((task) =>
+            task.id === target.id
+              ? { ...task, completed: nextCompleted, completedOn: nextCompleted ? localISODate() : null }
+              : task,
+          ),
         )
       }
 
@@ -74,11 +127,17 @@ export function useToggleTask() {
         queryClient.setQueryData<DashboardData>(['dashboard'], { projects, openTasks })
       }
 
-      return { previousTasks, previousDashboard }
+      for (const [key, data] of previousToday) {
+        if (data) queryClient.setQueryData(key, patchToday(data, target))
+      }
+
+      return { previousTasks, previousDashboard, previousToday }
     },
-    onError: (_error, target, context) => {
+    onError: (error, target, context) => {
+      if (error instanceof ApiError && error.queued) return
       if (context?.previousTasks) queryClient.setQueryData(['tasks', target.projectId], context.previousTasks)
       if (context?.previousDashboard) queryClient.setQueryData(['dashboard'], context.previousDashboard)
+      for (const [key, data] of context?.previousToday ?? []) queryClient.setQueryData(key, data)
     },
     onSettled: (_data, _error, target) => {
       void queryClient.invalidateQueries({ queryKey: ['tasks', target.projectId] })

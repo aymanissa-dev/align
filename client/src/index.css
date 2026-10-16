@@ -94,8 +94,14 @@ html.dark ::selection {
 }
 
 html.dark .bg-white,
-html.dark .hover\:bg-white:hover {
+html.dark .hover\:bg-white:hover,
+html.dark .bg-white\/95 {
   background-color: #111111;
+}
+
+html.dark .bg-neutral-100,
+html.dark .hover\:bg-neutral-100:hover {
+  background-color: #1c1c1c;
 }
 
 html.dark .bg-neutral-50,
@@ -166,11 +172,137 @@ html.dark .bg-neutral-900\/30 {
   mask-image: linear-gradient(to right, #000 0%, transparent 20%, transparent 80%, #000 100%);
 }
 
+.site-header {
+  background: rgb(255 255 255 / 0.92);
+  color: #171717;
+  border-bottom: 1px solid #e5e5e5;
+  backdrop-filter: blur(16px);
+}
+
+.site-header .nav-link {
+  color: #171717;
+}
+
+.site-header .nav-link:hover {
+  color: #000;
+}
+
+html.dark .site-header {
+  background: rgb(12 12 12 / 0.88);
+  color: #f5f5f5;
+  border-bottom-color: #2a2a2a;
+}
+
+html.dark .site-header .nav-link,
+html.dark .site-header .nav-link:hover {
+  color: #f5f5f5;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .hero-line {
+    animation: hero-rise 700ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  }
+
+  .hero-delay-1 { animation-delay: 80ms; }
+  .hero-delay-2 { animation-delay: 150ms; }
+  .hero-delay-3 { animation-delay: 220ms; }
+  .hero-delay-4 { animation-delay: 300ms; }
+
+  .word-swap {
+    animation: word-rise 420ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+
+  .preview-float {
+    animation: preview-float 7s ease-in-out infinite;
+  }
+
+  .reveal {
+    opacity: 0;
+    transform: translateY(14px);
+    transition: opacity 560ms ease, transform 560ms ease;
+  }
+
+  .reveal.is-in {
+    opacity: 1;
+    transform: none;
+  }
+
+  .hover-lift {
+    transition: transform 180ms ease, border-color 180ms ease, background-color 180ms ease;
+  }
+
+  .hover-lift:hover {
+    transform: translateY(-2px);
+    border-color: #171717;
+    background: #fafafa;
+  }
+
+  .edge-mesh::before {
+    animation: grid-drift 18s linear infinite;
+  }
+
+  .page-enter {
+    animation: hero-rise 220ms ease;
+  }
+}
+
+html.dark .hover-lift:hover {
+  border-color: #f5f5f5;
+  background: #1a1a1a;
+}
+
+@keyframes hero-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes word-rise {
+  from {
+    opacity: 0;
+    transform: translateY(80%);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes preview-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes grid-drift {
+  from {
+    background-position: 0 0, 0 0, 0 0;
+  }
+  to {
+    background-position: 0 0, 0 0, 72px 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .reveal {
+    opacity: 1;
+    transform: none;
   }
 }

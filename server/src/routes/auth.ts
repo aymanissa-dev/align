@@ -1,11 +1,16 @@
+import { createHash, randomBytes } from 'node:crypto'
 import { Router, type RequestHandler } from 'express'
 import { HttpError } from '../errors.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { Activity, Label, Note, Notification, Project, Task, User, Whiteboard } from '../models.ts'
 import { checkPassword, dummyPasswordHash, hashPassword } from '../password.ts'
 import { publicUser } from '../serialize.ts'
-import { clearSession, setSession } from '../session.ts'
-import { loginSchema, parseBody, passwordSchema, profileSchema, registerSchema } from '../validate.ts'
+import { clearSession, setSession, userIdFromRequest } from '../session.ts'
+import { forgotSchema, loginSchema, parseBody, passwordSchema, profileSchema, registerSchema, resetSchema } from '../validate.ts'
+
+function hashResetToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex')
+}
 
 export function authRouter(limiter: RequestHandler): Router {
   const router = Router()
@@ -36,6 +41,58 @@ export function authRouter(limiter: RequestHandler): Router {
       const hash = user?.passwordHash ?? (await dummyPasswordHash())
       const matches = await checkPassword(input.password, hash)
       if (!user || !matches) throw new HttpError(401, 'Email or password is incorrect.')
+      setSession(res, user.id)
+      res.json(publicUser(user))
+    }),
+  )
+
+  router.get(
+    '/session',
+    asyncHandler(async (req, res) => {
+      const userId = userIdFromRequest(req)
+      if (!userId) {
+        res.json({ user: null })
+        return
+      }
+      const user = await User.findById(userId)
+      res.json({ user: user ? publicUser(user) : null })
+    }),
+  )
+
+  router.post(
+    '/forgot',
+    limiter,
+    asyncHandler(async (req, res) => {
+      const input = parseBody(forgotSchema, req.body)
+      const user = await User.findOne({ email: input.email }).select('+resetTokenHash +resetTokenExpires')
+      const body: { message: string; resetToken?: string } = {
+        message: 'If an account exists for that email, a reset link is ready.',
+      }
+      if (user) {
+        const resetToken = randomBytes(32).toString('hex')
+        user.resetTokenHash = hashResetToken(resetToken)
+        user.resetTokenExpires = new Date(Date.now() + 60 * 60 * 1000)
+        await user.save()
+        if (!process.env.SMTP_HOST) body.resetToken = resetToken
+      }
+      res.json(body)
+    }),
+  )
+
+  router.post(
+    '/reset',
+    limiter,
+    asyncHandler(async (req, res) => {
+      const input = parseBody(resetSchema, req.body)
+      const user = await User.findOne({
+        resetTokenHash: hashResetToken(input.token),
+        resetTokenExpires: { $gt: new Date() },
+      }).select('+passwordHash +resetTokenHash +resetTokenExpires')
+      if (!user) throw new HttpError(400, 'This reset link is invalid or has expired.')
+      user.passwordHash = await hashPassword(input.password)
+      user.set('resetTokenHash', undefined)
+      user.set('resetTokenExpires', undefined)
+      await user.save()
       setSession(res, user.id)
       res.json(publicUser(user))
     }),

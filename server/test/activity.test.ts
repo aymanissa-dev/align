@@ -21,6 +21,24 @@ describe('activity and notifications', () => {
     expect((await other.agent.get(`/api/projects/${id}/activity`)).status).toBe(404)
   })
 
+  it('records label create, update, and delete on the project feed', async () => {
+    const { agent } = await registerUser()
+    const project = await agent.post('/api/projects').send({ name: 'Launch' })
+    const created = await agent.post('/api/labels').send({ name: 'Bug', color: '#b91c1c' })
+    expect(created.status).toBe(201)
+    const updated = await agent.patch(`/api/labels/${created.body.id}`).send({ name: 'Defect' })
+    expect(updated.status).toBe(200)
+    expect((await agent.delete(`/api/labels/${created.body.id}`)).status).toBe(204)
+
+    const timeline = await agent.get(`/api/projects/${project.body.id}/activity`)
+    expect(timeline.body.map((item: { summary: string }) => item.summary)).toEqual([
+      expect.stringContaining('Deleted label'),
+      expect.stringContaining('Updated label'),
+      expect.stringContaining('Created label'),
+      expect.stringContaining('Created project'),
+    ])
+  })
+
   it('creates due-soon and overdue notifications and marks them read', async () => {
     const { agent } = await registerUser()
     const project = await agent.post('/api/projects').send({ name: 'Launch' })

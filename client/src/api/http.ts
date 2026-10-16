@@ -1,4 +1,5 @@
 import { ApiError } from './errors.ts'
+import { enqueueWrite } from '../lib/offline.ts'
 import type {
   ActivityEvent,
   AlignApi,
@@ -8,23 +9,57 @@ import type {
   Label,
   Note,
   Project,
+  ResetResult,
   SearchResults,
   Task,
   User,
   WhiteboardScene,
 } from './types.ts'
 
+const OFFLINE_MESSAGE = "You're offline. This change is saved on this device and will sync when you reconnect."
+
 /**
  * Fetch client for the Align API.
  * Sends cookies with `credentials: 'include'` (the JWT lives in an httpOnly cookie).
  */
 
+function queueable(path: string, method: string): boolean {
+  if (method === 'GET' || method === 'HEAD') return false
+  return !path.startsWith('/api/auth/')
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const method = (init.method ?? 'GET').toUpperCase()
+  const body = typeof init.body === 'string' ? init.body : undefined
+  const canQueue = queueable(path, method)
+
+  if (canQueue && typeof navigator !== 'undefined' && navigator.onLine === false) {
+    try {
+      enqueueWrite({ path, method, body })
+    } catch {
+      throw new ApiError(0, "You're offline, and this change could not be saved on this device.")
+    }
+    throw new ApiError(0, OFFLINE_MESSAGE, true)
+  }
+
   const headers = new Headers(init.headers)
   headers.set('Accept', 'application/json')
   if (init.body) headers.set('Content-Type', 'application/json')
 
-  const response = await fetch(path, { ...init, headers, credentials: 'include' })
+  let response: Response
+  try {
+    response = await fetch(path, { ...init, method, headers, credentials: 'include' })
+  } catch {
+    if (canQueue) {
+      try {
+        enqueueWrite({ path, method, body })
+      } catch {
+        throw new ApiError(0, "You're offline, and this change could not be saved on this device.")
+      }
+      throw new ApiError(0, OFFLINE_MESSAGE, true)
+    }
+    throw new ApiError(0, 'Network error. Check your connection and try again.')
+  }
   if (!response.ok) {
     let message = 'Request failed.'
     try {
@@ -59,6 +94,16 @@ export const httpApi = {
   },
   async logout() {
     await request<void>('/api/auth/logout', { method: 'POST' })
+  },
+  async session() {
+    const data = await request<{ user: User | null }>('/api/auth/session')
+    return data.user
+  },
+  forgotPassword(email) {
+    return request<ResetResult>('/api/auth/forgot', { method: 'POST', body: JSON.stringify({ email }) })
+  },
+  resetPassword(input) {
+    return request<User>('/api/auth/reset', { method: 'POST', body: JSON.stringify(input) })
   },
   me() {
     return request<User>('/api/auth/me')

@@ -21,9 +21,16 @@ describe('today planner', () => {
     expect(today.body.carried.map((task: { title: string }) => task.title)).toEqual(['Draft the note'])
     expect(today.body.available.map((task: { title: string }) => task.title)).toEqual([])
 
-    await agent.patch(`/api/tasks/${first.body.id}`).send({ completed: true })
+    await agent.patch(`/api/tasks/${first.body.id}`).send({ completed: true, completedOn: '2026-10-15' })
     const recap = await agent.get('/api/today').query({ date: '2026-10-15' })
-    expect(recap.body.planned[0]).toMatchObject({ title: 'Write the changelog', completed: true })
+    expect(recap.body.planned[0]).toMatchObject({ title: 'Write the changelog', completed: true, completedOn: '2026-10-15' })
+    expect(recap.body.finished).toEqual([])
+
+    const elsewhere = await agent.post(`/api/projects/${id}/tasks`).send({ title: 'Finished off-plan', plannedFor: '2026-10-20' })
+    await agent.patch(`/api/tasks/${elsewhere.body.id}`).send({ completed: true, completedOn: '2026-10-15' })
+    const withFinished = await agent.get('/api/today').query({ date: '2026-10-15' })
+    expect(withFinished.body.finished.map((task: { title: string }) => task.title)).toEqual(['Finished off-plan'])
+    expect(withFinished.body.available.map((task: { title: string }) => task.title)).not.toContain('Finished off-plan')
     expect((await agent.get('/api/today')).status).toBe(400)
     expect((await agent.patch(`/api/tasks/${second.body.id}`).send({ plannedFor: '15-10-2026' })).status).toBe(400)
   })

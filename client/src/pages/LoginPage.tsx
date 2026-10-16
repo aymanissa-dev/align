@@ -70,6 +70,11 @@ export function LoginPage() {
             {pending ? 'Signing in…' : 'Sign in'}
           </Button>
         </form>
+        <p className="mt-4 text-sm">
+          <Link to="/forgot" className="focus-ring text-neutral-950 underline underline-offset-4">
+            Forgot password?
+          </Link>
+        </p>
         <p className="mt-6 text-sm text-neutral-500">
           New here?{' '}
           <Link to="/register" className="focus-ring text-neutral-950 underline underline-offset-4">
@@ -89,7 +94,6 @@ export function LoginPage() {
           >
             Use the demo account
           </button>
-          <p className="mt-2 font-mono text-[11px] text-neutral-500">demo@align.app · password</p>
         </div>
     </AuthFrame>
   )

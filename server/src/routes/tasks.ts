@@ -24,9 +24,18 @@ export function tasksRouter(): Router {
         input.dueDate === undefined &&
         input.priority === undefined &&
         input.labelIds === undefined &&
-        input.order === undefined
+        input.order === undefined &&
+        input.completedOn === undefined
       if (input.title !== undefined) task.title = input.title
-      if (input.completed !== undefined) task.completed = input.completed
+      if (input.completed !== undefined) {
+        task.completed = input.completed
+        if (input.completed) {
+          task.completedOn =
+            normalizeDueDate(input.completedOn) ?? task.completedOn ?? new Date().toISOString().slice(0, 10)
+        } else {
+          task.completedOn = null
+        }
+      }
       if (input.dueDate !== undefined) task.dueDate = normalizeDueDate(input.dueDate) ?? null
       if (input.priority !== undefined) task.priority = input.priority
       if (input.labelIds !== undefined) task.labelIds = await ownedLabelIds(userId, input.labelIds)

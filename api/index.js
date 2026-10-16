@@ -22,7 +22,9 @@ var userSchema = new Schema(
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true },
     passwordHash: { type: String, required: true, select: false },
-    accent: { type: String, default: "#171717" }
+    accent: { type: String, default: "#171717" },
+    resetTokenHash: { type: String, select: false },
+    resetTokenExpires: { type: Date, select: false }
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );
@@ -36,6 +38,7 @@ var projectSchema = new Schema(
   { timestamps: true }
 );
 projectSchema.index({ userId: 1, status: 1 });
+projectSchema.index({ userId: 1, name: 1 });
 projectSchema.index(
   { name: "text", description: "text" },
   { weights: { name: 5, description: 1 }, name: "ProjectTextIndex" }
@@ -59,6 +62,7 @@ var taskSchema = new Schema(
     priority: { type: String, enum: ["low", "medium", "high", "urgent"], default: "medium", required: true },
     labelIds: { type: [{ type: Schema.Types.ObjectId, ref: "Label" }], default: [] },
     plannedFor: { type: String, default: null },
+    completedOn: { type: String, default: null },
     order: { type: Number, required: true }
   },
   { timestamps: true }
@@ -66,6 +70,8 @@ var taskSchema = new Schema(
 taskSchema.index({ projectId: 1, completed: 1 });
 taskSchema.index({ userId: 1, projectId: 1 });
 taskSchema.index({ userId: 1, dueDate: 1 });
+taskSchema.index({ userId: 1, title: 1 });
+taskSchema.index({ userId: 1, completedOn: 1 });
 taskSchema.index({ title: "text" }, { name: "TaskTextIndex" });
 var noteSchema = new Schema(
   {
@@ -78,6 +84,7 @@ var noteSchema = new Schema(
 );
 noteSchema.index({ projectId: 1 });
 noteSchema.index({ userId: 1, updatedAt: -1 });
+noteSchema.index({ userId: 1, title: 1 });
 noteSchema.index(
   { title: "text", body: "text" },
   { weights: { title: 5, body: 1 }, name: "NoteTextIndex" }
@@ -85,7 +92,7 @@ noteSchema.index(
 var activitySchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
-    projectId: { type: Schema.Types.ObjectId, ref: "Project", required: true },
+    projectId: { type: Schema.Types.ObjectId, ref: "Project", default: null },
     type: { type: String, enum: ["create", "update", "delete", "complete"], required: true },
     summary: { type: String, required: true }
   },
@@ -93,6 +100,7 @@ var activitySchema = new Schema(
 );
 activitySchema.index({ projectId: 1, createdAt: -1 });
 activitySchema.index({ userId: 1, projectId: 1 });
+activitySchema.index({ userId: 1, createdAt: -1 });
 var notificationSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
@@ -308,6 +316,7 @@ var errorHandler = (error, _req, res, _next) => {
 };
 
 // src/routes/auth.ts
+import { createHash, randomBytes } from "node:crypto";
 import { Router } from "express";
 
 // src/password.ts
@@ -367,6 +376,7 @@ function publicTask(task) {
     priority: task.priority,
     labelIds: (task.labelIds ?? []).map((id) => id.toString()),
     plannedFor: task.plannedFor ?? null,
+    completedOn: task.completedOn ?? null,
     order: task.order,
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString()
@@ -375,7 +385,7 @@ function publicTask(task) {
 function publicActivity(item) {
   return {
     id: item.id,
-    projectId: item.projectId.toString(),
+    projectId: item.projectId ? item.projectId.toString() : "",
     type: item.type,
     summary: item.summary,
     createdAt: item.createdAt.toISOString()
@@ -434,6 +444,13 @@ var registerSchema = z.object({
   email,
   password: password()
 });
+var forgotSchema = z.object({
+  email
+});
+var resetSchema = z.object({
+  token: z.string({ required_error: "This reset link is invalid or has expired." }).trim().min(20, "This reset link is invalid or has expired.").max(200, "This reset link is invalid or has expired."),
+  password: password()
+});
 var loginSchema = z.object({
   email: z.string({
     required_error: "Email or password is incorrect.",
@@ -476,7 +493,8 @@ var taskCreateSchema = z.object({
   title: text("Task title", 200),
   dueDate: dueDate.optional(),
   priority: priority.optional(),
-  labelIds: labelIds.optional()
+  labelIds: labelIds.optional(),
+  plannedFor: dueDate.optional()
 });
 var taskPatchSchema = z.object({
   title: text("Task title", 200).optional(),
@@ -485,6 +503,7 @@ var taskPatchSchema = z.object({
   priority: priority.optional(),
   labelIds: labelIds.optional(),
   plannedFor: dueDate.optional(),
+  completedOn: dueDate.optional(),
   order: z.number({ invalid_type_error: "Order must be a number." }).finite("Order must be a number.").optional()
 });
 var labelCreateSchema = z.object({
@@ -561,6 +580,9 @@ function normalizeDueDate(value) {
 }
 
 // src/routes/auth.ts
+function hashResetToken(token) {
+  return createHash("sha256").update(token).digest("hex");
+}
 function authRouter(limiter) {
   const router = Router();
   router.post(
@@ -588,6 +610,55 @@ function authRouter(limiter) {
       const hash = user?.passwordHash ?? await dummyPasswordHash();
       const matches = await checkPassword(input.password, hash);
       if (!user || !matches) throw new HttpError(401, "Email or password is incorrect.");
+      setSession(res, user.id);
+      res.json(publicUser(user));
+    })
+  );
+  router.get(
+    "/session",
+    asyncHandler(async (req, res) => {
+      const userId = userIdFromRequest(req);
+      if (!userId) {
+        res.json({ user: null });
+        return;
+      }
+      const user = await User.findById(userId);
+      res.json({ user: user ? publicUser(user) : null });
+    })
+  );
+  router.post(
+    "/forgot",
+    limiter,
+    asyncHandler(async (req, res) => {
+      const input = parseBody(forgotSchema, req.body);
+      const user = await User.findOne({ email: input.email }).select("+resetTokenHash +resetTokenExpires");
+      const body = {
+        message: "If an account exists for that email, a reset link is ready."
+      };
+      if (user) {
+        const resetToken = randomBytes(32).toString("hex");
+        user.resetTokenHash = hashResetToken(resetToken);
+        user.resetTokenExpires = new Date(Date.now() + 60 * 60 * 1e3);
+        await user.save();
+        if (!process.env.SMTP_HOST) body.resetToken = resetToken;
+      }
+      res.json(body);
+    })
+  );
+  router.post(
+    "/reset",
+    limiter,
+    asyncHandler(async (req, res) => {
+      const input = parseBody(resetSchema, req.body);
+      const user = await User.findOne({
+        resetTokenHash: hashResetToken(input.token),
+        resetTokenExpires: { $gt: /* @__PURE__ */ new Date() }
+      }).select("+passwordHash +resetTokenHash +resetTokenExpires");
+      if (!user) throw new HttpError(400, "This reset link is invalid or has expired.");
+      user.passwordHash = await hashPassword(input.password);
+      user.set("resetTokenHash", void 0);
+      user.set("resetTokenExpires", void 0);
+      await user.save();
       setSession(res, user.id);
       res.json(publicUser(user));
     })
@@ -714,6 +785,19 @@ function dashboardRouter() {
 // src/routes/labels.ts
 import { Router as Router3 } from "express";
 
+// src/activity.ts
+function quoteTitle(title) {
+  return `\u201C${title.replaceAll("\u201C", "").replaceAll("\u201D", "")}\u201D`;
+}
+async function recordActivity(input) {
+  await Activity.create({
+    userId: input.userId,
+    projectId: input.projectId ?? null,
+    type: input.type,
+    summary: input.summary.slice(0, 240)
+  });
+}
+
 // src/scope.ts
 import { Types } from "mongoose";
 function objectId(id) {
@@ -782,6 +866,11 @@ function labelsRouter() {
         name: input.name,
         color: input.color.toLowerCase()
       });
+      await recordActivity({
+        userId,
+        type: "create",
+        summary: `Created label ${quoteTitle(label.name)}`
+      });
       res.status(201).json(publicLabel(label));
     })
   );
@@ -804,6 +893,11 @@ function labelsRouter() {
       }
       if (input.color !== void 0) label.color = input.color.toLowerCase();
       await label.save();
+      await recordActivity({
+        userId,
+        type: "update",
+        summary: `Updated label ${quoteTitle(label.name)}`
+      });
       res.json(publicLabel(label));
     })
   );
@@ -816,7 +910,13 @@ function labelsRouter() {
       const label = await Label.findOne({ _id: labelId, userId });
       if (!label) throw new HttpError(404, "Label not found.");
       await Task.updateMany({ userId, labelIds: label._id }, { $pull: { labelIds: label._id } });
+      const name = label.name;
       await label.deleteOne();
+      await recordActivity({
+        userId,
+        type: "delete",
+        summary: `Deleted label ${quoteTitle(name)}`
+      });
       res.status(204).send();
     })
   );
@@ -825,21 +925,6 @@ function labelsRouter() {
 
 // src/routes/notes.ts
 import { Router as Router4 } from "express";
-
-// src/activity.ts
-function quoteTitle(title) {
-  return `\u201C${title.replaceAll("\u201C", "").replaceAll("\u201D", "")}\u201D`;
-}
-async function recordActivity(input) {
-  await Activity.create({
-    userId: input.userId,
-    projectId: input.projectId,
-    type: input.type,
-    summary: input.summary.slice(0, 240)
-  });
-}
-
-// src/routes/notes.ts
 function notesRouter() {
   const router = Router4();
   router.use(requireAuth);
@@ -1042,6 +1127,7 @@ function projectsRouter() {
         dueDate: dueDate2,
         priority: input.priority ?? "medium",
         labelIds: labelIds2,
+        plannedFor: normalizeDueDate(input.plannedFor) ?? null,
         order: (latest?.order ?? 0) + 1
       });
       await touchProject(project._id, userId);
@@ -1113,7 +1199,10 @@ function projectsRouter() {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req);
       const project = await requireProject(userId, req.params.id);
-      const items = await Activity.find({ userId, projectId: project._id }).sort({ createdAt: -1, _id: -1 }).limit(100);
+      const items = await Activity.find({
+        userId,
+        $or: [{ projectId: project._id }, { projectId: null }]
+      }).sort({ createdAt: -1, _id: -1 }).limit(100);
       res.json(items.map(publicActivity));
     })
   );
@@ -1176,7 +1265,8 @@ function projectsRouter() {
 
 // src/routes/search.ts
 import { Router as Router7 } from "express";
-var RESULT_LIMIT = 50;
+var RESULT_LIMIT = 20;
+var TIME_MS = 800;
 function queryText(value) {
   if (typeof value !== "string") return "";
   return value.trim().slice(0, 200);
@@ -1189,19 +1279,31 @@ function textSearch(value) {
   if (cleaned.length < 3) return null;
   return cleaned;
 }
-async function searchDocs(query, byText, byRegex) {
-  const text2 = textSearch(query);
-  if (text2) {
-    try {
-      const hits = await byText(text2);
-      if (hits.length > 0) {
-        return hits.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-      }
-    } catch (error) {
-      console.error(error);
+async function settle(query) {
+  try {
+    return await query;
+  } catch (error) {
+    console.error(error);
+    return [];
+  }
+}
+function mergeById(groups, idOf) {
+  const seen = /* @__PURE__ */ new Set();
+  const merged = [];
+  for (const group of groups) {
+    for (const item of group) {
+      const id = idOf(item);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      merged.push(item);
+      if (merged.length >= RESULT_LIMIT) return merged;
     }
   }
-  return byRegex();
+  return merged;
+}
+async function whenText(text2, query) {
+  if (!text2) return [];
+  return settle(query());
 }
 function searchRouter() {
   const router = Router7();
@@ -1215,50 +1317,46 @@ function searchRouter() {
         return;
       }
       const userId = currentUserId(req);
-      const pattern = escapeRegex(query);
-      const contains = { $regex: pattern, $options: "i" };
-      const [projects, tasks, notes, ownedProjects] = await Promise.all([
-        searchDocs(
-          query,
-          (text2) => Project.find({ userId, $text: { $search: text2 } }).limit(RESULT_LIMIT),
-          () => Project.find({ userId, $or: [{ name: contains }, { description: contains }] }).sort({ updatedAt: -1 }).limit(RESULT_LIMIT)
+      const prefix = { $regex: `^${escapeRegex(query)}`, $options: "i" };
+      const text2 = textSearch(query);
+      const [projectText, projectName, taskText, taskTitle, noteText, noteTitle, ownedProjects] = await Promise.all([
+        whenText(text2, () => Project.find({ userId, $text: { $search: text2 ?? "" } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
+        settle(
+          Project.find({ userId, name: prefix }).sort({ updatedAt: -1 }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)
         ),
-        searchDocs(
-          query,
-          (text2) => Task.find({ userId, $text: { $search: text2 } }).limit(RESULT_LIMIT),
-          () => Task.find({ userId, title: contains }).sort({ updatedAt: -1 }).limit(RESULT_LIMIT)
-        ),
-        searchDocs(
-          query,
-          (text2) => Note.find({ userId, $text: { $search: text2 } }).limit(RESULT_LIMIT),
-          () => Note.find({ userId, $or: [{ title: contains }, { body: contains }] }).sort({ updatedAt: -1 }).limit(RESULT_LIMIT)
-        ),
-        Project.find({ userId }).select("name")
+        whenText(text2, () => Task.find({ userId, $text: { $search: text2 ?? "" } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
+        settle(Task.find({ userId, title: prefix }).sort({ updatedAt: -1 }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
+        whenText(text2, () => Note.find({ userId, $text: { $search: text2 ?? "" } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
+        settle(Note.find({ userId, title: prefix }).sort({ updatedAt: -1 }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
+        Project.find({ userId }).select("name").maxTimeMS(TIME_MS)
       ]);
+      const projects = mergeById([projectText, projectName], (item) => item.id);
+      const tasks = mergeById([taskText, taskTitle], (item) => item.id);
+      const notes = mergeById([noteText, noteTitle], (item) => item.id);
       const names = new Map(ownedProjects.map((project) => [project.id, project.name]));
       res.json({
         projects: projects.map(publicProject),
         tasks: tasks.flatMap((task) => {
-          const projectName = names.get(task.projectId.toString());
-          if (!projectName) return [];
+          const projectName2 = names.get(task.projectId.toString());
+          if (!projectName2) return [];
           return [
             {
               id: task.id,
               projectId: task.projectId.toString(),
-              projectName,
+              projectName: projectName2,
               title: task.title,
               completed: task.completed
             }
           ];
         }),
         notes: notes.flatMap((note) => {
-          const projectName = names.get(note.projectId.toString());
-          if (!projectName) return [];
+          const projectName2 = names.get(note.projectId.toString());
+          if (!projectName2) return [];
           return [
             {
               id: note.id,
               projectId: note.projectId.toString(),
-              projectName,
+              projectName: projectName2,
               title: note.title,
               body: note.body
             }
@@ -1282,9 +1380,16 @@ function tasksRouter() {
       const task = await requireTask(userId, req.params.id);
       const input = parseBody(taskPatchSchema, req.body);
       const wasCompleted = task.completed;
-      const planningOnly = input.plannedFor !== void 0 && input.title === void 0 && input.completed === void 0 && input.dueDate === void 0 && input.priority === void 0 && input.labelIds === void 0 && input.order === void 0;
+      const planningOnly = input.plannedFor !== void 0 && input.title === void 0 && input.completed === void 0 && input.dueDate === void 0 && input.priority === void 0 && input.labelIds === void 0 && input.order === void 0 && input.completedOn === void 0;
       if (input.title !== void 0) task.title = input.title;
-      if (input.completed !== void 0) task.completed = input.completed;
+      if (input.completed !== void 0) {
+        task.completed = input.completed;
+        if (input.completed) {
+          task.completedOn = normalizeDueDate(input.completedOn) ?? task.completedOn ?? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+        } else {
+          task.completedOn = null;
+        }
+      }
       if (input.dueDate !== void 0) task.dueDate = normalizeDueDate(input.dueDate) ?? null;
       if (input.priority !== void 0) task.priority = input.priority;
       if (input.labelIds !== void 0) task.labelIds = await ownedLabelIds(userId, input.labelIds);
@@ -1351,7 +1456,8 @@ function todayRouter() {
         date,
         planned: visible.filter((task) => task.plannedFor === date).map(withProject),
         carried: visible.filter((task) => task.plannedFor != null && task.plannedFor < date && !task.completed).map(withProject),
-        available: visible.filter((task) => !task.completed && task.plannedFor !== date && !(task.plannedFor && task.plannedFor < date)).map(withProject)
+        available: visible.filter((task) => !task.completed && task.plannedFor !== date && !(task.plannedFor && task.plannedFor < date)).map(withProject),
+        finished: visible.filter((task) => task.completed && task.completedOn === date && task.plannedFor !== date).map(withProject)
       });
     })
   );

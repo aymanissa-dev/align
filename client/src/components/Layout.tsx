@@ -21,7 +21,7 @@ function navClass(isActive: boolean): string {
     'focus-ring flex items-center gap-2.5 border-l-2 px-3 py-2 text-sm',
     isActive
       ? 'border-neutral-950 bg-neutral-50 font-medium text-neutral-950'
-      : 'border-transparent text-neutral-600 hover:bg-neutral-50 hover:text-neutral-950',
+      : 'border-transparent text-neutral-800 hover:bg-neutral-50 hover:text-neutral-950',
   )
 }
 
@@ -42,11 +42,24 @@ export function Layout({ children }: { children?: ReactNode }) {
   if (syncedRoute !== routeKey) {
     setSyncedRoute(routeKey)
     setOpen(false)
-    setSearch(location.pathname === '/search' ? (params.get('q') ?? '') : '')
+    if (typeof document === 'undefined' || document.activeElement?.id !== 'sidebar-search') {
+      setSearch(location.pathname === '/search' ? (params.get('q') ?? '') : '')
+    }
   }
   if (isDesktop && open) setOpen(false)
 
   const drawerOpen = isDesktop || open
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      const query = search.trim()
+      if (!query && location.pathname !== '/search') return
+      const next = query ? `/search?q=${encodeURIComponent(query)}` : '/search'
+      const current = `${location.pathname}${location.search}`
+      if (current !== next) navigate(next)
+    }, 200)
+    return () => window.clearTimeout(handle)
+  }, [search, location.pathname, location.search, navigate])
 
   useEffect(() => {
     if (!drawerOpen || isDesktop) return
@@ -77,7 +90,7 @@ export function Layout({ children }: { children?: ReactNode }) {
       <header className="fixed inset-x-0 top-0 z-30 flex h-14 items-center gap-1 border-b border-neutral-200 bg-white px-3 md:hidden">
         <button
           type="button"
-          className="focus-ring inline-flex h-10 w-10 items-center justify-center"
+          className="focus-ring inline-flex h-11 w-11 items-center justify-center"
           aria-expanded={open}
           aria-controls="sidebar"
           onClick={() => setOpen(true)}
@@ -108,7 +121,7 @@ export function Layout({ children }: { children?: ReactNode }) {
           <button
             ref={closeRef}
             type="button"
-            className="focus-ring inline-flex h-9 w-9 items-center justify-center md:hidden"
+            className="focus-ring inline-flex h-11 w-11 items-center justify-center md:hidden"
             aria-label="Close menu"
             onClick={() => setOpen(false)}
           >
@@ -135,7 +148,7 @@ export function Layout({ children }: { children?: ReactNode }) {
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search"
-              className="focus-ring w-full border border-neutral-300 bg-white py-1.5 pr-3 pl-8 text-sm placeholder:text-neutral-400"
+              className="focus-ring min-h-11 w-full border border-neutral-300 bg-white py-2 pr-3 pl-8 text-sm placeholder:text-neutral-400"
             />
           </div>
           <button type="submit" className="sr-only">
@@ -169,7 +182,7 @@ export function Layout({ children }: { children?: ReactNode }) {
       </aside>
 
       <main id="main" className="min-h-screen pt-14 md:pt-0 md:pl-64">
-        <div className="mx-auto w-full max-w-5xl px-5 py-8 md:px-8 md:py-10">
+        <div key={location.pathname} className="page-enter mx-auto w-full max-w-5xl px-5 py-8 md:px-8 md:py-10">
           {children ?? <Outlet />}
         </div>
       </main>

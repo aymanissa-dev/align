@@ -22,7 +22,7 @@ export function TextButton({ className, type = 'button', ...props }: ButtonHTMLA
   return (
     <button
       type={type}
-      className={cn('focus-ring text-sm text-neutral-500 hover:text-neutral-950', className)}
+      className={cn('focus-ring inline-flex min-h-11 items-center px-2 text-sm text-neutral-800 hover:text-neutral-950', className)}
       {...props}
     />
   )
@@ -276,12 +276,18 @@ export function CheckButton({
       disabled={disabled}
       onClick={onChange}
       className={cn(
-        'focus-ring mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center border',
-        checked ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-400 bg-white',
+        'focus-ring flex h-11 w-11 shrink-0 items-center justify-center',
         disabled && 'opacity-40',
       )}
     >
-      {checked ? <IconCheck className="h-3 w-3" /> : null}
+      <span
+        className={cn(
+          'flex h-4 w-4 items-center justify-center border',
+          checked ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-400 bg-white',
+        )}
+      >
+        {checked ? <IconCheck className="h-3 w-3" /> : null}
+      </span>
     </button>
   )
 }
