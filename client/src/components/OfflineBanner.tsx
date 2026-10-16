@@ -1,16 +1,15 @@
 import { useEffect, useState } from 'react'
 import {
-  flushOfflineQueue,
+  FLUSH_EVENT,
   isUnreachable,
   queuedCount,
   queueFailure,
   QUEUE_EVENT,
   REACH_EVENT,
+  startOfflineSync,
+  type FlushResult,
 } from '../lib/offline.ts'
-import { queryClient } from '../queryClient.ts'
 import { useToast } from './toast-context.ts'
-
-const RETRY_MS = 4000
 
 export function OfflineBanner() {
   const toast = useToast()
@@ -20,67 +19,42 @@ export function OfflineBanner() {
   const [problem, setProblem] = useState<string | null>(() => queueFailure())
 
   useEffect(() => {
-    let stopped = false
-    let running = false
-
     const refresh = () => {
       setOffline(isUnreachable())
       setQueued(queuedCount())
       setProblem(queueFailure())
     }
 
-    const run = () => {
-      if (stopped || running) return
-      if (typeof navigator !== 'undefined' && navigator.onLine === false) return
-      if (queuedCount() === 0) return
-      running = true
-      setFlushing(true)
-      void flushOfflineQueue()
-        .then((result) => {
-          if (stopped) return
-          refresh()
-          if (result.synced > 0) {
-            toast(result.synced === 1 ? 'Synced 1 saved change.' : `Synced ${result.synced} saved changes.`)
-            void queryClient.invalidateQueries()
-          }
-          for (const message of result.rejected) toast(message)
-        })
-        .finally(() => {
-          running = false
-          if (!stopped) {
-            setFlushing(false)
-            refresh()
-          }
-        })
+    const onFlush = (event: Event) => {
+      const detail = (event as CustomEvent<{ phase: 'start' | 'end'; result?: FlushResult }>).detail
+      if (!detail) return
+      if (detail.phase === 'start') {
+        setFlushing(true)
+        return
+      }
+      setFlushing(false)
+      refresh()
+      const result = detail.result
+      if (!result) return
+      if (result.synced > 0) {
+        toast(result.synced === 1 ? 'Synced 1 saved change.' : `Synced ${result.synced} saved changes.`)
+      }
+      for (const message of result.rejected) toast(message)
     }
 
-    const onOffline = () => {
-      setOffline(true)
-    }
-    const onOnline = () => {
-      setOffline(isUnreachable())
-      run()
-    }
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') run()
-    }
-
+    startOfflineSync()
     refresh()
-    run()
-    const timer = window.setInterval(run, RETRY_MS)
-    window.addEventListener('offline', onOffline)
-    window.addEventListener('online', onOnline)
+    window.addEventListener('offline', refresh)
+    window.addEventListener('online', refresh)
     window.addEventListener(QUEUE_EVENT, refresh)
     window.addEventListener(REACH_EVENT, refresh)
-    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener(FLUSH_EVENT, onFlush)
     return () => {
-      stopped = true
-      window.clearInterval(timer)
-      window.removeEventListener('offline', onOffline)
-      window.removeEventListener('online', onOnline)
+      window.removeEventListener('offline', refresh)
+      window.removeEventListener('online', refresh)
       window.removeEventListener(QUEUE_EVENT, refresh)
       window.removeEventListener(REACH_EVENT, refresh)
-      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener(FLUSH_EVENT, onFlush)
     }
   }, [toast])
 

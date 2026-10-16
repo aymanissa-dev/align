@@ -62,7 +62,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
     throw new ApiError(0, 'Network error. Check your connection and try again.')
   }
-  if (response.ok) markReachable()
+  // Cached GET responses can be served while the network is still down.
+  if (response.ok && method !== 'GET' && method !== 'HEAD') markReachable()
   if (!response.ok) {
     let message = 'Request failed.'
     try {

@@ -1,3 +1,4 @@
+import { onlineManager } from '@tanstack/react-query'
 import { queryClient } from '../queryClient.ts'
 import type { Task, TodayData, TodayTask } from '../api/types.ts'
 
@@ -20,6 +21,10 @@ const KEY = 'align-offline-queue'
 const adopted = new Set<string>()
 export const QUEUE_EVENT = 'align-offline-queue'
 export const REACH_EVENT = 'align-reachability'
+export const FLUSH_EVENT = 'align-offline-flush'
+
+const RETRY_MS = 10_000
+const FLUSH_TIMEOUT_MS = 8_000
 
 let ownerId: string | null = null
 let unreachable = false
@@ -219,7 +224,9 @@ async function errorMessage(response: Response): Promise<string> {
 async function runFlush(): Promise<FlushResult> {
   const items = readQueue()
   const owned = mine(items)
-  if (owned.length === 0 || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+  // Try even when navigator.onLine is still false. DevTools can leave that
+  // flag stuck after the network is back, and a reload was the only flush.
+  if (owned.length === 0) {
     return { synced: 0, rejected: [] }
   }
   const others = items.filter((item) => item.userId !== ownerId)
@@ -237,6 +244,8 @@ async function runFlush(): Promise<FlushResult> {
         method: item.method,
         credentials: 'include',
         keepalive: true,
+        cache: 'no-store',
+        signal: AbortSignal.timeout(FLUSH_TIMEOUT_MS),
         headers: {
           Accept: 'application/json',
           ...(item.body ? { 'Content-Type': 'application/json' } : {}),
@@ -244,7 +253,11 @@ async function runFlush(): Promise<FlushResult> {
         body: item.body,
       })
       if (response.ok) {
-        await keepSyncedTask(item, response)
+        try {
+          await keepSyncedTask(item, response)
+        } catch {
+          // The server accepted the write. Drop the queue entry either way.
+        }
         synced += 1
         continue
       }
@@ -264,10 +277,82 @@ async function runFlush(): Promise<FlushResult> {
   return { synced, rejected }
 }
 
+function emitFlush(detail: { phase: 'start' | 'end'; result?: FlushResult }) {
+  window.dispatchEvent(new CustomEvent(FLUSH_EVENT, { detail }))
+}
+
+async function confirmReachable(): Promise<void> {
+  if (!unreachable) return
+  try {
+    const response = await fetch(`/api/auth/session?reach=${Date.now()}`, {
+      method: 'GET',
+      credentials: 'include',
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(FLUSH_TIMEOUT_MS),
+    })
+    if (response.ok) markReachable()
+  } catch {
+    // Still offline. The banner stays until a later attempt succeeds.
+  }
+}
+
+let again = false
+
 export function flushOfflineQueue(): Promise<FlushResult> {
-  if (flushPromise) return flushPromise
-  flushPromise = runFlush().finally(() => {
+  if (flushPromise) {
+    again = true
+    return flushPromise
+  }
+  flushPromise = (async () => {
+    emitFlush({ phase: 'start' })
+    let synced = 0
+    const rejected: string[] = []
+    try {
+      do {
+        again = false
+        const result = await runFlush()
+        synced += result.synced
+        rejected.push(...result.rejected)
+      } while (again)
+      if (synced > 0) void queryClient.invalidateQueries()
+      return { synced, rejected }
+    } finally {
+      emitFlush({ phase: 'end', result: { synced, rejected } })
+    }
+  })().finally(() => {
     flushPromise = null
   })
   return flushPromise
+}
+
+let syncStarted = false
+
+function kickOfflineSync() {
+  if (queuedCount() > 0) {
+    void flushOfflineQueue()
+    return
+  }
+  void confirmReachable()
+}
+
+/** Flush queued writes independently of the banner's React lifecycle. */
+export function startOfflineSync() {
+  if (syncStarted || typeof window === 'undefined') return
+  syncStarted = true
+  window.addEventListener('online', kickOfflineSync)
+  window.addEventListener('offline', () => {
+    markUnreachable()
+  })
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') kickOfflineSync()
+  })
+  onlineManager.subscribe((online) => {
+    if (online) kickOfflineSync()
+  })
+  window.setInterval(() => {
+    if (queuedCount() === 0 && !unreachable) return
+    kickOfflineSync()
+  }, RETRY_MS)
+  kickOfflineSync()
 }
