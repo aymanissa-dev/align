@@ -32,9 +32,15 @@ function unique(data: TodayData): TodayTask[] {
 export function groupToday(data: TodayData, date: string): TodayGroups {
   const all = unique(data)
   const tomorrowDate = shiftISODate(date, 1)
-  const onToday = all.filter((task) => task.plannedFor === date)
+  const open = all.filter((task) => !task.completed && (task.plannedFor === date || task.dueDate === date))
+  const openIds = new Set(open.map((task) => task.id))
   const overdue = all.filter(
-    (task) => !task.completed && Boolean(task.dueDate) && (task.dueDate ?? '') < date && task.plannedFor !== date,
+    (task) =>
+      !task.completed &&
+      Boolean(task.dueDate) &&
+      (task.dueDate ?? '') < date &&
+      task.plannedFor !== date &&
+      !openIds.has(task.id),
   )
   const overdueIds = new Set(overdue.map((task) => task.id))
   const carried = all.filter(
@@ -43,12 +49,15 @@ export function groupToday(data: TodayData, date: string): TodayGroups {
       Boolean(task.plannedFor) &&
       (task.plannedFor ?? '') < date &&
       !overdueIds.has(task.id) &&
-      !(task.dueDate && task.dueDate > date),
+      !openIds.has(task.id) &&
+      !(task.dueDate && task.dueDate >= date),
   )
-  const tomorrow = all.filter((task) => !task.completed && task.plannedFor === tomorrowDate && !overdueIds.has(task.id))
-  const taken = new Set([...onToday, ...overdue, ...carried, ...tomorrow].map((task) => task.id))
+  const tomorrow = all.filter(
+    (task) => !task.completed && task.plannedFor === tomorrowDate && !overdueIds.has(task.id) && !openIds.has(task.id),
+  )
+  const taken = new Set([...open, ...overdue, ...carried, ...tomorrow].map((task) => task.id))
   return {
-    open: onToday.filter((task) => !task.completed),
+    open,
     tomorrow,
     done: all.filter((task) => task.completed && (task.completedOn === date || task.plannedFor === date)),
     overdue,

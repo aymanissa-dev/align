@@ -5,6 +5,14 @@ import { Project } from '../src/models.ts'
 import { app, registerUser } from './helpers.ts'
 
 describe('auth', () => {
+  it('publishes the minimum client version without waiting on the database', async () => {
+    const version = await request(app).get('/api/version')
+    expect(version.status).toBe(200)
+    expect(version.body).toEqual({ version: 2, minimum: 2 })
+    expect(version.headers['x-align-minimum']).toBe('2')
+    expect(version.headers['cache-control']).toMatch(/no-store/i)
+  })
+
   it('registers, reads the session, and logs out', async () => {
     const { agent, email } = await registerUser('Ada Lovelace')
     const me = await agent.get('/api/auth/me')
@@ -24,7 +32,7 @@ describe('auth', () => {
     const created = await request(app).post('/api/auth/register').send({
       name: 'Grace Hopper',
       email: `grace-${crypto.randomUUID()}@align.test`,
-      password: 'password1',
+      password: 'password12',
     })
     expect(created.status).toBe(201)
     const cookie = created.headers['set-cookie']
@@ -37,7 +45,7 @@ describe('auth', () => {
     try {
       const secure = await request(app).post('/api/auth/login').send({
         email: created.body.email,
-        password: 'password1',
+        password: 'password12',
       })
       expect(secure.headers['set-cookie']?.[0]).toMatch(/Secure/i)
     } finally {
@@ -52,7 +60,7 @@ describe('auth', () => {
     const duplicate = await request(app).post('/api/auth/register').send({
       name: 'Ada',
       email: email.toUpperCase(),
-      password: 'password1',
+      password: 'password12',
     })
     expect(duplicate.status).toBe(409)
 
@@ -62,6 +70,20 @@ describe('auth', () => {
       password: 'short',
     })
     expect(invalid.status).toBe(400)
+
+    const weak = await request(app).post('/api/auth/register').send({
+      name: 'Ada',
+      email: `weak-${crypto.randomUUID()}@align.test`,
+      password: 'password1',
+    })
+    expect(weak.status).toBe(400)
+
+    const mixed = await request(app).post('/api/auth/register').send({
+      name: 'Ada',
+      email: `mixed-${crypto.randomUUID()}@align.test`,
+      password: 'Horse1!x',
+    })
+    expect(mixed.status).toBe(201)
 
     const wrong = await request(app).post('/api/auth/login').send({ email, password: 'password2' })
     expect(wrong.status).toBe(401)
@@ -91,25 +113,31 @@ describe('auth', () => {
 
     const badPassword = await agent.post('/api/auth/password').send({
       currentPassword: 'nope',
-      newPassword: 'password2',
+      newPassword: 'password123',
     })
     expect(badPassword.status).toBe(400)
 
+    const weakPassword = await agent.post('/api/auth/password').send({
+      currentPassword: password,
+      newPassword: 'password1',
+    })
+    expect(weakPassword.status).toBe(400)
+
     const changed = await agent.post('/api/auth/password').send({
       currentPassword: password,
-      newPassword: 'password2',
+      newPassword: 'password123',
     })
     expect(changed.status).toBe(204)
 
     const oldLogin = await request(app).post('/api/auth/login').send({ email, password })
     expect(oldLogin.status).toBe(401)
-    const newLogin = await request(app).post('/api/auth/login').send({ email, password: 'password2' })
+    const newLogin = await request(app).post('/api/auth/login').send({ email, password: 'password123' })
     expect(newLogin.status).toBe(200)
 
     const removed = await agent.delete('/api/auth/me')
     expect(removed.status).toBe(204)
     expect(await Project.countDocuments({ _id: project.body.id })).toBe(0)
-    const gone = await request(app).post('/api/auth/login').send({ email, password: 'password2' })
+    const gone = await request(app).post('/api/auth/login').send({ email, password: 'password123' })
     expect(gone.status).toBe(401)
   })
 
@@ -122,7 +150,7 @@ describe('auth', () => {
     const registered = await request(app).post('/api/auth/register').send({
       name: 'Reset',
       email,
-      password: 'password1',
+      password: 'password12',
     })
     expect(registered.status).toBe(201)
     const agent = request.agent(app)
@@ -139,9 +167,15 @@ describe('auth', () => {
     const bad = await request(app).post('/api/auth/reset').send({ token: forgot.body.resetToken, password: 'short' })
     expect(bad.status).toBe(400)
 
+    const weakReset = await request(app).post('/api/auth/reset').send({
+      token: forgot.body.resetToken,
+      password: 'password1',
+    })
+    expect(weakReset.status).toBe(400)
+
     const reset = await request(app).post('/api/auth/reset').send({
       token: forgot.body.resetToken,
-      password: 'password2',
+      password: 'password123',
     })
     expect(reset.status).toBe(200)
     expect(reset.body.email).toBe(email)
@@ -152,8 +186,8 @@ describe('auth', () => {
     })
     expect(reused.status).toBe(400)
 
-    expect((await request(app).post('/api/auth/login').send({ email, password: 'password1' })).status).toBe(401)
-    expect((await request(app).post('/api/auth/login').send({ email, password: 'password2' })).status).toBe(200)
+    expect((await request(app).post('/api/auth/login').send({ email, password: 'password12' })).status).toBe(401)
+    expect((await request(app).post('/api/auth/login').send({ email, password: 'password123' })).status).toBe(200)
   })
 
   it('rate-limits repeated auth attempts', async () => {
@@ -162,12 +196,12 @@ describe('auth', () => {
     const first = await request(limited).post('/api/auth/register').send({
       name: 'Limit',
       email,
-      password: 'password1',
+      password: 'password12',
     })
     expect(first.status).toBe(201)
     expect((await request(limited).post('/api/auth/login').send({ email, password: 'nope' })).status).toBe(401)
     expect((await request(limited).post('/api/auth/login').send({ email, password: 'nope' })).status).toBe(401)
-    const blocked = await request(limited).post('/api/auth/login').send({ email, password: 'password1' })
+    const blocked = await request(limited).post('/api/auth/login').send({ email, password: 'password12' })
     expect(blocked.status).toBe(429)
     expect(blocked.body).toEqual({ error: 'Too many attempts. Try again later.' })
   })
@@ -176,7 +210,7 @@ describe('auth', () => {
     const created = await request(app).post('/api/auth/register').send({
       name: 'Verify',
       email: `verify-${crypto.randomUUID()}@align.test`,
-      password: 'password1',
+      password: 'password12',
     })
     expect(created.status).toBe(201)
     expect(created.body.emailVerified).toBe(false)
@@ -192,7 +226,7 @@ describe('auth', () => {
     const created = await request(app).post('/api/auth/register').send({
       name: 'Refresh',
       email: `refresh-${crypto.randomUUID()}@align.test`,
-      password: 'password1',
+      password: 'password12',
     })
     const issued = created.headers['set-cookie']
     const cookies = Array.isArray(issued) ? issued : issued ? [issued] : []
@@ -238,7 +272,7 @@ describe('auth', () => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       expect((await request(app).post('/api/auth/login').send({ email, password: 'wrong-password' })).status).toBe(401)
     }
-    const locked = await request(app).post('/api/auth/login').send({ email, password: 'password1' })
+    const locked = await request(app).post('/api/auth/login').send({ email, password: 'password12' })
     expect(locked.status).toBe(429)
     expect(locked.body).toEqual({ error: 'Too many attempts. Try again later.' })
   })

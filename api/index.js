@@ -262,6 +262,15 @@ function ensureIndexes() {
   });
   return indexesReady;
 }
+async function prepareIndexes() {
+  if (process.env.NODE_ENV === "test") {
+    await ensureIndexes();
+    return;
+  }
+  void ensureIndexes().catch((error) => {
+    console.error(error);
+  });
+}
 function databaseFailure(error) {
   console.error(error);
   return new HttpError(500, "Database connection failed.");
@@ -273,11 +282,7 @@ async function connectDb() {
   }
   const state = cache();
   if (state.conn) {
-    try {
-      await ensureIndexes();
-    } catch (error) {
-      throw error instanceof HttpError ? error : databaseFailure(error);
-    }
+    await prepareIndexes();
     return state.conn;
   }
   if (!state.promise) {
@@ -298,7 +303,7 @@ async function connectDb() {
   }
   try {
     state.conn = await state.promise;
-    await ensureIndexes();
+    await prepareIndexes();
   } catch (error) {
     state.conn = null;
     state.promise = null;
@@ -543,6 +548,10 @@ var guardOrigin = (req, res, next) => {
   next();
 };
 
+// src/version.ts
+var APP_VERSION = 2;
+var MINIMUM_CLIENT_VERSION = 2;
+
 // src/routes/auth.ts
 import { randomBytes as randomBytes3 } from "node:crypto";
 import { Router } from "express";
@@ -584,8 +593,13 @@ function bcryptRounds() {
 function hashPassword(password2) {
   return bcrypt.hash(password2, bcryptRounds());
 }
-function checkPassword(password2, hash) {
-  return bcrypt.compare(password2, hash);
+async function checkPassword(password2, hash) {
+  const started = Date.now();
+  const matches = await bcrypt.compare(password2, hash);
+  if (process.env.NODE_ENV !== "test") {
+    console.info(JSON.stringify({ msg: "bcrypt-compare", ms: Date.now() - started, rounds: bcryptRounds() }));
+  }
+  return matches;
 }
 var dummyHash = null;
 function dummyPasswordHash() {
@@ -627,9 +641,8 @@ async function enforceAuthLimit(route, ip, email2) {
   const max = process.env.NODE_ENV === "production" ? PRODUCTION_MAX[route] : 1e3;
   const keys = [`${route}:ip:${ip || "unknown"}`];
   if (email2) keys.push(`${route}:email:${email2}`);
-  for (const key of keys) {
-    if (await hit(key, max)) throw new HttpError(429, "Too many attempts. Try again later.");
-  }
+  const blocked = await Promise.all(keys.map((key) => hit(key, max)));
+  if (blocked.some(Boolean)) throw new HttpError(429, "Too many attempts. Try again later.");
 }
 
 // src/serialize.ts
@@ -743,6 +756,65 @@ async function consumeAuthToken(token, type) {
 
 // src/validate.ts
 import { z } from "zod";
+
+// src/passwordPolicy.ts
+var COMMON = /* @__PURE__ */ new Set([
+  "password",
+  "password1",
+  "qwerty",
+  "qwerty123",
+  "123456",
+  "1234567",
+  "12345678",
+  "123456789",
+  "1234567890",
+  "letmein",
+  "admin",
+  "welcome",
+  "iloveyou",
+  "abc123",
+  "monkey",
+  "dragon",
+  "master",
+  "login",
+  "passw0rd",
+  "trustno1",
+  "sunshine",
+  "princess",
+  "football",
+  "shadow",
+  "111111",
+  "000000",
+  "654321",
+  "superman",
+  "batman",
+  "access",
+  "hello",
+  "charlie"
+]);
+var MEDIUM_PASSWORD_MESSAGE = "Use at least 10 characters, or a stronger mix of letters, numbers, and symbols.";
+function passwordScore(password2) {
+  if (!password2) return 0;
+  const lower = password2.toLowerCase();
+  if (COMMON.has(lower) || /^(.)\1+$/.test(password2)) return 0;
+  let score = 0;
+  if (password2.length >= 8) score += 1;
+  if (password2.length >= 12) score += 1;
+  const classes = Number(/[a-z]/.test(password2)) + Number(/[A-Z]/.test(password2)) + Number(/\d/.test(password2)) + Number(/[^A-Za-z0-9]/.test(password2));
+  if (classes >= 2) score += 1;
+  if (classes >= 3) score += 1;
+  if (/^(?:0123|1234|2345|3456|4567|5678|6789|qwer|asdf|zxcv|abcd)/i.test(password2) && password2.length < 12) {
+    score = Math.min(score, 1);
+  }
+  return Math.min(4, score);
+}
+function isMediumPassword(password2) {
+  if (password2.length < 1 || password2.length > 128) return false;
+  if (password2.length >= 10) return true;
+  return passwordScore(password2) >= 2;
+}
+
+// src/validate.ts
 function parseBody(schema, body) {
   const result = schema.safeParse(body ?? {});
   if (!result.success) {
@@ -755,9 +827,9 @@ function text(label, max) {
 }
 function password(label = "Password") {
   return z.string({
-    required_error: `${label} must be at least 8 characters.`,
-    invalid_type_error: `${label} must be at least 8 characters.`
-  }).min(8, `${label} must be at least 8 characters.`).max(128, `${label} is too long.`);
+    required_error: MEDIUM_PASSWORD_MESSAGE,
+    invalid_type_error: MEDIUM_PASSWORD_MESSAGE
+  }).max(128, `${label} is too long.`).refine((value) => isMediumPassword(value), MEDIUM_PASSWORD_MESSAGE);
 }
 var email = z.string({ required_error: "Enter a valid email.", invalid_type_error: "Enter a valid email." }).trim().toLowerCase().regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, "Enter a valid email.").max(254, "Enter a valid email.");
 var description = z.string({ invalid_type_error: "Description must be text." }).trim().max(2e3, "Description is too long.");
@@ -965,8 +1037,10 @@ ${link}`
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(loginSchema, req.body);
-      await enforceAuthLimit("login", clientIp(req), input.email);
-      const user = await User.findOne({ email: input.email }).select("+passwordHash");
+      const [, user] = await Promise.all([
+        enforceAuthLimit("login", clientIp(req), input.email),
+        User.findOne({ email: input.email }).select("+passwordHash")
+      ]);
       if (user?.lockUntil && user.lockUntil.getTime() > Date.now()) {
         throw new HttpError(429, "Too many attempts. Try again later.");
       }
@@ -1693,7 +1767,7 @@ function notificationsRouter() {
       const userObjectId = new Types5.ObjectId(userId);
       const writes = tasks.flatMap((task) => {
         if (!task.dueDate) return [];
-        const kind = task.dueDate < today ? "overdue" : task.dueDate <= tomorrow ? "due-soon" : null;
+        const kind = task.dueDate < today ? "overdue" : task.dueDate > today && task.dueDate <= tomorrow ? "due-soon" : null;
         if (!kind) return [];
         const key = `${task._id.toString()}:${kind}:${task.dueDate}`;
         return [
@@ -2240,13 +2314,17 @@ function todayRouter() {
           }
         }
       ]);
-      const planned = visible.filter((task) => task.plannedFor === date);
+      const plannedForDate = visible.filter((task) => task.plannedFor === date);
+      const dueToday = visible.filter(
+        (task) => !task.completed && task.dueDate === date && task.plannedFor !== date
+      );
+      const planned = [...plannedForDate, ...dueToday];
       const overdue = visible.filter(
         (task) => !task.completed && Boolean(task.dueDate) && (task.dueDate ?? "") < date && task.plannedFor !== date
       );
       const overdueIds = new Set(overdue.map((task) => task._id.toString()));
       const carried = visible.filter(
-        (task) => !task.completed && task.plannedFor != null && task.plannedFor < date && !overdueIds.has(task._id.toString()) && !(task.dueDate && task.dueDate > date)
+        (task) => !task.completed && task.plannedFor != null && task.plannedFor < date && !overdueIds.has(task._id.toString()) && task.dueDate !== date && !(task.dueDate && task.dueDate > date)
       );
       const taken = new Set([...planned, ...overdue, ...carried].map((task) => task._id.toString()));
       const available = visible.filter((task) => !task.completed && !taken.has(task._id.toString()));
@@ -2277,6 +2355,14 @@ function createApp(options = {}) {
   );
   app2.use(express.json({ limit: "1mb" }));
   app2.use(guardOrigin);
+  app2.use((_req, res, next) => {
+    res.setHeader("X-Align-Minimum", String(MINIMUM_CLIENT_VERSION));
+    next();
+  });
+  app2.get("/api/version", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ version: APP_VERSION, minimum: MINIMUM_CLIENT_VERSION });
+  });
   app2.use((req, _res, next) => {
     const logout = req.method === "POST" && req.path === "/api/auth/logout";
     connectDb().then(
@@ -2354,6 +2440,8 @@ function resolveRequestUrl(url, header) {
 
 // src/vercel.ts
 var app = createApp();
+void connectDb().catch(() => {
+});
 function handler(req, res) {
   req.url = resolveRequestUrl(req.url, (name) => {
     const value = req.headers[name];

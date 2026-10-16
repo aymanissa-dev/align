@@ -1,8 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createApp } from './app.ts'
+import { connectDb } from './db.ts'
 import { resolveRequestUrl } from './requestPath.ts'
 
 const app = createApp()
+void connectDb().catch(() => {
+  // The request middleware connects again and reports a failure if this misses.
+})
 
 export default function handler(req: IncomingMessage, res: ServerResponse): void {
   req.url = resolveRequestUrl(req.url, (name) => {

@@ -62,4 +62,22 @@ describe('today planner', () => {
     expect(done.body.overdue).toEqual([])
     expect(done.body.finished.map((task: { title: string }) => task.title)).toEqual(['Past due'])
   })
+
+  it('puts a task due today on today’s list instead of carried over', async () => {
+    const { agent } = await registerUser()
+    const project = await agent.post('/api/projects').send({ name: 'Launch' })
+    const id = project.body.id as string
+    const due = await agent.post(`/api/projects/${id}/tasks`).send({
+      title: 'Due today',
+      dueDate: '2026-10-16',
+      plannedFor: '2026-10-14',
+    })
+    expect(due.status).toBe(201)
+
+    const today = await agent.get('/api/today').query({ date: '2026-10-16' })
+    expect(today.status).toBe(200)
+    expect(today.body.planned.map((task: { title: string }) => task.title)).toEqual(['Due today'])
+    expect(today.body.carried.map((task: { title: string }) => task.title)).toEqual([])
+    expect(today.body.available.map((task: { title: string }) => task.title)).toEqual([])
+  })
 })

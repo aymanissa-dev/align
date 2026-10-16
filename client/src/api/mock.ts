@@ -1,3 +1,4 @@
+import { isMediumPassword, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
 import { ApiError } from './errors.ts'
 import type {
   AlignApi,
@@ -358,8 +359,8 @@ function requireName(value: string, label: string, max: number): string {
 }
 
 function requirePassword(value: string, label = 'Password'): string {
-  if (!value || value.length < 8) throw new ApiError(400, `${label} must be at least 8 characters.`)
-  if (value.length > 128) throw new ApiError(400, `${label} is too long.`)
+  if (!value || value.length > 128) throw new ApiError(400, value && value.length > 128 ? `${label} is too long.` : MEDIUM_PASSWORD_MESSAGE)
+  if (!isMediumPassword(value)) throw new ApiError(400, MEDIUM_PASSWORD_MESSAGE)
   return value
 }
 
@@ -985,7 +986,9 @@ export const mockApi = {
       const names = new Map(projects.map((project) => [project.id, project.name]))
       const visible = state.tasks.filter((task) => task.userId === user.id && names.has(task.projectId))
       const present = (task: StoredTask) => ({ ...publicTask(task), projectName: names.get(task.projectId) ?? '' })
-      const planned = visible.filter((task) => task.plannedFor === date)
+      const plannedForDate = visible.filter((task) => task.plannedFor === date)
+      const dueToday = visible.filter((task) => !task.completed && task.dueDate === date && task.plannedFor !== date)
+      const planned = [...plannedForDate, ...dueToday]
       const overdue = visible.filter(
         (task) => !task.completed && Boolean(task.dueDate) && (task.dueDate ?? '') < date && task.plannedFor !== date,
       )
@@ -996,6 +999,7 @@ export const mockApi = {
           Boolean(task.plannedFor) &&
           (task.plannedFor ?? '') < date &&
           !overdueIds.has(task.id) &&
+          task.dueDate !== date &&
           !(task.dueDate && task.dueDate > date),
       )
       const taken = new Set([...planned, ...overdue, ...carried].map((task) => task.id))

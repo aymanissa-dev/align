@@ -4,6 +4,7 @@ import helmet from 'helmet'
 import { connectDb } from './db.ts'
 import { errorHandler } from './middleware.ts'
 import { guardOrigin } from './security.ts'
+import { APP_VERSION, MINIMUM_CLIENT_VERSION } from './version.ts'
 import { authRouter } from './routes/auth.ts'
 import { dashboardRouter } from './routes/dashboard.ts'
 import { labelsRouter } from './routes/labels.ts'
@@ -31,6 +32,14 @@ export function createApp(options: AppOptions = {}): Express {
   )
   app.use(express.json({ limit: '1mb' }))
   app.use(guardOrigin)
+  app.use((_req, res, next) => {
+    res.setHeader('X-Align-Minimum', String(MINIMUM_CLIENT_VERSION))
+    next()
+  })
+  app.get('/api/version', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ version: APP_VERSION, minimum: MINIMUM_CLIENT_VERSION })
+  })
   app.use((req, _res, next) => {
     const logout = req.method === 'POST' && req.path === '/api/auth/logout'
     connectDb().then(

@@ -1,5 +1,6 @@
 import { z, type ZodType } from 'zod'
 import { HttpError } from './errors.ts'
+import { isMediumPassword, MEDIUM_PASSWORD_MESSAGE } from './passwordPolicy.ts'
 
 export function parseBody<T>(schema: ZodType<T>, body: unknown): T {
   const result = schema.safeParse(body ?? {})
@@ -20,11 +21,11 @@ function text(label: string, max: number) {
 function password(label = 'Password') {
   return z
     .string({
-      required_error: `${label} must be at least 8 characters.`,
-      invalid_type_error: `${label} must be at least 8 characters.`,
+      required_error: MEDIUM_PASSWORD_MESSAGE,
+      invalid_type_error: MEDIUM_PASSWORD_MESSAGE,
     })
-    .min(8, `${label} must be at least 8 characters.`)
     .max(128, `${label} is too long.`)
+    .refine((value) => isMediumPassword(value), MEDIUM_PASSWORD_MESSAGE)
 }
 
 const email = z

@@ -34,7 +34,7 @@ export function notificationsRouter(): Router {
       const writes = tasks.flatMap((task) => {
         if (!task.dueDate) return []
         const kind: 'overdue' | 'due-soon' | null =
-          task.dueDate < today ? 'overdue' : task.dueDate <= tomorrow ? 'due-soon' : null
+          task.dueDate < today ? 'overdue' : task.dueDate > today && task.dueDate <= tomorrow ? 'due-soon' : null
         if (!kind) return []
         const key = `${task._id.toString()}:${kind}:${task.dueDate}`
         return [

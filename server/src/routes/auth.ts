@@ -95,8 +95,10 @@ export function authRouter(limiter: RequestHandler): Router {
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(loginSchema, req.body)
-      await enforceAuthLimit('login', clientIp(req), input.email)
-      const user = await User.findOne({ email: input.email }).select('+passwordHash')
+      const [, user] = await Promise.all([
+        enforceAuthLimit('login', clientIp(req), input.email),
+        User.findOne({ email: input.email }).select('+passwordHash'),
+      ])
       if (user?.lockUntil && user.lockUntil.getTime() > Date.now()) {
         throw new HttpError(429, 'Too many attempts. Try again later.')
       }

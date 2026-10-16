@@ -88,7 +88,11 @@ export function todayRouter(): Router {
         },
       ])
 
-      const planned = visible.filter((task) => task.plannedFor === date)
+      const plannedForDate = visible.filter((task) => task.plannedFor === date)
+      const dueToday = visible.filter(
+        (task) => !task.completed && task.dueDate === date && task.plannedFor !== date,
+      )
+      const planned = [...plannedForDate, ...dueToday]
       const overdue = visible.filter(
         (task) => !task.completed && Boolean(task.dueDate) && (task.dueDate ?? '') < date && task.plannedFor !== date,
       )
@@ -99,6 +103,7 @@ export function todayRouter(): Router {
           task.plannedFor != null &&
           task.plannedFor < date &&
           !overdueIds.has(task._id.toString()) &&
+          task.dueDate !== date &&
           !(task.dueDate && task.dueDate > date),
       )
       const taken = new Set([...planned, ...overdue, ...carried].map((task) => task._id.toString()))

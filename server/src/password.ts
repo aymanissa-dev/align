@@ -10,8 +10,13 @@ export function hashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, bcryptRounds())
 }
 
-export function checkPassword(password: string, hash: string): Promise<boolean> {
-  return bcrypt.compare(password, hash)
+export async function checkPassword(password: string, hash: string): Promise<boolean> {
+  const started = Date.now()
+  const matches = await bcrypt.compare(password, hash)
+  if (process.env.NODE_ENV !== 'test') {
+    console.info(JSON.stringify({ msg: 'bcrypt-compare', ms: Date.now() - started, rounds: bcryptRounds() }))
+  }
+  return matches
 }
 
 let dummyHash: Promise<string> | null = null

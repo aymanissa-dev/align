@@ -143,7 +143,7 @@ export function NotificationBell({ className, placement = 'down' }: { className?
                   >
                     <p className="text-sm text-neutral-950">{item.title}</p>
                     <p className="mt-1 text-xs text-neutral-500">
-                      {item.kind === 'overdue' ? 'Overdue' : 'Due soon'} · {item.projectName} · {formatDate(item.dueDate)}
+                      {item.dueDate === today ? 'Today' : item.kind === 'overdue' ? 'Overdue' : 'Due soon'} · {item.projectName} · {formatDate(item.dueDate)}
                     </p>
                   </Link>
                   {item.read ? null : (

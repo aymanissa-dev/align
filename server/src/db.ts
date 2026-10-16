@@ -38,6 +38,16 @@ function ensureIndexes(): Promise<void> {
   return indexesReady
 }
 
+async function prepareIndexes(): Promise<void> {
+  if (process.env.NODE_ENV === 'test') {
+    await ensureIndexes()
+    return
+  }
+  void ensureIndexes().catch((error: unknown) => {
+    console.error(error)
+  })
+}
+
 function databaseFailure(error: unknown): HttpError {
   console.error(error)
   return new HttpError(500, 'Database connection failed.')
@@ -51,11 +61,7 @@ export async function connectDb(): Promise<typeof mongoose> {
 
   const state = cache()
   if (state.conn) {
-    try {
-      await ensureIndexes()
-    } catch (error) {
-      throw error instanceof HttpError ? error : databaseFailure(error)
-    }
+    await prepareIndexes()
     return state.conn
   }
 
@@ -81,7 +87,7 @@ export async function connectDb(): Promise<typeof mongoose> {
 
   try {
     state.conn = await state.promise
-    await ensureIndexes()
+    await prepareIndexes()
   } catch (error) {
     state.conn = null
     state.promise = null

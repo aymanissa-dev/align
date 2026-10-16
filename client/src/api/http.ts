@@ -1,6 +1,9 @@
 import { ApiError } from './errors.ts'
+import { forceSignOut } from '../lib/forceSignOut.ts'
 import { enqueueWrite, markUnreachable, noteNetworkSuccess } from '../lib/offline.ts'
 import { refreshSession } from '../lib/refresh.ts'
+import { purgeStaleClient } from '../lib/staleClient.ts'
+import { CLIENT_VERSION } from '../version.ts'
 import type {
   ActivityEvent,
   AlignApi,
@@ -43,44 +46,71 @@ function canRefresh(path: string): boolean {
   )
 }
 
+function timedOut(error: unknown): boolean {
+  return error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError')
+}
+
+function incompatible(response: Response, path: string): boolean {
+  const minimum = Number(response.headers.get('X-Align-Minimum'))
+  if (Number.isFinite(minimum) && minimum > CLIENT_VERSION) return true
+  const type = response.headers.get('content-type') ?? ''
+  return path.startsWith('/api/') && type.includes('text/html')
+}
+
 async function fetchResponse(path: string, init: RequestInit = {}, refreshed = false): Promise<Response> {
   const method = (init.method ?? 'GET').toUpperCase()
   const body = typeof init.body === 'string' ? init.body : undefined
   const canQueue = queueable(path, method)
+  const ownTimeout = !init.signal && !canQueue
+  const attempts = ownTimeout ? 2 : 1
 
   const headers = new Headers(init.headers)
   headers.set('Accept', 'application/json')
   if (init.body) headers.set('Content-Type', 'application/json')
 
-  let response: Response
-  try {
-    response = await fetch(path, {
-      ...init,
-      method,
-      headers,
-      credentials: 'include',
-      cache: init.cache ?? 'no-store',
-      signal: init.signal ?? (canQueue ? AbortSignal.timeout(8_000) : undefined),
-    })
-  } catch (error) {
-    // A caller-supplied abort is a cancelled query. Our own timeout means the write should wait.
-    if (init.signal?.aborted) throw error
-    if (canQueue) {
-      markUnreachable()
-      try {
-        enqueueWrite({ path, method, body })
-      } catch {
-        throw new ApiError(0, "You're offline, and this change could not be saved on this device.")
+  let response: Response | undefined
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const signal = init.signal ?? AbortSignal.timeout(canQueue ? 8_000 : ownTimeout ? 10_000 : 10_000)
+    try {
+      response = await fetch(path, {
+        ...init,
+        method,
+        headers,
+        credentials: 'include',
+        cache: init.cache ?? 'no-store',
+        signal,
+      })
+      break
+    } catch (error) {
+      // A caller-supplied abort is a cancelled query. Our own timeout means the write should wait.
+      if (init.signal?.aborted) throw error
+      if (ownTimeout && attempt + 1 < attempts) continue
+      if (canQueue) {
+        markUnreachable()
+        try {
+          enqueueWrite({ path, method, body })
+        } catch {
+          throw new ApiError(0, "You're offline, and this change could not be saved on this device.")
+        }
+        throw new ApiError(0, OFFLINE_MESSAGE, true)
       }
-      throw new ApiError(0, OFFLINE_MESSAGE, true)
+      if (timedOut(error)) {
+        throw new ApiError(0, 'Network error. Check your connection and try again.')
+      }
+      throw new ApiError(0, 'Network error. Check your connection and try again.')
     }
-    throw new ApiError(0, 'Network error. Check your connection and try again.')
+  }
+  if (!response) throw new ApiError(0, 'Network error. Check your connection and try again.')
+  if (incompatible(response, path)) {
+    void purgeStaleClient()
+    throw new ApiError(0, 'This page is out of date. Reloading.')
   }
   // Any real response means this fetch reached something. Mutations prove the network;
   // GETs can still be a service-worker cache hit, so they only wake the flush.
   if (response.status === 401 && !refreshed && canRefresh(path)) {
     const ok = await refreshSession()
     if (ok) return fetchResponse(path, init, true)
+    forceSignOut()
   }
   if (response.ok) noteNetworkSuccess({ trusted: method !== 'GET' && method !== 'HEAD' })
   if (!response.ok) {

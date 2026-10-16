@@ -5,6 +5,7 @@ import { AuthFrame } from '../components/AuthFrame.tsx'
 import { PasswordMeter } from '../components/PasswordMeter.tsx'
 import { Button, Field, Input } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
+import { isMediumPassword, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
 export function RegisterPage() {
@@ -26,8 +27,8 @@ export function RegisterPage() {
       setError('Enter a valid email.')
       return
     }
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters.')
+    if (!isMediumPassword(password)) {
+      setError(MEDIUM_PASSWORD_MESSAGE)
       return
     }
     setError('')

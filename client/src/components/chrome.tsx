@@ -58,10 +58,12 @@ export function DueBadge({ dueDate }: { dueDate: string | null | undefined }) {
       <span
         className={cn(
           'border px-1.5 py-0.5 font-pixel text-[10px] tracking-[0.14em] uppercase',
-          state === 'overdue' ? 'border-red-800 text-red-800' : 'border-amber-800 text-amber-900',
+          state === 'overdue' && 'border-red-800 text-red-800',
+          state === 'today' && 'border-neutral-950 text-neutral-950',
+          state === 'soon' && 'border-amber-800 text-amber-900',
         )}
       >
-        {state === 'overdue' ? 'Overdue' : 'Due soon'}
+        {state === 'overdue' ? 'Overdue' : state === 'today' ? 'Today' : 'Due soon'}
       </span>
       <span className="font-mono text-xs text-neutral-700">{date}</span>
     </span>

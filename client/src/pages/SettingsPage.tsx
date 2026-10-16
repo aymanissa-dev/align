@@ -8,8 +8,9 @@ import { useToast } from '../components/toast-context.ts'
 import { PageHeader } from '../components/chrome.tsx'
 import { AccentPicker, ThemeToggle } from '../components/ThemeControls.tsx'
 import { PasswordMeter } from '../components/PasswordMeter.tsx'
-import { Button, ConfirmDialog, Field, Input } from '../components/ui.tsx'
+import { Button, ConfirmDialog, Field, Input, ListSkeleton } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
+import { isMediumPassword, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
 import { clearSignedOut, markSignedOut } from '../lib/signedOut.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
@@ -28,6 +29,7 @@ export function SettingsPage() {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [sessions, setSessions] = useState<AuthSession[]>([])
+  const [sessionsLoading, setSessionsLoading] = useState(true)
   const [sessionsError, setSessionsError] = useState('')
   const [verifyToken, setVerifyToken] = useState('')
   const [verifyMessage, setVerifyMessage] = useState('')
@@ -43,6 +45,9 @@ export function SettingsPage() {
       })
       .catch((caught: unknown) => {
         if (!cancelled) setSessionsError(errorMessage(caught))
+      })
+      .finally(() => {
+        if (!cancelled) setSessionsLoading(false)
       })
     return () => {
       cancelled = true
@@ -76,8 +81,8 @@ export function SettingsPage() {
       setPasswordError('Enter your current password.')
       return
     }
-    if (newPassword.length < 8) {
-      setPasswordError('New password must be at least 8 characters.')
+    if (!isMediumPassword(newPassword)) {
+      setPasswordError(MEDIUM_PASSWORD_MESSAGE)
       return
     }
     if (newPassword !== confirmPassword) {
@@ -267,6 +272,11 @@ export function SettingsPage() {
             {sessionsError}
           </p>
         ) : null}
+        {sessionsLoading ? (
+          <div className="mt-4" aria-busy="true" aria-label="Loading sessions">
+            <ListSkeleton rows={2} header={false} />
+          </div>
+        ) : (
         <ul className="mt-4 divide-y divide-neutral-200 border border-neutral-200">
           {sessions.map((session) => (
             <li key={session.id} className="flex items-center justify-between gap-3 px-3 py-3">
@@ -285,6 +295,7 @@ export function SettingsPage() {
             </li>
           ))}
         </ul>
+        )}
         <div className="mt-4 flex flex-wrap gap-2">
           <Button variant="secondary" onClick={() => void onSignOut()}>
             Sign out

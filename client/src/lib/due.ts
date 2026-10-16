@@ -1,4 +1,4 @@
-export type DueState = 'overdue' | 'soon' | 'later' | 'none'
+export type DueState = 'overdue' | 'today' | 'soon' | 'later' | 'none'
 
 export function shiftISODate(iso: string, days: number): string {
   const [year, month, day] = iso.split('-').map(Number)
@@ -27,7 +27,8 @@ export function dueState(dueDate: string | null | undefined, today = localISODat
   const days = daysUntil(dueDate, today)
   if (Number.isNaN(days)) return 'none'
   if (days < 0) return 'overdue'
-  if (days <= 1) return 'soon'
+  if (days === 0) return 'today'
+  if (days === 1) return 'soon'
   return 'later'
 }
 

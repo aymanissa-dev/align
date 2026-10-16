@@ -454,7 +454,7 @@ function healSyncedTasks() {
   }
 }
 
-async function runFlush(): Promise<FlushResult> {
+async function runFlush(signal: AbortSignal): Promise<FlushResult> {
   const owned = mine(dedupe(readQueue())).map(withClientId)
   const stamped = owned.filter((item) => {
     const previous = readQueue().find((entry) => entry.id === item.id)
@@ -474,24 +474,33 @@ async function runFlush(): Promise<FlushResult> {
   let synced = 0
   let stop = false
   for (const item of owned) {
-    if (stop) {
+    if (stop || signal.aborted) {
       left.push(item)
+      stop = true
       continue
     }
     try {
-      const send = () =>
-        fetch(item.path, {
+      const send = () => {
+        const request = new AbortController()
+        const timer = window.setTimeout(() => request.abort(), FLUSH_TIMEOUT_MS)
+        const onAbort = () => request.abort()
+        signal.addEventListener('abort', onAbort, { once: true })
+        return fetch(item.path, {
           method: item.method,
           credentials: 'include',
           keepalive: true,
           cache: 'no-store',
-          signal: AbortSignal.timeout(FLUSH_TIMEOUT_MS),
+          signal: request.signal,
           headers: {
             Accept: 'application/json',
             ...(item.body ? { 'Content-Type': 'application/json' } : {}),
           },
           body: item.body,
+        }).finally(() => {
+          window.clearTimeout(timer)
+          signal.removeEventListener('abort', onAbort)
         })
+      }
       let response = await send()
       if (response.status === 401) {
         const refreshed = await refreshSession()
@@ -522,6 +531,11 @@ async function runFlush(): Promise<FlushResult> {
       }
       left.push({ ...item, attempts: item.attempts + 1, lastError: `Server error (${response.status}). Will retry.` })
     } catch {
+      if (signal.aborted) {
+        left.push(item)
+        stop = true
+        continue
+      }
       markUnreachable()
       left.push({ ...item, attempts: item.attempts + 1, lastError: 'Still offline. Will retry.' })
       stop = true
@@ -564,9 +578,15 @@ async function confirmReachable(): Promise<void> {
 }
 
 let flushTail: Promise<void> = Promise.resolve()
+let flushAbort: AbortController | null = null
+
+function abortInFlightFlush() {
+  flushAbort?.abort()
+}
 
 export function noteNetworkSuccess(options?: { trusted?: boolean }): void {
   if (options?.trusted) {
+    if (unreachable) abortInFlightFlush()
     onlineManager.setOnline(true)
     markReachable()
   }
@@ -575,12 +595,14 @@ export function noteNetworkSuccess(options?: { trusted?: boolean }): void {
 
 /** One flush at a time. Interval, online, and load kicks share this lock. */
 export function flushOfflineQueue(): Promise<FlushResult> {
+  const controller = new AbortController()
+  flushAbort = controller
   const run = flushTail.then(async () => {
     emitFlush({ phase: 'start' })
     let synced = 0
     const rejected: string[] = []
     try {
-      const result = await runFlush()
+      const result = await runFlush(controller.signal)
       synced = result.synced
       rejected.push(...result.rejected)
       if (synced > 0) {
@@ -594,6 +616,7 @@ export function flushOfflineQueue(): Promise<FlushResult> {
       }
       return { synced, rejected }
     } finally {
+      if (flushAbort === controller) flushAbort = null
       emitFlush({ phase: 'end', result: { synced, rejected } })
     }
   })
@@ -615,7 +638,10 @@ function kickOfflineSync() {
 export function startOfflineSync() {
   if (syncStarted || typeof window === 'undefined') return
   syncStarted = true
-  window.addEventListener('online', kickOfflineSync)
+  window.addEventListener('online', () => {
+    abortInFlightFlush()
+    kickOfflineSync()
+  })
   window.addEventListener('offline', () => {
     markUnreachable()
   })

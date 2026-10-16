@@ -1,9 +1,10 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api/index.ts'
 import { useAuth } from '../auth/auth-context.ts'
 import { AuthFrame } from '../components/AuthFrame.tsx'
 import { Button, Field, Input } from '../components/ui.tsx'
+import { consumeForcedSignOut } from '../lib/forceSignOut.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
@@ -17,6 +18,8 @@ export function LoginPage() {
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
   const [google, setGoogle] = useState(false)
+  const [params] = useSearchParams()
+  const [signedOut] = useState(() => params.get('signedOut') === '1' || consumeForcedSignOut())
   useDocumentTitle('Sign in')
 
   useEffect(() => {
@@ -56,6 +59,11 @@ export function LoginPage() {
 
   return (
     <AuthFrame title="Sign in" lede="Welcome back to your workspace.">
+        {signedOut ? (
+          <p role="status" className="mb-4 border border-neutral-200 px-3 py-2 text-sm text-neutral-800">
+            You were signed out.
+          </p>
+        ) : null}
         <form onSubmit={onSubmit} className="space-y-4" noValidate>
           <Field label="Email" htmlFor="email">
             <Input

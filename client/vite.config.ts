@@ -49,32 +49,15 @@ export default defineConfig({
         skipWaiting: true,
         clientsClaim: true,
         importScripts: ['sw-reload.js'],
-        // index.html is not precached. Navigations are network-first so a new
-        // deploy is picked up without a manual reload once this worker is active.
+        // index.html is not precached. Navigations are network-only so a slow
+        // response cannot fall back to HTML that points at an old bundle.
+        // API GETs are handled in sw-reload.js with a real timeout.
         globPatterns: ['**/*.{js,css,ico,png,svg,webp,webmanifest,woff2}'],
         navigateFallback: undefined,
         runtimeCaching: [
           {
             urlPattern: ({ request }) => request.mode === 'navigate',
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'align-pages',
-              networkTimeoutSeconds: 3,
-              expiration: { maxEntries: 8, maxAgeSeconds: 60 * 60 * 24 },
-              cacheableResponse: { statuses: [200] },
-            },
-          },
-          {
-            // GET only. Mutations are left unmatched so the worker does not
-            // respond to them or replay them without the page seeing the body.
-            urlPattern: ({ url, request }) => url.pathname.startsWith('/api/') && request.method === 'GET',
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'align-api',
-              networkTimeoutSeconds: 4,
-              expiration: { maxEntries: 80, maxAgeSeconds: 60 * 60 * 24 * 7 },
-              cacheableResponse: { statuses: [200] },
-            },
+            handler: 'NetworkOnly',
           },
         ],
       },

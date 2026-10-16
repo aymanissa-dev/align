@@ -12,7 +12,7 @@ type Registered = {
 }
 
 export async function registerUser(name = 'Ada Lovelace', email = `ada-${crypto.randomUUID()}@align.test`): Promise<Registered> {
-  const password = 'password1'
+  const password = 'password12'
   const agent = request.agent(app)
   const response = await agent.post('/api/auth/register').send({ name, email, password })
   if (response.status !== 201) {

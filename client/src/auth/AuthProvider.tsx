@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api/index.ts'
 import type { LoginInput, RegisterInput, User } from '../api/types.ts'
+import { broadcastSignedOut } from '../lib/authChannel.ts'
+import { setForceSignOutHandler } from '../lib/forceSignOut.ts'
 import { clearQueueForUser, setQueueOwner } from '../lib/offline.ts'
 import { queryClient } from '../queryClient.ts'
 import { AuthContext, type AuthContextValue } from './auth-context.ts'
@@ -15,6 +17,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     ownerRef.current = nextOwner
     setQueueOwner(nextOwner)
   }
+
+  useEffect(() => {
+    if (ready) document.documentElement.dataset.booted = '1'
+  }, [ready])
+
+  useEffect(() => {
+    setForceSignOutHandler(() => {
+      epoch.current += 1
+      const id = ownerRef.current
+      if (id) clearQueueForUser(id)
+      setQueueOwner(null)
+      ownerRef.current = null
+      setUser(null)
+      queryClient.clear()
+    })
+    return () => setForceSignOutHandler(null)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -58,6 +77,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     const id = user?.id
     await api.logout()
+    broadcastSignedOut()
     if (id) clearQueueForUser(id)
     setQueueOwner(null)
     ownerRef.current = null
@@ -74,6 +94,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const deleteAccount = useCallback(async () => {
     const id = user?.id
     await api.deleteAccount()
+    broadcastSignedOut()
     if (id) clearQueueForUser(id)
     setQueueOwner(null)
     ownerRef.current = null

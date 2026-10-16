@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Simple project management, thoughtfully organized." />
     <meta name="theme-color" content="#ffffff" />
+    <meta name="align-client" content="2" />
     <link rel="canonical" href="https://align-hazel-kappa.vercel.app/" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta property="og:site_name" content="Align" />
@@ -40,6 +41,48 @@
           })
         })
       }
+      // If boot never finishes, the installed worker is likely serving a stale bundle.
+      window.setTimeout(function () {
+        if (document.documentElement.dataset.booted === '1') return
+        var key = 'align-sw-reset'
+        try {
+          if (sessionStorage.getItem(key) === '1') return
+          sessionStorage.setItem(key, '1')
+        } catch (e) {
+          return
+        }
+        var jobs = []
+        if ('serviceWorker' in navigator) {
+          jobs.push(
+            navigator.serviceWorker.getRegistrations().then(function (registrations) {
+              return Promise.all(
+                registrations.map(function (registration) {
+                  return registration.unregister()
+                }),
+              )
+            }),
+          )
+        }
+        if (window.caches) {
+          jobs.push(
+            caches.keys().then(function (keys) {
+              return Promise.all(
+                keys.map(function (name) {
+                  return caches.delete(name)
+                }),
+              )
+            }),
+          )
+        }
+        Promise.all(jobs).then(
+          function () {
+            location.reload()
+          },
+          function () {
+            location.reload()
+          },
+        )
+      }, 8000)
     </script>
     <script>
       try {

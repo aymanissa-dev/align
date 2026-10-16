@@ -42,7 +42,6 @@ export async function enforceAuthLimit(
   const max = process.env.NODE_ENV === 'production' ? PRODUCTION_MAX[route] : 1000
   const keys = [`${route}:ip:${ip || 'unknown'}`]
   if (email) keys.push(`${route}:email:${email}`)
-  for (const key of keys) {
-    if (await hit(key, max)) throw new HttpError(429, 'Too many attempts. Try again later.')
-  }
+  const blocked = await Promise.all(keys.map((key) => hit(key, max)))
+  if (blocked.some(Boolean)) throw new HttpError(429, 'Too many attempts. Try again later.')
 }

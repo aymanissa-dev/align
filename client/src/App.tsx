@@ -1,7 +1,10 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, type ReactNode } from 'react'
 import { applyAccent, applyTheme, readTheme } from './lib/theme.ts'
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { AppErrorBoundary } from './components/ErrorBoundary.tsx'
+import { subscribeSignedOut } from './lib/authChannel.ts'
+import { forceSignOut } from './lib/forceSignOut.ts'
 import { AuthProvider } from './auth/AuthProvider.tsx'
 import { useAuth } from './auth/auth-context.ts'
 import { BootScreen } from './components/BootScreen.tsx'
@@ -37,6 +40,17 @@ function safeReturnPath(state: unknown): string | null {
   const query = typeof search === 'string' ? search : ''
   const fragment = typeof hash === 'string' ? hash : ''
   return `${pathname}${query}${fragment}`
+}
+
+function AuthBroadcast() {
+  const navigate = useNavigate()
+  useEffect(() => {
+    return subscribeSignedOut(() => {
+      forceSignOut()
+      navigate('/login?signedOut=1', { replace: true })
+    })
+  }, [navigate])
+  return null
 }
 
 function ThemeSync() {
@@ -115,6 +129,8 @@ export default function App() {
         <ThemeSync />
         <ToastProvider>
           <BrowserRouter>
+            <AuthBroadcast />
+            <AppErrorBoundary>
             <Routes>
               <Route
                 path="/login"
@@ -172,6 +188,7 @@ export default function App() {
               </Route>
               <Route path="*" element={<PublicNotFound />} />
             </Routes>
+            </AppErrorBoundary>
           </BrowserRouter>
         </ToastProvider>
       </AuthProvider>
