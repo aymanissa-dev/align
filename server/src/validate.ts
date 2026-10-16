@@ -137,6 +137,7 @@ export const taskCreateSchema = z.object({
   priority: priority.optional(),
   labelIds: labelIds.optional(),
   plannedFor: dueDate.optional(),
+  clientId: z.string().uuid('clientId must be a uuid.').optional(),
 })
 
 export const taskPatchSchema = z.object({

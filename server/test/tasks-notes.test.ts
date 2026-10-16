@@ -26,6 +26,28 @@ describe('tasks and notes', () => {
     expect((await agent.patch(`/api/tasks/${first.body.id}`).send({ completed: 'yes' })).status).toBe(400)
   })
 
+  it('returns the existing task when a create is retried with the same clientId', async () => {
+    const { agent } = await registerUser()
+    const project = await agent.post('/api/projects').send({ name: 'Idem' })
+    const id = project.body.id as string
+    const clientId = '11111111-1111-4111-8111-111111111111'
+    const [first, second] = await Promise.all([
+      agent.post(`/api/projects/${id}/tasks`).send({ title: 'Once', clientId }),
+      agent.post(`/api/projects/${id}/tasks`).send({ title: 'Once', clientId }),
+    ])
+    expect(first.status).toBeLessThan(300)
+    expect(second.status).toBeLessThan(300)
+    expect(second.body.id).toBe(first.body.id)
+
+    const third = await agent.post(`/api/projects/${id}/tasks`).send({ title: 'Once again', clientId })
+    expect(third.status).toBe(200)
+    expect(third.body).toMatchObject({ id: first.body.id, title: 'Once' })
+    expect(await agent.get(`/api/projects/${id}/tasks`)).toMatchObject({
+      status: 200,
+      body: [{ id: first.body.id, title: 'Once' }],
+    })
+  })
+
   it('creates, lists, updates, and deletes notes', async () => {
     const { agent } = await registerUser()
     const project = await agent.post('/api/projects').send({ name: 'Notes' })

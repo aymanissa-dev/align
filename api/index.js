@@ -63,9 +63,15 @@ var taskSchema = new Schema(
     labelIds: { type: [{ type: Schema.Types.ObjectId, ref: "Label" }], default: [] },
     plannedFor: { type: String, default: null },
     completedOn: { type: String, default: null },
-    order: { type: Number, required: true }
+    order: { type: Number, required: true },
+    // Client-generated id so a retried or replayed create returns the same task.
+    clientId: { type: String }
   },
   { timestamps: true }
+);
+taskSchema.index(
+  { userId: 1, clientId: 1 },
+  { unique: true, partialFilterExpression: { clientId: { $type: "string" } } }
 );
 taskSchema.index({ projectId: 1, completed: 1 });
 taskSchema.index({ userId: 1, projectId: 1 });
@@ -494,7 +500,8 @@ var taskCreateSchema = z.object({
   dueDate: dueDate.optional(),
   priority: priority.optional(),
   labelIds: labelIds.optional(),
-  plannedFor: dueDate.optional()
+  plannedFor: dueDate.optional(),
+  clientId: z.string().uuid("clientId must be a uuid.").optional()
 });
 var taskPatchSchema = z.object({
   title: text("Task title", 200).optional(),
@@ -1062,6 +1069,9 @@ function notificationsRouter() {
 
 // src/routes/projects.ts
 import { Router as Router6 } from "express";
+function isDuplicateKey(error) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === 11e3;
+}
 function projectsRouter() {
   const router = Router6();
   router.use(requireAuth);
@@ -1114,30 +1124,49 @@ function projectsRouter() {
     "/:id/tasks",
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req);
-      const project = await requireProject(userId, req.params.id);
       const input = parseBody(taskCreateSchema, req.body);
+      if (input.clientId) {
+        const existing = await Task.findOne({ userId, clientId: input.clientId });
+        if (existing) {
+          res.json(publicTask(existing));
+          return;
+        }
+      }
+      const project = await requireProject(userId, req.params.id);
       const dueDate2 = normalizeDueDate(input.dueDate) ?? null;
       const labelIds2 = await ownedLabelIds(userId, input.labelIds ?? []);
       const latest = await Task.findOne({ projectId: project._id }).sort({ order: -1 }).select("order");
-      const task = await Task.create({
-        userId,
-        projectId: project._id,
-        title: input.title,
-        completed: false,
-        dueDate: dueDate2,
-        priority: input.priority ?? "medium",
-        labelIds: labelIds2,
-        plannedFor: normalizeDueDate(input.plannedFor) ?? null,
-        order: (latest?.order ?? 0) + 1
-      });
-      await touchProject(project._id, userId);
-      await recordActivity({
-        userId,
-        projectId: project._id,
-        type: "create",
-        summary: `Created task ${quoteTitle(task.title)}`
-      });
-      res.status(201).json(publicTask(task));
+      try {
+        const task = await Task.create({
+          userId,
+          projectId: project._id,
+          title: input.title,
+          completed: false,
+          dueDate: dueDate2,
+          priority: input.priority ?? "medium",
+          labelIds: labelIds2,
+          plannedFor: normalizeDueDate(input.plannedFor) ?? null,
+          order: (latest?.order ?? 0) + 1,
+          ...input.clientId ? { clientId: input.clientId } : {}
+        });
+        await touchProject(project._id, userId);
+        await recordActivity({
+          userId,
+          projectId: project._id,
+          type: "create",
+          summary: `Created task ${quoteTitle(task.title)}`
+        });
+        res.status(201).json(publicTask(task));
+      } catch (error) {
+        if (input.clientId && isDuplicateKey(error)) {
+          const existing = await Task.findOne({ userId, clientId: input.clientId });
+          if (existing) {
+            res.json(publicTask(existing));
+            return;
+          }
+        }
+        throw error;
+      }
     })
   );
   router.get(

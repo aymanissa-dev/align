@@ -21,7 +21,7 @@ if ('serviceWorker' in navigator) {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') update()
   })
-  window.setInterval(update, 60_000)
+  window.setInterval(update, 15_000)
   update()
 }
 

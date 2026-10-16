@@ -22,6 +22,26 @@
     <meta name="twitter:image" content="https://align-hazel-kappa.vercel.app/og.png" />
     <title>Align</title>
     <script>
+      if ('serviceWorker' in navigator) {
+        var hadController = !!navigator.serviceWorker.controller
+        var reloading = false
+        navigator.serviceWorker.addEventListener('controllerchange', function () {
+          if (!hadController) {
+            hadController = true
+            return
+          }
+          if (reloading) return
+          reloading = true
+          location.reload()
+        })
+        window.addEventListener('load', function () {
+          navigator.serviceWorker.getRegistration().then(function (registration) {
+            if (registration) registration.update()
+          })
+        })
+      }
+    </script>
+    <script>
       try {
         var theme = localStorage.getItem('align-theme') || 'system'
         var dark = theme === 'dark' || (theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)

@@ -29,7 +29,7 @@ const DELAY_MS = 120
 
 type StoredUser = User & { password: string; resetToken?: string | null; resetExpires?: string | null }
 type StoredProject = Project & { userId: string }
-type StoredTask = Task & { userId: string }
+type StoredTask = Task & { userId: string; clientId?: string }
 type StoredNote = Note & { userId: string }
 type StoredLabel = Label & { userId: string }
 type StoredActivity = ActivityEvent & { userId: string }
@@ -673,6 +673,10 @@ export const mockApi = {
 
   async createTask(projectId, input) {
     return write((state, user) => {
+      if (input.clientId) {
+        const existing = state.tasks.find((item) => item.userId === user.id && item.clientId === input.clientId)
+        if (existing) return publicTask(existing)
+      }
       findProject(state, user.id, projectId)
       const title = requireName(input.title ?? '', 'Task title', 200)
       const siblings = state.tasks.filter((item) => item.projectId === projectId)
@@ -692,6 +696,7 @@ export const mockApi = {
         order,
         createdAt: timestamp,
         updatedAt: timestamp,
+        clientId: input.clientId,
       }
       state.tasks.push(item)
       touchProject(state, projectId)

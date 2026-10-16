@@ -1,5 +1,5 @@
 import { ApiError } from './errors.ts'
-import { enqueueWrite, markReachable, markUnreachable } from '../lib/offline.ts'
+import { enqueueWrite, markUnreachable, noteNetworkSuccess } from '../lib/offline.ts'
 import type {
   ActivityEvent,
   AlignApi,
@@ -33,25 +33,23 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const body = typeof init.body === 'string' ? init.body : undefined
   const canQueue = queueable(path, method)
 
-  if (canQueue && typeof navigator !== 'undefined' && navigator.onLine === false) {
-    markUnreachable()
-    try {
-      enqueueWrite({ path, method, body })
-    } catch {
-      throw new ApiError(0, "You're offline, and this change could not be saved on this device.")
-    }
-    throw new ApiError(0, OFFLINE_MESSAGE, true)
-  }
-
   const headers = new Headers(init.headers)
   headers.set('Accept', 'application/json')
   if (init.body) headers.set('Content-Type', 'application/json')
 
   let response: Response
   try {
-    response = await fetch(path, { ...init, method, headers, credentials: 'include' })
+    response = await fetch(path, {
+      ...init,
+      method,
+      headers,
+      credentials: 'include',
+      cache: init.cache ?? 'no-store',
+      signal: init.signal ?? (canQueue ? AbortSignal.timeout(8_000) : undefined),
+    })
   } catch (error) {
-    if (init.signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw error
+    // A caller-supplied abort is a cancelled query. Our own timeout means the write should wait.
+    if (init.signal?.aborted) throw error
     if (canQueue) {
       markUnreachable()
       try {
@@ -63,8 +61,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
     throw new ApiError(0, 'Network error. Check your connection and try again.')
   }
-  // Cached GET responses can be served while the network is still down.
-  if (response.ok && method !== 'GET' && method !== 'HEAD') markReachable()
+  // Any real response means this fetch reached something. Mutations prove the network;
+  // GETs can still be a service-worker cache hit, so they only wake the flush.
+  if (response.ok) noteNetworkSuccess({ trusted: method !== 'GET' && method !== 'HEAD' })
   if (!response.ok) {
     let message = 'Request failed.'
     try {
@@ -146,7 +145,7 @@ export const httpApi = {
   createTask(projectId, input) {
     return request<Task>(`/api/projects/${projectId}/tasks`, {
       method: 'POST',
-      body: JSON.stringify(input),
+      body: JSON.stringify({ ...input, clientId: input.clientId ?? crypto.randomUUID() }),
     })
   },
   updateTask(id, input) {

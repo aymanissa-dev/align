@@ -190,6 +190,7 @@ export type TaskInput = {
   priority?: TaskPriority
   labelIds?: string[]
   plannedFor?: string | null
+  clientId?: string
 }
 
 export type TaskPatch = {

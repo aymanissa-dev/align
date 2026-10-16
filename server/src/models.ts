@@ -50,8 +50,14 @@ const taskSchema = new Schema(
     plannedFor: { type: String, default: null },
     completedOn: { type: String, default: null },
     order: { type: Number, required: true },
+    // Client-generated id so a retried or replayed create returns the same task.
+    clientId: { type: String },
   },
   { timestamps: true },
+)
+taskSchema.index(
+  { userId: 1, clientId: 1 },
+  { unique: true, partialFilterExpression: { clientId: { $type: 'string' } } },
 )
 taskSchema.index({ projectId: 1, completed: 1 })
 taskSchema.index({ userId: 1, projectId: 1 })

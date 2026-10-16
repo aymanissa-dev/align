@@ -15,6 +15,10 @@ import {
   whiteboardSceneSchema,
 } from '../validate.ts'
 
+function isDuplicateKey(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 11000
+}
+
 export function projectsRouter(): Router {
   const router = Router()
   router.use(requireAuth)
@@ -71,30 +75,49 @@ export function projectsRouter(): Router {
     '/:id/tasks',
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req)
-      const project = await requireProject(userId, req.params.id)
       const input = parseBody(taskCreateSchema, req.body)
+      if (input.clientId) {
+        const existing = await Task.findOne({ userId, clientId: input.clientId })
+        if (existing) {
+          res.json(publicTask(existing))
+          return
+        }
+      }
+      const project = await requireProject(userId, req.params.id)
       const dueDate = normalizeDueDate(input.dueDate) ?? null
       const labelIds = await ownedLabelIds(userId, input.labelIds ?? [])
       const latest = await Task.findOne({ projectId: project._id }).sort({ order: -1 }).select('order')
-      const task = await Task.create({
-        userId,
-        projectId: project._id,
-        title: input.title,
-        completed: false,
-        dueDate,
-        priority: input.priority ?? 'medium',
-        labelIds,
-        plannedFor: normalizeDueDate(input.plannedFor) ?? null,
-        order: (latest?.order ?? 0) + 1,
-      })
-      await touchProject(project._id, userId)
-      await recordActivity({
-        userId,
-        projectId: project._id,
-        type: 'create',
-        summary: `Created task ${quoteTitle(task.title)}`,
-      })
-      res.status(201).json(publicTask(task))
+      try {
+        const task = await Task.create({
+          userId,
+          projectId: project._id,
+          title: input.title,
+          completed: false,
+          dueDate,
+          priority: input.priority ?? 'medium',
+          labelIds,
+          plannedFor: normalizeDueDate(input.plannedFor) ?? null,
+          order: (latest?.order ?? 0) + 1,
+          ...(input.clientId ? { clientId: input.clientId } : {}),
+        })
+        await touchProject(project._id, userId)
+        await recordActivity({
+          userId,
+          projectId: project._id,
+          type: 'create',
+          summary: `Created task ${quoteTitle(task.title)}`,
+        })
+        res.status(201).json(publicTask(task))
+      } catch (error) {
+        if (input.clientId && isDuplicateKey(error)) {
+          const existing = await Task.findOne({ userId, clientId: input.clientId })
+          if (existing) {
+            res.json(publicTask(existing))
+            return
+          }
+        }
+        throw error
+      }
     }),
   )
 

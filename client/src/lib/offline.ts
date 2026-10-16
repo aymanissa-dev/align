@@ -23,12 +23,11 @@ export const QUEUE_EVENT = 'align-offline-queue'
 export const REACH_EVENT = 'align-reachability'
 export const FLUSH_EVENT = 'align-offline-flush'
 
-const RETRY_MS = 10_000
+const RETRY_MS = 2_000
 const FLUSH_TIMEOUT_MS = 8_000
 
 let ownerId: string | null = null
 let unreachable = false
-let flushPromise: Promise<FlushResult> | null = null
 let queueVersion = 0
 const queueListeners = new Set<() => void>()
 
@@ -51,7 +50,7 @@ export function setQueueOwner(userId: string | null) {
 }
 
 export function isUnreachable(): boolean {
-  return unreachable || (typeof navigator !== 'undefined' && navigator.onLine === false)
+  return unreachable
 }
 
 export function markUnreachable() {
@@ -68,6 +67,40 @@ export function markReachable() {
 
 function signature(item: { userId: string; method: string; path: string; body?: string }): string {
   return `${item.userId}|${item.method}|${item.path}|${item.body ?? ''}`
+}
+
+function clientIdOf(item: { body?: string }): string | null {
+  if (!item.body) return null
+  try {
+    const body = JSON.parse(item.body) as { clientId?: unknown }
+    return typeof body.clientId === 'string' && body.clientId ? body.clientId : null
+  } catch {
+    return null
+  }
+}
+
+function dedupe(items: QueuedWrite[]): QueuedWrite[] {
+  const seen = new Set<string>()
+  const next: QueuedWrite[] = []
+  for (const item of items) {
+    const clientId = clientIdOf(item)
+    const key = clientId ? `client:${item.userId}:${clientId}` : signature(item)
+    if (seen.has(key)) continue
+    seen.add(key)
+    next.push(item)
+  }
+  return next
+}
+
+function withClientId(item: QueuedWrite): QueuedWrite {
+  if (item.method !== 'POST' || !/^\/api\/projects\/[^/]+\/tasks$/.test(item.path) || !item.body) return item
+  if (clientIdOf(item)) return item
+  try {
+    const body = JSON.parse(item.body) as Record<string, unknown>
+    return { ...item, body: JSON.stringify({ ...body, clientId: crypto.randomUUID() }) }
+  } catch {
+    return item
+  }
 }
 
 function readQueue(): QueuedWrite[] {
@@ -93,7 +126,7 @@ function readQueue(): QueuedWrite[] {
         lastError: typeof record.lastError === 'string' ? record.lastError : undefined,
       })
     }
-    return items
+    return dedupe(items)
   } catch {
     return []
   }
@@ -122,7 +155,10 @@ export function enqueueWrite(input: { path: string; method: string; body?: strin
   if (!ownerId) throw new Error('offline-owner')
   const items = readQueue()
   const next = { userId: ownerId, path: input.path, method: input.method, body: input.body }
-  const existing = items.find((item) => signature(item) === signature(next))
+  const nextClientId = clientIdOf(next)
+  const existing = items.find(
+    (item) => signature(item) === signature(next) || (nextClientId !== null && clientIdOf(item) === nextClientId && item.userId === ownerId),
+  )
   if (existing) return existing.id
   const id = crypto.randomUUID()
   const queued = { id, ...next, attempts: 0 }
@@ -418,10 +454,17 @@ function healSyncedTasks() {
 }
 
 async function runFlush(): Promise<FlushResult> {
-  const items = readQueue()
-  const owned = mine(items)
-  // Try even when navigator.onLine is still false. DevTools can leave that
-  // flag stuck after the network is back, and a reload was the only flush.
+  const owned = mine(dedupe(readQueue())).map(withClientId)
+  const stamped = owned.filter((item) => {
+    const previous = readQueue().find((entry) => entry.id === item.id)
+    return previous && previous.body !== item.body
+  })
+  if (stamped.length > 0) {
+    const stampedIds = new Map(stamped.map((item) => [item.id, item]))
+    writeQueue(dedupe(readQueue().map((entry) => stampedIds.get(entry.id) ?? entry)))
+  }
+  // navigator.onLine is not consulted. DevTools can leave it false after the
+  // network is back; a successful fetch is what marks the network up.
   if (owned.length === 0) {
     return { synced: 0, rejected: [] }
   }
@@ -488,7 +531,7 @@ function emitFlush(detail: { phase: 'start' | 'end'; result?: FlushResult }) {
 }
 
 async function confirmReachable(): Promise<void> {
-  if (!unreachable) return
+  if (!unreachable && queuedCount() === 0) return
   try {
     const response = await fetch(`/api/auth/session?reach=${Date.now()}`, {
       method: 'GET',
@@ -497,34 +540,35 @@ async function confirmReachable(): Promise<void> {
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(FLUSH_TIMEOUT_MS),
     })
-    if (response.ok) markReachable()
+    if (response.ok) noteNetworkSuccess({ trusted: true })
   } catch {
     // Still offline. The banner stays until a later attempt succeeds.
   }
 }
 
-let again = false
+let flushTail: Promise<void> = Promise.resolve()
 
-export function flushOfflineQueue(): Promise<FlushResult> {
-  if (flushPromise) {
-    again = true
-    return flushPromise
+export function noteNetworkSuccess(options?: { trusted?: boolean }): void {
+  if (options?.trusted) {
+    onlineManager.setOnline(true)
+    markReachable()
   }
-  flushPromise = (async () => {
+  if (queuedCount() > 0) void flushOfflineQueue()
+}
+
+/** One flush at a time. Interval, online, and load kicks share this lock. */
+export function flushOfflineQueue(): Promise<FlushResult> {
+  const run = flushTail.then(async () => {
     emitFlush({ phase: 'start' })
     let synced = 0
     const rejected: string[] = []
     try {
-      do {
-        again = false
-        const result = await runFlush()
-        synced += result.synced
-        rejected.push(...result.rejected)
-        // A completed write means the network is up, even when DevTools left
-        // navigator.onLine false. Queries refetch only while onlineManager agrees.
-        if (result.synced > 0) onlineManager.setOnline(true)
-      } while (again)
+      const result = await runFlush()
+      synced = result.synced
+      rejected.push(...result.rejected)
       if (synced > 0) {
+        onlineManager.setOnline(true)
+        markReachable()
         void Promise.all([
           queryClient.invalidateQueries({ queryKey: ['tasks'] }),
           queryClient.invalidateQueries({ queryKey: ['today'] }),
@@ -535,19 +579,18 @@ export function flushOfflineQueue(): Promise<FlushResult> {
     } finally {
       emitFlush({ phase: 'end', result: { synced, rejected } })
     }
-  })().finally(() => {
-    flushPromise = null
   })
-  return flushPromise
+  flushTail = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  return run
 }
 
 let syncStarted = false
 
 function kickOfflineSync() {
-  if (queuedCount() > 0) {
-    void flushOfflineQueue()
-    return
-  }
+  if (queuedCount() > 0) void flushOfflineQueue()
   void confirmReachable()
 }
 

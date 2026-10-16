@@ -48,11 +48,22 @@ export default defineConfig({
       workbox: {
         skipWaiting: true,
         clientsClaim: true,
-        // Reloads open tabs when this worker activates, so they leave a precached bundle.
         importScripts: ['sw-reload.js'],
-        navigateFallback: '/index.html',
-        navigateFallbackDenylist: [/^\/api\//],
+        // index.html is not precached. Navigations are network-first so a new
+        // deploy is picked up without a manual reload once this worker is active.
+        globPatterns: ['**/*.{js,css,ico,png,svg,webp,webmanifest,woff2}'],
+        navigateFallback: undefined,
         runtimeCaching: [
+          {
+            urlPattern: ({ request }) => request.mode === 'navigate',
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'align-pages',
+              networkTimeoutSeconds: 3,
+              expiration: { maxEntries: 8, maxAgeSeconds: 60 * 60 * 24 },
+              cacheableResponse: { statuses: [200] },
+            },
+          },
           {
             // GET only. Mutations are left unmatched so the worker does not
             // respond to them or replay them without the page seeing the body.
