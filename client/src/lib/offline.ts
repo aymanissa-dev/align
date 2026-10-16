@@ -298,18 +298,42 @@ function seedQueuedTask(item: QueuedWrite) {
   })
 }
 
+function dropTemp(localId: string) {
+  queryClient.setQueriesData<Task[]>({ queryKey: ['tasks'] }, (current) =>
+    Array.isArray(current) ? current.filter((entry) => entry.id !== localId) : current,
+  )
+  queryClient.setQueriesData<TodayData>({ queryKey: ['today'] }, (current) => {
+    if (!current) return current
+    const drop = (items: TodayTask[] | undefined) => (items ?? []).filter((entry) => entry.id !== localId)
+    return {
+      ...current,
+      planned: drop(current.planned),
+      carried: drop(current.carried),
+      overdue: drop(current.overdue),
+      available: drop(current.available),
+      finished: drop(current.finished),
+    }
+  })
+  queryClient.setQueryData<DashboardData>(['dashboard'], (current) =>
+    current ? { ...current, openTasks: current.openTasks.filter((entry) => entry.id !== localId) } : current,
+  )
+}
+
 async function keepSyncedTask(item: QueuedWrite, response: Response) {
   if (item.method !== 'POST' || !/^\/api\/projects\/[^/]+\/tasks$/.test(item.path)) return
-  let body: unknown
-  try {
-    body = await response.clone().json()
-  } catch {
-    return
-  }
-  if (!isTask(body)) return
-  const task = body
   const localId = `queued:${item.id}`
   adopted.add(item.id)
+  let task: Task | null = null
+  try {
+    const body: unknown = await response.clone().json()
+    if (isTask(body)) task = body
+  } catch {
+    task = null
+  }
+  if (!task) {
+    dropTemp(localId)
+    return
+  }
   landed.push({ localId, task })
   await queryClient.cancelQueries({ queryKey: ['tasks'] })
   await queryClient.cancelQueries({ queryKey: ['today'] })
@@ -496,9 +520,16 @@ export function flushOfflineQueue(): Promise<FlushResult> {
         const result = await runFlush()
         synced += result.synced
         rejected.push(...result.rejected)
+        // A completed write means the network is up, even when DevTools left
+        // navigator.onLine false. Queries refetch only while onlineManager agrees.
+        if (result.synced > 0) onlineManager.setOnline(true)
       } while (again)
       if (synced > 0) {
-        void queryClient.invalidateQueries().finally(() => healSyncedTasks())
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+          queryClient.invalidateQueries({ queryKey: ['today'] }),
+          queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+        ]).finally(() => healSyncedTasks())
       }
       return { synced, rejected }
     } finally {

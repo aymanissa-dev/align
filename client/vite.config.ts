@@ -46,10 +46,16 @@ export default defineConfig({
         ],
       },
       workbox: {
+        skipWaiting: true,
+        clientsClaim: true,
+        // Reloads open tabs when this worker activates, so they leave a precached bundle.
+        importScripts: ['sw-reload.js'],
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [
           {
+            // GET only. Mutations are left unmatched so the worker does not
+            // respond to them or replay them without the page seeing the body.
             urlPattern: ({ url, request }) => url.pathname.startsWith('/api/') && request.method === 'GET',
             handler: 'NetworkFirst',
             options: {
