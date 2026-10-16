@@ -28,7 +28,7 @@ function queueable(path: string, method: string): boolean {
   return !path.startsWith('/api/auth/')
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function fetchResponse(path: string, init: RequestInit = {}): Promise<Response> {
   const method = (init.method ?? 'GET').toUpperCase()
   const body = typeof init.body === 'string' ? init.body : undefined
   const canQueue = queueable(path, method)
@@ -76,8 +76,36 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
     throw new ApiError(response.status, message)
   }
+  return response
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const response = await fetchResponse(path, init)
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
+}
+
+function withCursor(path: string, cursor: string): string {
+  const url = new URL(path, 'http://align.local')
+  url.searchParams.set('cursor', cursor)
+  return `${url.pathname}${url.search}`
+}
+
+async function collectPages<T>(path: string, init?: RequestInit): Promise<T[]> {
+  const all: T[] = []
+  const seen = new Set<string>()
+  let next = path
+  for (;;) {
+    if (seen.has(next)) break
+    seen.add(next)
+    const response = await fetchResponse(next, init)
+    const page = (await response.json()) as T[]
+    all.push(...page)
+    const cursor = response.headers.get('X-Next-Cursor')
+    if (!cursor) break
+    next = withCursor(path, cursor)
+  }
+  return all
 }
 
 function withQuery(path: string, params: Record<string, string | undefined>): string {
@@ -140,7 +168,7 @@ export const httpApi = {
     await request<void>(`/api/projects/${id}`, { method: 'DELETE' })
   },
   listTasks(projectId, init?: RequestInit) {
-    return request<Task[]>(`/api/projects/${projectId}/tasks`, init)
+    return collectPages<Task>(`/api/projects/${projectId}/tasks`, init)
   },
   createTask(projectId, input) {
     return request<Task>(`/api/projects/${projectId}/tasks`, {
@@ -188,7 +216,7 @@ export const httpApi = {
     await request<void>(`/api/notes/${id}`, { method: 'DELETE' })
   },
   listActivity(projectId) {
-    return request<ActivityEvent[]>(`/api/projects/${projectId}/activity`)
+    return collectPages<ActivityEvent>(`/api/projects/${projectId}/activity`)
   },
   getWhiteboard(projectId) {
     return request<{ scene: WhiteboardScene }>(`/api/projects/${projectId}/whiteboard`)
@@ -200,7 +228,7 @@ export const httpApi = {
     })
   },
   listNotifications(today) {
-    return request<AppNotification[]>(withQuery('/api/notifications', { today }))
+    return collectPages<AppNotification>(withQuery('/api/notifications', { today }))
   },
   markNotificationRead(id) {
     return request<AppNotification>(`/api/notifications/${id}/read`, { method: 'POST' })

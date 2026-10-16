@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { quoteTitle, recordActivity } from '../activity.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { Activity, Note, Notification, Project, Task, Whiteboard } from '../models.ts'
+import { afterTaskCursor, afterTaskFilter, beforeCursor, beforeFilter, nextDateCursor, nextTaskCursor, pageLimit } from '../page.ts'
 import { publicActivity, publicNote, publicProject, publicTask } from '../serialize.ts'
 import { ownedLabelIds, requireProject, touchProject } from '../scope.ts'
 import {
@@ -35,7 +36,10 @@ export function projectsRouter(): Router {
         }
         filter.status = status
       }
-      const projects = await Project.find(filter).sort({ updatedAt: -1 })
+      const projects = await Project.find(filter)
+        .select('name description status createdAt updatedAt')
+        .sort({ updatedAt: -1 })
+        .lean()
       res.json(projects.map(publicProject))
     }),
   )
@@ -66,8 +70,17 @@ export function projectsRouter(): Router {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req)
       const project = await requireProject(userId, req.params.id)
-      const tasks = await Task.find({ userId, projectId: project._id }).sort({ order: 1, createdAt: 1 })
-      res.json(tasks.map(publicTask))
+      const limit = pageLimit(req.query.limit)
+      const cursor = afterTaskCursor(req.query.cursor)
+      const base = { userId, projectId: project._id }
+      const tasks = await Task.find(cursor ? { $and: [base, afterTaskFilter(cursor)] } : base)
+        .select('projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt')
+        .sort({ order: 1, createdAt: 1, _id: 1 })
+        .limit(limit + 1)
+        .lean()
+      const next = nextTaskCursor(tasks, limit)
+      if (next) res.set('X-Next-Cursor', next)
+      res.json(tasks.slice(0, limit).map(publicTask))
     }),
   )
 
@@ -126,7 +139,10 @@ export function projectsRouter(): Router {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req)
       const project = await requireProject(userId, req.params.id)
-      const notes = await Note.find({ userId, projectId: project._id }).sort({ updatedAt: -1 })
+      const notes = await Note.find({ userId, projectId: project._id })
+        .select('projectId title body createdAt updatedAt')
+        .sort({ updatedAt: -1 })
+        .lean()
       res.json(notes.map(publicNote))
     }),
   )
@@ -159,7 +175,7 @@ export function projectsRouter(): Router {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req)
       const project = await requireProject(userId, req.params.id)
-      const board = await Whiteboard.findOne({ userId, projectId: project._id })
+      const board = await Whiteboard.findOne({ userId, projectId: project._id }).select('scene').lean()
       res.json({ scene: board?.scene ?? emptyScene })
     }),
   )
@@ -184,13 +200,17 @@ export function projectsRouter(): Router {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req)
       const project = await requireProject(userId, req.params.id)
-      const items = await Activity.find({
-        userId,
-        $or: [{ projectId: project._id }, { projectId: null }],
-      })
+      const limit = pageLimit(req.query.limit)
+      const cursor = beforeCursor(req.query.cursor)
+      const scope = { userId, $or: [{ projectId: project._id }, { projectId: null }] }
+      const items = await Activity.find(cursor ? { $and: [scope, beforeFilter(cursor)] } : scope)
+        .select('projectId type summary createdAt')
         .sort({ createdAt: -1, _id: -1 })
-        .limit(100)
-      res.json(items.map(publicActivity))
+        .limit(limit + 1)
+        .lean()
+      const next = nextDateCursor(items, limit)
+      if (next) res.set('X-Next-Cursor', next)
+      res.json(items.slice(0, limit).map(publicActivity))
     }),
   )
 

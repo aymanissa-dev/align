@@ -59,7 +59,13 @@ export async function connectDb(): Promise<typeof mongoose> {
   if (!state.promise) {
     mongoose.set('bufferCommands', false)
     state.promise = mongoose
-      .connect(uri, { serverSelectionTimeoutMS: 10000 })
+      .connect(uri, {
+        serverSelectionTimeoutMS: 5000,
+        maxPoolSize: 5,
+        minPoolSize: 0,
+        maxIdleTimeMS: 10_000,
+        socketTimeoutMS: 20_000,
+      })
       .then((connection) => {
         state.conn = connection
         return connection

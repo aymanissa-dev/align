@@ -18,7 +18,10 @@ export function labelsRouter(): Router {
   router.get(
     '/',
     asyncHandler(async (req, res) => {
-      const labels = await Label.find({ userId: currentUserId(req) }).sort({ name: 1 })
+      const labels = await Label.find({ userId: currentUserId(req) })
+        .select('name color createdAt')
+        .sort({ name: 1 })
+        .lean()
       res.json(labels.map(publicLabel))
     }),
   )

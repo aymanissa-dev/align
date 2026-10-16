@@ -1,4 +1,9 @@
+import type { Types } from 'mongoose'
 import type { ActivityDoc, LabelDoc, NoteDoc, NotificationDoc, ProjectDoc, TaskDoc, UserDoc } from './models.ts'
+
+function docId(doc: { id?: string; _id: Types.ObjectId | { toString(): string } }): string {
+  return doc.id || doc._id.toString()
+}
 
 export function publicUser(user: UserDoc) {
   return {
@@ -10,9 +15,9 @@ export function publicUser(user: UserDoc) {
   }
 }
 
-export function publicProject(project: ProjectDoc) {
+export function publicProject(project: ProjectDoc | (Pick<ProjectDoc, 'name' | 'description' | 'status' | 'createdAt' | 'updatedAt'> & { id?: string; _id: Types.ObjectId })) {
   return {
-    id: project.id,
+    id: docId(project),
     name: project.name,
     description: project.description,
     status: project.status,
@@ -21,18 +26,18 @@ export function publicProject(project: ProjectDoc) {
   }
 }
 
-export function publicLabel(label: LabelDoc) {
+export function publicLabel(label: LabelDoc | (Pick<LabelDoc, 'name' | 'color' | 'createdAt'> & { id?: string; _id: Types.ObjectId })) {
   return {
-    id: label.id,
+    id: docId(label),
     name: label.name,
     color: label.color,
     createdAt: label.createdAt.toISOString(),
   }
 }
 
-export function publicTask(task: TaskDoc) {
+export function publicTask(task: TaskDoc | (Pick<TaskDoc, 'projectId' | 'title' | 'completed' | 'dueDate' | 'priority' | 'labelIds' | 'plannedFor' | 'completedOn' | 'order' | 'createdAt' | 'updatedAt'> & { id?: string; _id: Types.ObjectId })) {
   return {
-    id: task.id,
+    id: docId(task),
     projectId: task.projectId.toString(),
     title: task.title,
     completed: task.completed,
@@ -47,9 +52,9 @@ export function publicTask(task: TaskDoc) {
   }
 }
 
-export function publicActivity(item: ActivityDoc) {
+export function publicActivity(item: ActivityDoc | (Pick<ActivityDoc, 'projectId' | 'type' | 'summary' | 'createdAt'> & { id?: string; _id: Types.ObjectId })) {
   return {
-    id: item.id,
+    id: docId(item),
     projectId: item.projectId ? item.projectId.toString() : '',
     type: item.type,
     summary: item.summary,
@@ -57,9 +62,9 @@ export function publicActivity(item: ActivityDoc) {
   }
 }
 
-export function publicNotification(item: NotificationDoc) {
+export function publicNotification(item: NotificationDoc | (Pick<NotificationDoc, 'projectId' | 'taskId' | 'kind' | 'title' | 'projectName' | 'dueDate' | 'read' | 'createdAt'> & { id?: string; _id: Types.ObjectId })) {
   return {
-    id: item.id,
+    id: docId(item),
     projectId: item.projectId.toString(),
     taskId: item.taskId.toString(),
     kind: item.kind,
@@ -71,9 +76,9 @@ export function publicNotification(item: NotificationDoc) {
   }
 }
 
-export function publicNote(note: NoteDoc) {
+export function publicNote(note: NoteDoc | (Pick<NoteDoc, 'projectId' | 'title' | 'body' | 'createdAt' | 'updatedAt'> & { id?: string; _id: Types.ObjectId })) {
   return {
-    id: note.id,
+    id: docId(note),
     projectId: note.projectId.toString(),
     title: note.title,
     body: note.body,

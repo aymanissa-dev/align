@@ -1,9 +1,43 @@
 import { Router } from 'express'
+import { Types } from 'mongoose'
 import { HttpError } from '../errors.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
-import { Project, Task } from '../models.ts'
-import { publicTask } from '../serialize.ts'
+import { Task } from '../models.ts'
 import { normalizeDueDate } from '../validate.ts'
+
+type TodayRow = {
+  _id: Types.ObjectId
+  projectId: Types.ObjectId
+  projectName: string
+  title: string
+  completed: boolean
+  dueDate: string | null
+  priority: 'low' | 'medium' | 'high' | 'urgent'
+  labelIds: Types.ObjectId[]
+  plannedFor: string | null
+  completedOn: string | null
+  order: number
+  createdAt: Date
+  updatedAt: Date
+}
+
+function present(task: TodayRow) {
+  return {
+    id: task._id.toString(),
+    projectId: task.projectId.toString(),
+    projectName: task.projectName,
+    title: task.title,
+    completed: task.completed,
+    dueDate: task.dueDate,
+    priority: task.priority,
+    labelIds: (task.labelIds ?? []).map((id) => id.toString()),
+    plannedFor: task.plannedFor,
+    completedOn: task.completedOn,
+    order: task.order,
+    createdAt: task.createdAt.toISOString(),
+    updatedAt: task.updatedAt.toISOString(),
+  }
+}
 
 export function todayRouter(): Router {
   const router = Router()
@@ -14,44 +48,70 @@ export function todayRouter(): Router {
     asyncHandler(async (req, res) => {
       const date = typeof req.query.date === 'string' ? normalizeDueDate(req.query.date) : null
       if (!date) throw new HttpError(400, 'Use a valid date.')
-      const userId = currentUserId(req)
-      const [tasks, projects] = await Promise.all([
-        Task.find({ userId }).sort({ order: 1, createdAt: 1 }),
-        Project.find({ userId }).select('name status'),
+      const userId = new Types.ObjectId(currentUserId(req))
+      const visible = await Task.aggregate<TodayRow>([
+        { $match: { userId } },
+        { $sort: { order: 1, createdAt: 1 } },
+        {
+          $lookup: {
+            from: 'projects',
+            let: { projectId: '$projectId' },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $and: [{ $eq: ['$_id', '$$projectId'] }, { $eq: ['$userId', userId] }, { $eq: ['$status', 'active'] }],
+                  },
+                },
+              },
+              { $project: { name: 1 } },
+            ],
+            as: 'project',
+          },
+        },
+        { $unwind: '$project' },
+        {
+          $project: {
+            projectId: 1,
+            projectName: '$project.name',
+            title: 1,
+            completed: 1,
+            dueDate: 1,
+            priority: 1,
+            labelIds: 1,
+            plannedFor: 1,
+            completedOn: 1,
+            order: 1,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        },
       ])
-      const names = new Map(projects.map((project) => [project.id, project.name]))
-      const active = new Set(projects.filter((project) => project.status === 'active').map((project) => project.id))
-
-      const visible = tasks.filter((task) => active.has(task.projectId.toString()))
-      const withProject = (task: (typeof tasks)[number]) => ({
-        ...publicTask(task),
-        projectName: names.get(task.projectId.toString()) ?? '',
-      })
 
       const planned = visible.filter((task) => task.plannedFor === date)
       const overdue = visible.filter(
         (task) => !task.completed && Boolean(task.dueDate) && (task.dueDate ?? '') < date && task.plannedFor !== date,
       )
-      const overdueIds = new Set(overdue.map((task) => task.id))
+      const overdueIds = new Set(overdue.map((task) => task._id.toString()))
       const carried = visible.filter(
         (task) =>
           !task.completed &&
           task.plannedFor != null &&
           task.plannedFor < date &&
-          !overdueIds.has(task.id) &&
+          !overdueIds.has(task._id.toString()) &&
           !(task.dueDate && task.dueDate > date),
       )
-      const taken = new Set([...planned, ...overdue, ...carried].map((task) => task.id))
-      const available = visible.filter((task) => !task.completed && !taken.has(task.id))
+      const taken = new Set([...planned, ...overdue, ...carried].map((task) => task._id.toString()))
+      const available = visible.filter((task) => !task.completed && !taken.has(task._id.toString()))
       const finished = visible.filter((task) => task.completed && task.completedOn === date && task.plannedFor !== date)
 
       res.json({
         date,
-        planned: planned.map(withProject),
-        carried: carried.map(withProject),
-        overdue: overdue.map(withProject),
-        available: available.map(withProject),
-        finished: finished.map(withProject),
+        planned: planned.map(present),
+        carried: carried.map(present),
+        overdue: overdue.map(present),
+        available: available.map(present),
+        finished: finished.map(present),
       })
     }),
   )

@@ -13,7 +13,10 @@ export function notesRouter(): Router {
   router.get(
     '/',
     asyncHandler(async (req, res) => {
-      const notes = await Note.find({ userId: currentUserId(req) }).sort({ updatedAt: -1 })
+      const notes = await Note.find({ userId: currentUserId(req) })
+        .select('projectId title body createdAt updatedAt')
+        .sort({ updatedAt: -1 })
+        .lean()
       res.json(notes.map(publicNote))
     }),
   )

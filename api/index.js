@@ -17,6 +17,28 @@ var HttpError = class extends Error {
 
 // src/models.ts
 import mongoose, { Schema, model } from "mongoose";
+
+// src/slow.ts
+var SLOW_MS = 200;
+function slowQueries(schema, modelName) {
+  const started = /* @__PURE__ */ new WeakMap();
+  const mark = function() {
+    started.set(this, Date.now());
+  };
+  const report = function() {
+    const began = started.get(this);
+    if (!began) return;
+    const ms = Date.now() - began;
+    if (ms >= SLOW_MS) console.info(JSON.stringify({ msg: "slow-query", model: modelName, ms }));
+  };
+  schema.pre(/^find|^count|^update|^delete/, mark);
+  schema.post(/^find|^count|^update|^delete/, report);
+  schema.pre("aggregate", mark);
+  schema.post("aggregate", report);
+}
+
+// src/models.ts
+var NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1e3;
 var userSchema = new Schema(
   {
     name: { type: String, required: true },
@@ -52,6 +74,7 @@ var labelSchema = new Schema(
   { timestamps: true }
 );
 labelSchema.index({ userId: 1, name: 1 }, { unique: true });
+labelSchema.index({ userId: 1 });
 var taskSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
@@ -75,9 +98,12 @@ taskSchema.index(
 );
 taskSchema.index({ projectId: 1, completed: 1 });
 taskSchema.index({ userId: 1, projectId: 1 });
+taskSchema.index({ userId: 1, projectId: 1, completed: 1, dueDate: 1 });
+taskSchema.index({ userId: 1, plannedFor: 1 });
+taskSchema.index({ userId: 1, completedOn: 1 });
+taskSchema.index({ userId: 1, projectId: 1, order: 1, createdAt: 1, _id: 1 });
 taskSchema.index({ userId: 1, dueDate: 1 });
 taskSchema.index({ userId: 1, title: 1 });
-taskSchema.index({ userId: 1, completedOn: 1 });
 taskSchema.index({ title: "text" }, { name: "TaskTextIndex" });
 var noteSchema = new Schema(
   {
@@ -88,7 +114,7 @@ var noteSchema = new Schema(
   },
   { timestamps: true }
 );
-noteSchema.index({ projectId: 1 });
+noteSchema.index({ userId: 1, projectId: 1, updatedAt: -1 });
 noteSchema.index({ userId: 1, updatedAt: -1 });
 noteSchema.index({ userId: 1, title: 1 });
 noteSchema.index(
@@ -104,7 +130,7 @@ var activitySchema = new Schema(
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );
-activitySchema.index({ projectId: 1, createdAt: -1 });
+activitySchema.index({ projectId: 1, createdAt: -1, _id: -1 });
 activitySchema.index({ userId: 1, projectId: 1 });
 activitySchema.index({ userId: 1, createdAt: -1 });
 var notificationSchema = new Schema(
@@ -117,12 +143,15 @@ var notificationSchema = new Schema(
     projectName: { type: String, required: true },
     dueDate: { type: String, required: true },
     read: { type: Boolean, default: false, required: true },
-    key: { type: String, required: true }
+    key: { type: String, required: true },
+    expireAt: { type: Date, default: () => new Date(Date.now() + NINETY_DAYS_MS) }
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );
 notificationSchema.index({ userId: 1, key: 1 }, { unique: true });
+notificationSchema.index({ userId: 1, read: 1, createdAt: -1 });
 notificationSchema.index({ userId: 1, createdAt: -1 });
+notificationSchema.index({ expireAt: 1 }, { expireAfterSeconds: 0 });
 var whiteboardSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
@@ -132,6 +161,14 @@ var whiteboardSchema = new Schema(
   { timestamps: true }
 );
 whiteboardSchema.index({ userId: 1, projectId: 1 }, { unique: true });
+slowQueries(userSchema, "User");
+slowQueries(projectSchema, "Project");
+slowQueries(labelSchema, "Label");
+slowQueries(taskSchema, "Task");
+slowQueries(noteSchema, "Note");
+slowQueries(activitySchema, "Activity");
+slowQueries(notificationSchema, "Notification");
+slowQueries(whiteboardSchema, "Whiteboard");
 function compile(name, factory) {
   const existing = mongoose.models[name];
   if (existing) return existing;
@@ -189,7 +226,13 @@ async function connectDb() {
   }
   if (!state.promise) {
     mongoose2.set("bufferCommands", false);
-    state.promise = mongoose2.connect(uri, { serverSelectionTimeoutMS: 1e4 }).then((connection) => {
+    state.promise = mongoose2.connect(uri, {
+      serverSelectionTimeoutMS: 5e3,
+      maxPoolSize: 5,
+      minPoolSize: 0,
+      maxIdleTimeMS: 1e4,
+      socketTimeoutMS: 2e4
+    }).then((connection) => {
       state.conn = connection;
       return connection;
     }).catch((error) => {
@@ -345,6 +388,9 @@ function dummyPasswordHash() {
 }
 
 // src/serialize.ts
+function docId(doc) {
+  return doc.id || doc._id.toString();
+}
 function publicUser(user) {
   return {
     id: user.id,
@@ -356,7 +402,7 @@ function publicUser(user) {
 }
 function publicProject(project) {
   return {
-    id: project.id,
+    id: docId(project),
     name: project.name,
     description: project.description,
     status: project.status,
@@ -366,7 +412,7 @@ function publicProject(project) {
 }
 function publicLabel(label) {
   return {
-    id: label.id,
+    id: docId(label),
     name: label.name,
     color: label.color,
     createdAt: label.createdAt.toISOString()
@@ -374,7 +420,7 @@ function publicLabel(label) {
 }
 function publicTask(task) {
   return {
-    id: task.id,
+    id: docId(task),
     projectId: task.projectId.toString(),
     title: task.title,
     completed: task.completed,
@@ -390,7 +436,7 @@ function publicTask(task) {
 }
 function publicActivity(item) {
   return {
-    id: item.id,
+    id: docId(item),
     projectId: item.projectId ? item.projectId.toString() : "",
     type: item.type,
     summary: item.summary,
@@ -399,7 +445,7 @@ function publicActivity(item) {
 }
 function publicNotification(item) {
   return {
-    id: item.id,
+    id: docId(item),
     projectId: item.projectId.toString(),
     taskId: item.taskId.toString(),
     kind: item.kind,
@@ -412,7 +458,7 @@ function publicNotification(item) {
 }
 function publicNote(note) {
   return {
-    id: note.id,
+    id: docId(note),
     projectId: note.projectId.toString(),
     title: note.title,
     body: note.body,
@@ -736,52 +782,82 @@ function authRouter(limiter) {
 
 // src/routes/dashboard.ts
 import { Router as Router2 } from "express";
+import { Types } from "mongoose";
 function dashboardRouter() {
   const router = Router2();
   router.use(requireAuth);
   router.get(
     "/",
     asyncHandler(async (req, res) => {
-      const userId = currentUserId(req);
-      const projects = await Project.find({ userId, status: "active" }).sort({ updatedAt: -1 });
-      const projectIds = projects.map((project) => project._id);
-      const tasks = await Task.find({ userId, projectId: { $in: projectIds } });
-      const tasksByProject = /* @__PURE__ */ new Map();
-      for (const task of tasks) {
-        const key = task.projectId.toString();
-        const list = tasksByProject.get(key);
-        if (list) list.push(task);
-        else tasksByProject.set(key, [task]);
-      }
-      const names = new Map(projects.map((project) => [project.id, project.name]));
-      const openTasks = tasks.filter((task) => !task.completed).map((task) => ({
-        id: task.id,
-        projectId: task.projectId.toString(),
-        projectName: names.get(task.projectId.toString()) ?? "",
-        title: task.title,
-        dueDate: task.dueDate,
-        priority: task.priority,
-        completed: false
-      })).sort((a, b) => {
+      const userId = new Types.ObjectId(currentUserId(req));
+      const rows = await Project.aggregate([
+        { $match: { userId, status: "active" } },
+        { $sort: { updatedAt: -1 } },
+        {
+          $lookup: {
+            from: "tasks",
+            let: { projectId: "$_id" },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $and: [{ $eq: ["$projectId", "$$projectId"] }, { $eq: ["$userId", userId] }]
+                  }
+                }
+              },
+              { $project: { title: 1, dueDate: 1, priority: 1, completed: 1, projectId: 1 } }
+            ],
+            as: "tasks"
+          }
+        },
+        {
+          $project: {
+            name: 1,
+            description: 1,
+            taskCount: { $size: "$tasks" },
+            completedCount: {
+              $size: { $filter: { input: "$tasks", as: "task", cond: { $eq: ["$$task.completed", true] } } }
+            },
+            openTasks: {
+              $map: {
+                input: { $filter: { input: "$tasks", as: "task", cond: { $eq: ["$$task.completed", false] } } },
+                as: "task",
+                in: {
+                  _id: "$$task._id",
+                  title: "$$task.title",
+                  dueDate: "$$task.dueDate",
+                  priority: "$$task.priority",
+                  projectId: "$_id",
+                  projectName: "$name"
+                }
+              }
+            }
+          }
+        }
+      ]);
+      const openTasks = rows.flatMap((row) => row.openTasks).sort((a, b) => {
         if (a.dueDate && b.dueDate && a.dueDate !== b.dueDate) return a.dueDate < b.dueDate ? -1 : 1;
         if (a.dueDate && !b.dueDate) return -1;
         if (!a.dueDate && b.dueDate) return 1;
         return a.title.localeCompare(b.title);
-      });
+      }).map((task) => ({
+        id: task._id.toString(),
+        projectId: task.projectId.toString(),
+        projectName: task.projectName,
+        title: task.title,
+        dueDate: task.dueDate,
+        priority: task.priority,
+        completed: false
+      }));
       res.json({
-        projects: projects.map((project) => {
-          const projectTasks = tasksByProject.get(project.id) ?? [];
-          const completedCount = projectTasks.filter((task) => task.completed).length;
-          const taskCount = projectTasks.length;
-          return {
-            id: project.id,
-            name: project.name,
-            description: project.description,
-            percentComplete: taskCount === 0 ? 0 : Math.round(completedCount / taskCount * 100),
-            completedCount,
-            taskCount
-          };
-        }),
+        projects: rows.map((project) => ({
+          id: project._id.toString(),
+          name: project.name,
+          description: project.description,
+          percentComplete: project.taskCount === 0 ? 0 : Math.round(project.completedCount / project.taskCount * 100),
+          completedCount: project.completedCount,
+          taskCount: project.taskCount
+        })),
         openTasks
       });
     })
@@ -806,10 +882,10 @@ async function recordActivity(input) {
 }
 
 // src/scope.ts
-import { Types } from "mongoose";
+import { Types as Types2 } from "mongoose";
 function objectId(id) {
   if (!/^[a-f\d]{24}$/i.test(id)) return null;
-  return new Types.ObjectId(id);
+  return new Types2.ObjectId(id);
 }
 async function requireProject(userId, id) {
   const projectId = objectId(id);
@@ -854,7 +930,7 @@ function labelsRouter() {
   router.get(
     "/",
     asyncHandler(async (req, res) => {
-      const labels = await Label.find({ userId: currentUserId(req) }).sort({ name: 1 });
+      const labels = await Label.find({ userId: currentUserId(req) }).select("name color createdAt").sort({ name: 1 }).lean();
       res.json(labels.map(publicLabel));
     })
   );
@@ -938,7 +1014,7 @@ function notesRouter() {
   router.get(
     "/",
     asyncHandler(async (req, res) => {
-      const notes = await Note.find({ userId: currentUserId(req) }).sort({ updatedAt: -1 });
+      const notes = await Note.find({ userId: currentUserId(req) }).select("projectId title body createdAt updatedAt").sort({ updatedAt: -1 }).lean();
       res.json(notes.map(publicNote));
     })
   );
@@ -991,6 +1067,76 @@ function notesRouter() {
 
 // src/routes/notifications.ts
 import { Router as Router5 } from "express";
+import { Types as Types4 } from "mongoose";
+
+// src/page.ts
+import { Types as Types3 } from "mongoose";
+var PAGE_SIZE = 50;
+function pageLimit(value, fallback = PAGE_SIZE) {
+  const parsed = typeof value === "string" ? Number(value) : fallback;
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(100, Math.max(1, Math.floor(parsed)));
+}
+function encodeCursor(parts) {
+  return Buffer.from(parts.join("|"), "utf8").toString("base64url");
+}
+function decodeCursor(value) {
+  if (typeof value !== "string" || !value) return null;
+  try {
+    const text2 = Buffer.from(value, "base64url").toString("utf8");
+    const parts = text2.split("|");
+    return parts.length > 0 && parts.every((part) => part.length > 0) ? parts : null;
+  } catch {
+    return null;
+  }
+}
+function objectIdFromCursor(value) {
+  if (!/^[a-f\d]{24}$/i.test(value)) return null;
+  return new Types3.ObjectId(value);
+}
+function beforeCursor(value) {
+  const parts = decodeCursor(value);
+  if (!parts || parts.length !== 2) return null;
+  const createdAt = new Date(parts[0] ?? "");
+  const id = objectIdFromCursor(parts[1] ?? "");
+  if (Number.isNaN(createdAt.getTime()) || !id) return null;
+  return { createdAt, id };
+}
+function beforeFilter(cursor) {
+  return {
+    $or: [{ createdAt: { $lt: cursor.createdAt } }, { createdAt: cursor.createdAt, _id: { $lt: cursor.id } }]
+  };
+}
+function nextDateCursor(items, limit) {
+  if (items.length <= limit) return null;
+  const last = items[limit - 1];
+  if (!last) return null;
+  return encodeCursor([last.createdAt.toISOString(), last._id.toString()]);
+}
+function afterTaskCursor(value) {
+  const parts = decodeCursor(value);
+  if (!parts || parts.length !== 3) return null;
+  const order = Number(parts[0]);
+  const createdAt = new Date(parts[1] ?? "");
+  const id = objectIdFromCursor(parts[2] ?? "");
+  if (!Number.isInteger(order) || Number.isNaN(createdAt.getTime()) || !id) return null;
+  return { order, createdAt, id };
+}
+function afterTaskFilter(cursor) {
+  return {
+    $or: [
+      { order: { $gt: cursor.order } },
+      { order: cursor.order, createdAt: { $gt: cursor.createdAt } },
+      { order: cursor.order, createdAt: cursor.createdAt, _id: { $gt: cursor.id } }
+    ]
+  };
+}
+function nextTaskCursor(items, limit) {
+  if (items.length <= limit) return null;
+  const last = items[limit - 1];
+  if (!last) return null;
+  return encodeCursor([String(last.order), last.createdAt.toISOString(), last._id.toString()]);
+}
 
 // src/dates.ts
 function shiftISODate(iso, days) {
@@ -1001,6 +1147,7 @@ function shiftISODate(iso, days) {
 }
 
 // src/routes/notifications.ts
+var NINETY_DAYS_MS2 = 90 * 24 * 60 * 60 * 1e3;
 function notificationsRouter() {
   const router = Router5();
   router.use(requireAuth);
@@ -1012,38 +1159,57 @@ function notificationsRouter() {
       const today = normalizeDueDate(todayParam);
       if (!today) throw new HttpError(400, "Use a valid date.");
       const tomorrow = shiftISODate(today, 1);
-      const tasks = await Task.find({ userId, completed: false, dueDate: { $ne: null } });
-      const projects = await Project.find({ userId }).select("name");
-      const names = new Map(projects.map((project) => [project.id, project.name]));
-      await Promise.all(
-        tasks.map(async (task) => {
-          if (!task.dueDate) return;
-          const kind = task.dueDate < today ? "overdue" : task.dueDate <= tomorrow ? "due-soon" : null;
-          if (!kind) return;
-          const key = `${task.id}:${kind}:${task.dueDate}`;
-          await Notification.updateOne(
-            { userId, key },
-            {
-              $setOnInsert: {
-                userId,
-                projectId: task.projectId,
-                taskId: task._id,
-                kind,
-                dueDate: task.dueDate,
-                read: false,
-                key
+      const tasks = await Task.find({ userId, completed: false, dueDate: { $ne: null } }).select("title dueDate projectId").lean();
+      const projects = await Project.find({ userId }).select("name").lean();
+      const names = new Map(projects.map((project) => [project._id.toString(), project.name]));
+      const expireAt = new Date(Date.now() + NINETY_DAYS_MS2);
+      const userObjectId = new Types4.ObjectId(userId);
+      const writes = tasks.flatMap((task) => {
+        if (!task.dueDate) return [];
+        const kind = task.dueDate < today ? "overdue" : task.dueDate <= tomorrow ? "due-soon" : null;
+        if (!kind) return [];
+        const key = `${task._id.toString()}:${kind}:${task.dueDate}`;
+        return [
+          {
+            updateOne: {
+              filter: { userId: userObjectId, key },
+              update: {
+                $setOnInsert: {
+                  userId: userObjectId,
+                  projectId: task.projectId,
+                  taskId: task._id,
+                  kind,
+                  dueDate: task.dueDate,
+                  read: false,
+                  key,
+                  expireAt
+                },
+                $set: {
+                  title: task.title,
+                  projectName: names.get(task.projectId.toString()) ?? "Project"
+                }
               },
-              $set: {
-                title: task.title,
-                projectName: names.get(task.projectId.toString()) ?? "Project"
-              }
-            },
-            { upsert: true }
-          );
-        })
-      );
-      const items = await Notification.find({ userId }).sort({ createdAt: -1 }).limit(50);
-      res.json(items.map(publicNotification));
+              upsert: true
+            }
+          }
+        ];
+      });
+      await Notification.bulkWrite([
+        ...writes,
+        {
+          updateMany: {
+            filter: { userId: userObjectId, expireAt: { $exists: false } },
+            update: { $set: { expireAt } }
+          }
+        }
+      ]);
+      const limit = pageLimit(req.query.limit);
+      const cursor = beforeCursor(req.query.cursor);
+      const filter = cursor ? { $and: [{ userId }, beforeFilter(cursor)] } : { userId };
+      const items = await Notification.find(filter).select("projectId taskId kind title projectName dueDate read createdAt").sort({ createdAt: -1, _id: -1 }).limit(limit + 1).lean();
+      const next = nextDateCursor(items, limit);
+      if (next) res.set("X-Next-Cursor", next);
+      res.json(items.slice(0, limit).map(publicNotification));
     })
   );
   router.post(
@@ -1087,7 +1253,7 @@ function projectsRouter() {
         }
         filter.status = status;
       }
-      const projects = await Project.find(filter).sort({ updatedAt: -1 });
+      const projects = await Project.find(filter).select("name description status createdAt updatedAt").sort({ updatedAt: -1 }).lean();
       res.json(projects.map(publicProject));
     })
   );
@@ -1116,8 +1282,13 @@ function projectsRouter() {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req);
       const project = await requireProject(userId, req.params.id);
-      const tasks = await Task.find({ userId, projectId: project._id }).sort({ order: 1, createdAt: 1 });
-      res.json(tasks.map(publicTask));
+      const limit = pageLimit(req.query.limit);
+      const cursor = afterTaskCursor(req.query.cursor);
+      const base = { userId, projectId: project._id };
+      const tasks = await Task.find(cursor ? { $and: [base, afterTaskFilter(cursor)] } : base).select("projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt").sort({ order: 1, createdAt: 1, _id: 1 }).limit(limit + 1).lean();
+      const next = nextTaskCursor(tasks, limit);
+      if (next) res.set("X-Next-Cursor", next);
+      res.json(tasks.slice(0, limit).map(publicTask));
     })
   );
   router.post(
@@ -1174,7 +1345,7 @@ function projectsRouter() {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req);
       const project = await requireProject(userId, req.params.id);
-      const notes = await Note.find({ userId, projectId: project._id }).sort({ updatedAt: -1 });
+      const notes = await Note.find({ userId, projectId: project._id }).select("projectId title body createdAt updatedAt").sort({ updatedAt: -1 }).lean();
       res.json(notes.map(publicNote));
     })
   );
@@ -1205,7 +1376,7 @@ function projectsRouter() {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req);
       const project = await requireProject(userId, req.params.id);
-      const board = await Whiteboard.findOne({ userId, projectId: project._id });
+      const board = await Whiteboard.findOne({ userId, projectId: project._id }).select("scene").lean();
       res.json({ scene: board?.scene ?? emptyScene });
     })
   );
@@ -1228,11 +1399,13 @@ function projectsRouter() {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req);
       const project = await requireProject(userId, req.params.id);
-      const items = await Activity.find({
-        userId,
-        $or: [{ projectId: project._id }, { projectId: null }]
-      }).sort({ createdAt: -1, _id: -1 }).limit(100);
-      res.json(items.map(publicActivity));
+      const limit = pageLimit(req.query.limit);
+      const cursor = beforeCursor(req.query.cursor);
+      const scope = { userId, $or: [{ projectId: project._id }, { projectId: null }] };
+      const items = await Activity.find(cursor ? { $and: [scope, beforeFilter(cursor)] } : scope).select("projectId type summary createdAt").sort({ createdAt: -1, _id: -1 }).limit(limit + 1).lean();
+      const next = nextDateCursor(items, limit);
+      if (next) res.set("X-Next-Cursor", next);
+      res.json(items.slice(0, limit).map(publicActivity));
     })
   );
   router.get(
@@ -1348,21 +1521,35 @@ function searchRouter() {
       const userId = currentUserId(req);
       const prefix = { $regex: `^${escapeRegex(query)}`, $options: "i" };
       const text2 = textSearch(query);
+      const projectFields = "name description status createdAt updatedAt";
       const [projectText, projectName, taskText, taskTitle, noteText, noteTitle, ownedProjects] = await Promise.all([
-        whenText(text2, () => Project.find({ userId, $text: { $search: text2 ?? "" } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
-        settle(
-          Project.find({ userId, name: prefix }).sort({ updatedAt: -1 }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)
+        whenText(
+          text2,
+          () => Project.find({ userId, $text: { $search: text2 ?? "" } }).select(projectFields).limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean()
         ),
-        whenText(text2, () => Task.find({ userId, $text: { $search: text2 ?? "" } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
-        settle(Task.find({ userId, title: prefix }).sort({ updatedAt: -1 }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
-        whenText(text2, () => Note.find({ userId, $text: { $search: text2 ?? "" } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
-        settle(Note.find({ userId, title: prefix }).sort({ updatedAt: -1 }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
-        Project.find({ userId }).select("name").maxTimeMS(TIME_MS)
+        settle(
+          Project.find({ userId, name: prefix }).select(projectFields).sort({ updatedAt: -1 }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean()
+        ),
+        whenText(
+          text2,
+          () => Task.find({ userId, $text: { $search: text2 ?? "" } }).select("projectId title completed").limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean()
+        ),
+        settle(
+          Task.find({ userId, title: prefix }).select("projectId title completed").sort({ updatedAt: -1 }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean()
+        ),
+        whenText(
+          text2,
+          () => Note.find({ userId, $text: { $search: text2 ?? "" } }).select("projectId title body").limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean()
+        ),
+        settle(
+          Note.find({ userId, title: prefix }).select("projectId title body").sort({ updatedAt: -1 }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean()
+        ),
+        Project.find({ userId }).select("name").maxTimeMS(TIME_MS).lean()
       ]);
-      const projects = mergeById([projectText, projectName], (item) => item.id);
-      const tasks = mergeById([taskText, taskTitle], (item) => item.id);
-      const notes = mergeById([noteText, noteTitle], (item) => item.id);
-      const names = new Map(ownedProjects.map((project) => [project.id, project.name]));
+      const projects = mergeById([projectText, projectName], (item) => item._id.toString());
+      const tasks = mergeById([taskText, taskTitle], (item) => item._id.toString());
+      const notes = mergeById([noteText, noteTitle], (item) => item._id.toString());
+      const names = new Map(ownedProjects.map((project) => [project._id.toString(), project.name]));
       res.json({
         projects: projects.map(publicProject),
         tasks: tasks.flatMap((task) => {
@@ -1370,7 +1557,7 @@ function searchRouter() {
           if (!projectName2) return [];
           return [
             {
-              id: task.id,
+              id: task._id.toString(),
               projectId: task.projectId.toString(),
               projectName: projectName2,
               title: task.title,
@@ -1383,7 +1570,7 @@ function searchRouter() {
           if (!projectName2) return [];
           return [
             {
-              id: note.id,
+              id: note._id.toString(),
               projectId: note.projectId.toString(),
               projectName: projectName2,
               title: note.title,
@@ -1461,6 +1648,24 @@ function tasksRouter() {
 
 // src/routes/today.ts
 import { Router as Router9 } from "express";
+import { Types as Types5 } from "mongoose";
+function present(task) {
+  return {
+    id: task._id.toString(),
+    projectId: task.projectId.toString(),
+    projectName: task.projectName,
+    title: task.title,
+    completed: task.completed,
+    dueDate: task.dueDate,
+    priority: task.priority,
+    labelIds: (task.labelIds ?? []).map((id) => id.toString()),
+    plannedFor: task.plannedFor,
+    completedOn: task.completedOn,
+    order: task.order,
+    createdAt: task.createdAt.toISOString(),
+    updatedAt: task.updatedAt.toISOString()
+  };
+}
 function todayRouter() {
   const router = Router9();
   router.use(requireAuth);
@@ -1469,36 +1674,63 @@ function todayRouter() {
     asyncHandler(async (req, res) => {
       const date = typeof req.query.date === "string" ? normalizeDueDate(req.query.date) : null;
       if (!date) throw new HttpError(400, "Use a valid date.");
-      const userId = currentUserId(req);
-      const [tasks, projects] = await Promise.all([
-        Task.find({ userId }).sort({ order: 1, createdAt: 1 }),
-        Project.find({ userId }).select("name status")
+      const userId = new Types5.ObjectId(currentUserId(req));
+      const visible = await Task.aggregate([
+        { $match: { userId } },
+        { $sort: { order: 1, createdAt: 1 } },
+        {
+          $lookup: {
+            from: "projects",
+            let: { projectId: "$projectId" },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $and: [{ $eq: ["$_id", "$$projectId"] }, { $eq: ["$userId", userId] }, { $eq: ["$status", "active"] }]
+                  }
+                }
+              },
+              { $project: { name: 1 } }
+            ],
+            as: "project"
+          }
+        },
+        { $unwind: "$project" },
+        {
+          $project: {
+            projectId: 1,
+            projectName: "$project.name",
+            title: 1,
+            completed: 1,
+            dueDate: 1,
+            priority: 1,
+            labelIds: 1,
+            plannedFor: 1,
+            completedOn: 1,
+            order: 1,
+            createdAt: 1,
+            updatedAt: 1
+          }
+        }
       ]);
-      const names = new Map(projects.map((project) => [project.id, project.name]));
-      const active = new Set(projects.filter((project) => project.status === "active").map((project) => project.id));
-      const visible = tasks.filter((task) => active.has(task.projectId.toString()));
-      const withProject = (task) => ({
-        ...publicTask(task),
-        projectName: names.get(task.projectId.toString()) ?? ""
-      });
       const planned = visible.filter((task) => task.plannedFor === date);
       const overdue = visible.filter(
         (task) => !task.completed && Boolean(task.dueDate) && (task.dueDate ?? "") < date && task.plannedFor !== date
       );
-      const overdueIds = new Set(overdue.map((task) => task.id));
+      const overdueIds = new Set(overdue.map((task) => task._id.toString()));
       const carried = visible.filter(
-        (task) => !task.completed && task.plannedFor != null && task.plannedFor < date && !overdueIds.has(task.id) && !(task.dueDate && task.dueDate > date)
+        (task) => !task.completed && task.plannedFor != null && task.plannedFor < date && !overdueIds.has(task._id.toString()) && !(task.dueDate && task.dueDate > date)
       );
-      const taken = new Set([...planned, ...overdue, ...carried].map((task) => task.id));
-      const available = visible.filter((task) => !task.completed && !taken.has(task.id));
+      const taken = new Set([...planned, ...overdue, ...carried].map((task) => task._id.toString()));
+      const available = visible.filter((task) => !task.completed && !taken.has(task._id.toString()));
       const finished = visible.filter((task) => task.completed && task.completedOn === date && task.plannedFor !== date);
       res.json({
         date,
-        planned: planned.map(withProject),
-        carried: carried.map(withProject),
-        overdue: overdue.map(withProject),
-        available: available.map(withProject),
-        finished: finished.map(withProject)
+        planned: planned.map(present),
+        carried: carried.map(present),
+        overdue: overdue.map(present),
+        available: available.map(present),
+        finished: finished.map(present)
       });
     })
   );

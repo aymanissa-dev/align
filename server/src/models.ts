@@ -1,4 +1,7 @@
 import mongoose, { Schema, model, type HydratedDocument, type InferSchemaType } from 'mongoose'
+import { slowQueries } from './slow.ts'
+
+const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000
 
 const userSchema = new Schema(
   {
@@ -37,6 +40,7 @@ const labelSchema = new Schema(
   { timestamps: true },
 )
 labelSchema.index({ userId: 1, name: 1 }, { unique: true })
+labelSchema.index({ userId: 1 })
 
 const taskSchema = new Schema(
   {
@@ -61,9 +65,12 @@ taskSchema.index(
 )
 taskSchema.index({ projectId: 1, completed: 1 })
 taskSchema.index({ userId: 1, projectId: 1 })
+taskSchema.index({ userId: 1, projectId: 1, completed: 1, dueDate: 1 })
+taskSchema.index({ userId: 1, plannedFor: 1 })
+taskSchema.index({ userId: 1, completedOn: 1 })
+taskSchema.index({ userId: 1, projectId: 1, order: 1, createdAt: 1, _id: 1 })
 taskSchema.index({ userId: 1, dueDate: 1 })
 taskSchema.index({ userId: 1, title: 1 })
-taskSchema.index({ userId: 1, completedOn: 1 })
 taskSchema.index({ title: 'text' }, { name: 'TaskTextIndex' })
 
 const noteSchema = new Schema(
@@ -75,7 +82,7 @@ const noteSchema = new Schema(
   },
   { timestamps: true },
 )
-noteSchema.index({ projectId: 1 })
+noteSchema.index({ userId: 1, projectId: 1, updatedAt: -1 })
 noteSchema.index({ userId: 1, updatedAt: -1 })
 noteSchema.index({ userId: 1, title: 1 })
 noteSchema.index(
@@ -92,7 +99,7 @@ const activitySchema = new Schema(
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 )
-activitySchema.index({ projectId: 1, createdAt: -1 })
+activitySchema.index({ projectId: 1, createdAt: -1, _id: -1 })
 activitySchema.index({ userId: 1, projectId: 1 })
 activitySchema.index({ userId: 1, createdAt: -1 })
 
@@ -107,11 +114,14 @@ const notificationSchema = new Schema(
     dueDate: { type: String, required: true },
     read: { type: Boolean, default: false, required: true },
     key: { type: String, required: true },
+    expireAt: { type: Date, default: () => new Date(Date.now() + NINETY_DAYS_MS) },
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 )
 notificationSchema.index({ userId: 1, key: 1 }, { unique: true })
+notificationSchema.index({ userId: 1, read: 1, createdAt: -1 })
 notificationSchema.index({ userId: 1, createdAt: -1 })
+notificationSchema.index({ expireAt: 1 }, { expireAfterSeconds: 0 })
 
 const whiteboardSchema = new Schema(
   {
@@ -131,6 +141,15 @@ export type NoteDoc = HydratedDocument<InferSchemaType<typeof noteSchema>>
 export type ActivityDoc = HydratedDocument<InferSchemaType<typeof activitySchema>>
 export type NotificationDoc = HydratedDocument<InferSchemaType<typeof notificationSchema>>
 export type WhiteboardDoc = HydratedDocument<InferSchemaType<typeof whiteboardSchema>>
+
+slowQueries(userSchema, 'User')
+slowQueries(projectSchema, 'Project')
+slowQueries(labelSchema, 'Label')
+slowQueries(taskSchema, 'Task')
+slowQueries(noteSchema, 'Note')
+slowQueries(activitySchema, 'Activity')
+slowQueries(notificationSchema, 'Notification')
+slowQueries(whiteboardSchema, 'Whiteboard')
 
 function compile<T>(name: string, factory: () => T): T {
   const existing = mongoose.models[name]

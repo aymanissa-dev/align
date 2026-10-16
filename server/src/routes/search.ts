@@ -70,25 +70,60 @@ export function searchRouter(): Router {
       const prefix = { $regex: `^${escapeRegex(query)}`, $options: 'i' }
       const text = textSearch(query)
 
+      const projectFields = 'name description status createdAt updatedAt'
       const [projectText, projectName, taskText, taskTitle, noteText, noteTitle, ownedProjects] = await Promise.all([
-        whenText(text, () => Project.find({ userId, $text: { $search: text ?? '' } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
+        whenText(text, () =>
+          Project.find({ userId, $text: { $search: text ?? '' } })
+            .select(projectFields)
+            .limit(RESULT_LIMIT)
+            .maxTimeMS(TIME_MS)
+            .lean(),
+        ),
         settle(
           Project.find({ userId, name: prefix })
+            .select(projectFields)
             .sort({ updatedAt: -1 })
             .limit(RESULT_LIMIT)
-            .maxTimeMS(TIME_MS),
+            .maxTimeMS(TIME_MS)
+            .lean(),
         ),
-        whenText(text, () => Task.find({ userId, $text: { $search: text ?? '' } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
-        settle(Task.find({ userId, title: prefix }).sort({ updatedAt: -1 }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
-        whenText(text, () => Note.find({ userId, $text: { $search: text ?? '' } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
-        settle(Note.find({ userId, title: prefix }).sort({ updatedAt: -1 }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS)),
-        Project.find({ userId }).select('name').maxTimeMS(TIME_MS),
+        whenText(text, () =>
+          Task.find({ userId, $text: { $search: text ?? '' } })
+            .select('projectId title completed')
+            .limit(RESULT_LIMIT)
+            .maxTimeMS(TIME_MS)
+            .lean(),
+        ),
+        settle(
+          Task.find({ userId, title: prefix })
+            .select('projectId title completed')
+            .sort({ updatedAt: -1 })
+            .limit(RESULT_LIMIT)
+            .maxTimeMS(TIME_MS)
+            .lean(),
+        ),
+        whenText(text, () =>
+          Note.find({ userId, $text: { $search: text ?? '' } })
+            .select('projectId title body')
+            .limit(RESULT_LIMIT)
+            .maxTimeMS(TIME_MS)
+            .lean(),
+        ),
+        settle(
+          Note.find({ userId, title: prefix })
+            .select('projectId title body')
+            .sort({ updatedAt: -1 })
+            .limit(RESULT_LIMIT)
+            .maxTimeMS(TIME_MS)
+            .lean(),
+        ),
+        Project.find({ userId }).select('name').maxTimeMS(TIME_MS).lean(),
       ])
 
-      const projects = mergeById([projectText, projectName], (item) => item.id)
-      const tasks = mergeById([taskText, taskTitle], (item) => item.id)
-      const notes = mergeById([noteText, noteTitle], (item) => item.id)
-      const names = new Map(ownedProjects.map((project) => [project.id, project.name]))
+      const projects = mergeById([projectText, projectName], (item) => item._id.toString())
+      const tasks = mergeById([taskText, taskTitle], (item) => item._id.toString())
+      const notes = mergeById([noteText, noteTitle], (item) => item._id.toString())
+      const names = new Map(ownedProjects.map((project) => [project._id.toString(), project.name]))
 
       res.json({
         projects: projects.map(publicProject),
@@ -97,7 +132,7 @@ export function searchRouter(): Router {
           if (!projectName) return []
           return [
             {
-              id: task.id,
+              id: task._id.toString(),
               projectId: task.projectId.toString(),
               projectName,
               title: task.title,
@@ -110,7 +145,7 @@ export function searchRouter(): Router {
           if (!projectName) return []
           return [
             {
-              id: note.id,
+              id: note._id.toString(),
               projectId: note.projectId.toString(),
               projectName,
               title: note.title,
