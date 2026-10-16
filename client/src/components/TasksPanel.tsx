@@ -152,8 +152,8 @@ export function TasksPanel({ projectId }: { projectId: string }) {
     })
   }
 
-  if (tasks.isLoading || labels.isLoading) return <ListSkeleton rows={4} />
-  if (tasks.isError || !tasks.data || labels.isError || !labels.data) {
+  if (!tasks.data || !labels.data) {
+    if (tasks.isLoading || labels.isLoading) return <ListSkeleton rows={4} />
     return (
       <div className="mt-8">
         <ErrorState onRetry={() => void Promise.all([tasks.refetch(), labels.refetch()])} />

@@ -10,6 +10,10 @@ export const queryClient = new QueryClient({
         return failureCount < 1
       },
     },
+    mutations: {
+      networkMode: 'always',
+      retry: false,
+    },
   },
 })
 

@@ -78,8 +78,10 @@ export function TodayPage() {
     },
   })
 
-  if (today.isLoading) return <ListSkeleton />
-  if (today.isError || !today.data) return <ErrorState onRetry={() => void today.refetch()} />
+  if (!today.data) {
+    if (today.isLoading) return <ListSkeleton />
+    return <ErrorState onRetry={() => void today.refetch()} />
+  }
 
   const names = new Map((projects.data ?? []).map((project) => [project.id, project.name]))
   const queued: TodayTask[] = pendingTaskCreates().map((task) => ({
