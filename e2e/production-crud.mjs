@@ -486,11 +486,14 @@ async function signedOutOfflineAndUnvisited(browser) {
   })
   try {
     await swPage.goto(`${base}/register`)
+    await swPage.waitForFunction(() => navigator.serviceWorker?.controller != null, null, { timeout: 30_000 })
+    // Activation reloads the tab once. Fill the form after that, or the reload cancels submit.
+    await swPage.waitForTimeout(1500)
+    await swPage.locator('#name').waitFor()
     await swPage.locator('#name').fill(name)
     await swPage.locator('#email').fill(email)
     await swPage.locator('#password').fill(password)
     await swPage.getByRole('button', { name: 'Create account' }).click()
-    await swPage.waitForFunction(() => navigator.serviceWorker?.controller != null, null, { timeout: 30_000 })
     await swPage.getByRole('heading', { level: 1, name: /E2E/ }).waitFor()
     await swPage.getByLabel('Primary').getByRole('link', { name: 'Projects' }).click()
     await swPage.getByRole('button', { name: 'New project' }).click()
