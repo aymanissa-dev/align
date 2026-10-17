@@ -39,7 +39,8 @@ describe('tasks and notes', () => {
       .set('If-Match', 'W/"0"')
       .send({ title: 'Title from A', priority: 'high' })
     expect(saved.status).toBe(200)
-    expect(saved.headers.etag).toBe('W/"1"')
+    expect(saved.body.version).toBe(1)
+    expect(saved.headers.etag).toBe('W/"0"')
 
     const lost = await agent.patch(`/api/tasks/${taskId}`).set('If-Match', 'W/"0"').send({ priority: 'low' })
     expect(lost.status).toBe(409)

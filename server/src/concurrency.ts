@@ -19,5 +19,9 @@ export function assertVersion(current: number | null | undefined, expected: numb
 }
 
 export function stampVersion(res: Response, version: number | null | undefined) {
+  // Vercel replaces a response with 412 when If-Match disagrees with the
+  // response ETag, after the function has already written. Echo If-Match so
+  // the status we set is the one the client sees. The body carries the new version.
+  if (res.get('ETag')) return
   res.set('ETag', `W/"${version ?? 0}"`)
 }

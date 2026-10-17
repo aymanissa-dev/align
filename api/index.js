@@ -1620,6 +1620,7 @@ function assertVersion(current, expected) {
   if ((current ?? 0) !== expected) throw new HttpError(409, CONFLICT_MESSAGE);
 }
 function stampVersion(res, version) {
+  if (res.get("ETag")) return;
   res.set("ETag", `W/"${version ?? 0}"`);
 }
 
@@ -2541,6 +2542,11 @@ function createApp(options = {}) {
   app2.use(compression());
   app2.use(privateRevalidate());
   app2.use(express.json({ limit: "1mb" }));
+  app2.use((req, res, next) => {
+    const match = req.get("If-Match");
+    if (match) res.set("ETag", match);
+    next();
+  });
   app2.use(guardOrigin);
   app2.use((_req, res, next) => {
     res.setHeader("X-Align-Minimum", String(MINIMUM_CLIENT_VERSION));

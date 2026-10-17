@@ -37,6 +37,11 @@ export function createApp(options: AppOptions = {}): Express {
   app.use(compression())
   app.use(privateRevalidate())
   app.use(express.json({ limit: '1mb' }))
+  app.use((req, res, next) => {
+    const match = req.get('If-Match')
+    if (match) res.set('ETag', match)
+    next()
+  })
   app.use(guardOrigin)
   app.use((_req, res, next) => {
     res.setHeader('X-Align-Minimum', String(MINIMUM_CLIENT_VERSION))
