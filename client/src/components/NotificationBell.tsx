@@ -46,7 +46,7 @@ export function NotificationBell({ className, placement = 'down' }: { className?
     onSettled: () => void queryClient.invalidateQueries({ queryKey }),
   })
   const markAll = useMutation({
-    mutationFn: () => api.markAllNotificationsRead(),
+    mutationFn: () => api.markAllNotificationsRead(today),
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey })
       const previous = queryClient.getQueryData<AppNotification[]>(queryKey)

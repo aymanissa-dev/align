@@ -61,7 +61,7 @@ describe('activity and notifications', () => {
 
     const marked = await agent.post(`/api/notifications/${inbox.body[0].id}/read`)
     expect(marked.body.read).toBe(true)
-    expect((await agent.post('/api/notifications/read-all')).status).toBe(204)
+    expect((await agent.post('/api/notifications/read-all').query({ today: '2026-10-15' })).status).toBe(204)
     const cleared = await agent.get('/api/notifications').query({ today: '2026-10-15' })
     expect(cleared.body.every((item: { read: boolean }) => item.read)).toBe(true)
     expect((await agent.post('/api/notifications/not-an-id/read')).status).toBe(404)

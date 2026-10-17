@@ -1,7 +1,9 @@
 // src/app.ts
+import compression from "compression";
 import express from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
+import mongoose3 from "mongoose";
 
 // src/db.ts
 import mongoose2 from "mongoose";
@@ -65,10 +67,9 @@ var projectSchema = new Schema(
   },
   { timestamps: true }
 );
-projectSchema.index({ userId: 1, status: 1 });
-projectSchema.index({ userId: 1, name: 1 });
+projectSchema.index({ userId: 1, status: 1, updatedAt: -1 });
 projectSchema.index(
-  { name: "text", description: "text" },
+  { userId: 1, name: "text", description: "text" },
   { weights: { name: 5, description: 1 }, name: "ProjectTextIndex" }
 );
 var labelSchema = new Schema(
@@ -80,7 +81,6 @@ var labelSchema = new Schema(
   { timestamps: true }
 );
 labelSchema.index({ userId: 1, name: 1 }, { unique: true });
-labelSchema.index({ userId: 1 });
 var taskSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
@@ -103,14 +103,11 @@ taskSchema.index(
   { unique: true, partialFilterExpression: { clientId: { $type: "string" } } }
 );
 taskSchema.index({ projectId: 1, completed: 1 });
-taskSchema.index({ userId: 1, projectId: 1 });
-taskSchema.index({ userId: 1, projectId: 1, completed: 1, dueDate: 1 });
 taskSchema.index({ userId: 1, plannedFor: 1 });
 taskSchema.index({ userId: 1, completedOn: 1 });
 taskSchema.index({ userId: 1, projectId: 1, order: 1, createdAt: 1, _id: 1 });
-taskSchema.index({ userId: 1, dueDate: 1 });
-taskSchema.index({ userId: 1, title: 1 });
-taskSchema.index({ title: "text" }, { name: "TaskTextIndex" });
+taskSchema.index({ userId: 1, completed: 1, dueDate: 1 });
+taskSchema.index({ userId: 1, title: "text" }, { name: "TaskTextIndex" });
 var noteSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
@@ -122,9 +119,8 @@ var noteSchema = new Schema(
 );
 noteSchema.index({ userId: 1, projectId: 1, updatedAt: -1 });
 noteSchema.index({ userId: 1, updatedAt: -1 });
-noteSchema.index({ userId: 1, title: 1 });
 noteSchema.index(
-  { title: "text", body: "text" },
+  { userId: 1, title: "text", body: "text" },
   { weights: { title: 5, body: 1 }, name: "NoteTextIndex" }
 );
 var activitySchema = new Schema(
@@ -137,8 +133,6 @@ var activitySchema = new Schema(
   { timestamps: { createdAt: true, updatedAt: false } }
 );
 activitySchema.index({ projectId: 1, createdAt: -1, _id: -1 });
-activitySchema.index({ userId: 1, projectId: 1 });
-activitySchema.index({ userId: 1, createdAt: -1 });
 var notificationSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
@@ -156,7 +150,6 @@ var notificationSchema = new Schema(
 );
 notificationSchema.index({ userId: 1, key: 1 }, { unique: true });
 notificationSchema.index({ userId: 1, read: 1, createdAt: -1 });
-notificationSchema.index({ userId: 1, createdAt: -1 });
 notificationSchema.index({ expireAt: 1 }, { expireAfterSeconds: 0 });
 var whiteboardSchema = new Schema(
   {
@@ -243,46 +236,57 @@ function cache() {
   return globalCache.__alignMongoose;
 }
 var indexesReady = null;
+async function dropUnscopedText(collection, name) {
+  let indexes;
+  try {
+    indexes = await collection.indexes();
+  } catch {
+    return;
+  }
+  const found = indexes.find((index) => index.name === name);
+  if (!found || found.key?.userId === 1) return;
+  await collection.dropIndex(name);
+}
 function ensureIndexes() {
   indexesReady ??= Promise.all([
-    User.syncIndexes(),
-    Project.syncIndexes(),
-    Label.syncIndexes(),
-    Task.syncIndexes(),
-    Note.syncIndexes(),
-    Activity.syncIndexes(),
-    Notification.syncIndexes(),
-    Whiteboard.syncIndexes(),
-    Session.syncIndexes(),
-    AuthToken.syncIndexes(),
-    RateLimit.syncIndexes()
-  ]).then(() => void 0).catch((error) => {
+    dropUnscopedText(Project.collection, "ProjectTextIndex"),
+    dropUnscopedText(Task.collection, "TaskTextIndex"),
+    dropUnscopedText(Note.collection, "NoteTextIndex")
+  ]).then(
+    () => Promise.all([
+      User.syncIndexes(),
+      Project.syncIndexes(),
+      Label.syncIndexes(),
+      Task.syncIndexes(),
+      Note.syncIndexes(),
+      Activity.syncIndexes(),
+      Notification.syncIndexes(),
+      Whiteboard.syncIndexes(),
+      Session.syncIndexes(),
+      AuthToken.syncIndexes(),
+      RateLimit.syncIndexes()
+    ])
+  ).then(() => void 0).catch((error) => {
     indexesReady = null;
     throw error;
   });
   return indexesReady;
 }
-async function prepareIndexes() {
-  if (process.env.NODE_ENV === "test") {
-    await ensureIndexes();
-    return;
-  }
-  void ensureIndexes().catch((error) => {
-    console.error(error);
-  });
-}
 function databaseFailure(error) {
   console.error(error);
   return new HttpError(500, "Database connection failed.");
 }
-async function connectDb() {
+function shouldSync(options) {
+  return options?.indexes === true || process.env.NODE_ENV === "test";
+}
+async function connectDb(options) {
   const uri = process.env.MONGODB_URI;
   if (!uri || uri === "memory") {
     throw new HttpError(500, "Database is not configured.");
   }
   const state = cache();
   if (state.conn) {
-    await prepareIndexes();
+    if (shouldSync(options)) await ensureIndexes();
     return state.conn;
   }
   if (!state.promise) {
@@ -290,8 +294,8 @@ async function connectDb() {
     state.promise = mongoose2.connect(uri, {
       serverSelectionTimeoutMS: 5e3,
       maxPoolSize: 5,
-      minPoolSize: 0,
-      maxIdleTimeMS: 1e4,
+      minPoolSize: 1,
+      maxIdleTimeMS: 6e4,
       socketTimeoutMS: 2e4
     }).then((connection) => {
       state.conn = connection;
@@ -303,13 +307,25 @@ async function connectDb() {
   }
   try {
     state.conn = await state.promise;
-    await prepareIndexes();
   } catch (error) {
     state.conn = null;
     state.promise = null;
     throw error instanceof HttpError ? error : databaseFailure(error);
   }
+  if (shouldSync(options)) await ensureIndexes();
   return state.conn;
+}
+
+// src/httpCache.ts
+function privateRevalidate() {
+  return (_req, res, next) => {
+    const json = res.json.bind(res);
+    res.json = (body) => {
+      if (!res.getHeader("Cache-Control")) res.setHeader("Cache-Control", "private, no-cache");
+      return json(body);
+    };
+    next();
+  };
 }
 
 // src/middleware.ts
@@ -584,18 +600,27 @@ async function deliverMail(input) {
 }
 
 // src/password.ts
-import bcrypt from "bcryptjs";
+var loaded = null;
+function bcrypt() {
+  loaded ??= import("bcryptjs").then((mod) => {
+    const api = "default" in mod && mod.default && typeof mod.default.hash === "function" ? mod.default : mod;
+    return api;
+  });
+  return loaded;
+}
 function bcryptRounds() {
   const configured = process.env.BCRYPT_ROUNDS;
   if (configured && /^\d+$/.test(configured)) return Number(configured);
   return process.env.NODE_ENV === "test" ? 4 : 12;
 }
-function hashPassword(password2) {
-  return bcrypt.hash(password2, bcryptRounds());
+async function hashPassword(password2) {
+  const api = await bcrypt();
+  return api.hash(password2, bcryptRounds());
 }
 async function checkPassword(password2, hash) {
   const started = Date.now();
-  const matches = await bcrypt.compare(password2, hash);
+  const api = await bcrypt();
+  const matches = await api.compare(password2, hash);
   if (process.env.NODE_ENV !== "test") {
     console.info(JSON.stringify({ msg: "bcrypt-compare", ms: Date.now() - started, rounds: bcryptRounds() }));
   }
@@ -754,10 +779,10 @@ async function consumeAuthToken(token, type) {
   return found.userId.toString();
 }
 
-// src/validate.ts
+// ../shared/schemas.ts
 import { z } from "zod";
 
-// src/passwordPolicy.ts
+// ../shared/passwordPolicy.ts
 var COMMON = /* @__PURE__ */ new Set([
   "password",
   "password1",
@@ -797,16 +822,16 @@ function passwordScore(password2) {
   if (!password2) return 0;
   const lower = password2.toLowerCase();
   if (COMMON.has(lower) || /^(.)\1+$/.test(password2)) return 0;
-  let score = 0;
-  if (password2.length >= 8) score += 1;
-  if (password2.length >= 12) score += 1;
+  let score2 = 0;
+  if (password2.length >= 8) score2 += 1;
+  if (password2.length >= 12) score2 += 1;
   const classes = Number(/[a-z]/.test(password2)) + Number(/[A-Z]/.test(password2)) + Number(/\d/.test(password2)) + Number(/[^A-Za-z0-9]/.test(password2));
-  if (classes >= 2) score += 1;
-  if (classes >= 3) score += 1;
+  if (classes >= 2) score2 += 1;
+  if (classes >= 3) score2 += 1;
   if (/^(?:0123|1234|2345|3456|4567|5678|6789|qwer|asdf|zxcv|abcd)/i.test(password2) && password2.length < 12) {
-    score = Math.min(score, 1);
+    score2 = Math.min(score2, 1);
   }
-  return Math.min(4, score);
+  return Math.min(4, score2);
 }
 function isMediumPassword(password2) {
   if (password2.length < 1 || password2.length > 128) return false;
@@ -814,14 +839,7 @@ function isMediumPassword(password2) {
   return passwordScore(password2) >= 2;
 }
 
-// src/validate.ts
-function parseBody(schema, body) {
-  const result = schema.safeParse(body ?? {});
-  if (!result.success) {
-    throw new HttpError(400, result.error.issues[0]?.message ?? "Invalid input.");
-  }
-  return result.data;
-}
+// ../shared/schemas.ts
 function text(label, max) {
   return z.string({ required_error: `${label} is required.`, invalid_type_error: `${label} is required.` }).trim().min(1, `${label} is required.`).max(max, `${label} is too long.`);
 }
@@ -833,10 +851,7 @@ function password(label = "Password") {
 }
 var email = z.string({ required_error: "Enter a valid email.", invalid_type_error: "Enter a valid email." }).trim().toLowerCase().regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, "Enter a valid email.").max(254, "Enter a valid email.");
 var description = z.string({ invalid_type_error: "Description must be text." }).trim().max(2e3, "Description is too long.");
-var dueDate = z.union([
-  z.string({ invalid_type_error: "Use a valid due date." }),
-  z.null()
-]);
+var dueDate = z.union([z.string({ invalid_type_error: "Use a valid due date." }), z.null()]);
 var registerSchema = z.object({
   name: text("Name", 80),
   email,
@@ -969,6 +984,15 @@ var emptyScene = {
   texts: [],
   viewport: { x: 0, y: 0, scale: 1 }
 };
+
+// src/validate.ts
+function parseBody(schema, body) {
+  const result = schema.safeParse(body ?? {});
+  if (!result.success) {
+    throw new HttpError(400, result.error.issues[0]?.message ?? "Invalid input.");
+  }
+  return result.data;
+}
 function normalizeDueDate(value) {
   if (value === void 0) return void 0;
   if (value === null || value === "") return null;
@@ -1514,11 +1538,23 @@ function benchRouter() {
       const plans = await Promise.all([
         summarize("projects", Project.find({ userId, status: "active" }).sort({ updatedAt: -1 })),
         summarize("tasks", Task.find({ userId, projectId }).sort({ order: 1, createdAt: 1, _id: 1 })),
-        summarize("tasks-due", Task.find({ userId, completed: false, dueDate: { $ne: null } })),
+        summarize(
+          "tasks-due",
+          Task.find({
+            userId,
+            completed: false,
+            $or: [
+              { dueDate: { $gte: "0000-01-01", $lt: "2026-10-16" } },
+              { dueDate: { $gt: "2026-10-16", $lte: "2026-10-17" } }
+            ]
+          })
+        ),
+        summarize("tasks-open", Task.find({ userId, completed: false })),
+        summarize("tasks-planned", Task.find({ userId, plannedFor: "2026-10-16" })),
         summarize("notes", Note.find({ userId }).sort({ updatedAt: -1 })),
         summarize("notes-project", Note.find({ userId, projectId }).sort({ updatedAt: -1 })),
         summarize("activity", Activity.find({ projectId }).sort({ createdAt: -1, _id: -1 })),
-        summarize("notifications", Notification.find({ userId }).sort({ createdAt: -1, _id: -1 }))
+        summarize("notifications", Notification.find({ userId, key: { $in: ["000000000000000000000000:overdue:2026-10-14"] } }))
       ]);
       let text2 = null;
       try {
@@ -1545,6 +1581,7 @@ async function counts(userId) {
 // src/routes/dashboard.ts
 import { Router as Router3 } from "express";
 import { Types as Types2 } from "mongoose";
+var OPEN_LIMIT = 40;
 function dashboardRouter() {
   const router = Router3();
   router.use(requireAuth);
@@ -1552,75 +1589,56 @@ function dashboardRouter() {
     "/",
     asyncHandler(async (req, res) => {
       const userId = new Types2.ObjectId(currentUserId(req));
-      const rows = await Project.aggregate([
-        { $match: { userId, status: "active" } },
-        { $sort: { updatedAt: -1 } },
-        {
-          $lookup: {
-            from: "tasks",
-            let: { projectId: "$_id" },
-            pipeline: [
-              {
-                $match: {
-                  $expr: {
-                    $and: [{ $eq: ["$projectId", "$$projectId"] }, { $eq: ["$userId", userId] }]
-                  }
-                }
-              },
-              { $project: { title: 1, dueDate: 1, priority: 1, completed: 1, projectId: 1 } }
-            ],
-            as: "tasks"
-          }
-        },
-        {
-          $project: {
-            name: 1,
-            description: 1,
-            taskCount: { $size: "$tasks" },
-            completedCount: {
-              $size: { $filter: { input: "$tasks", as: "task", cond: { $eq: ["$$task.completed", true] } } }
-            },
-            openTasks: {
-              $map: {
-                input: { $filter: { input: "$tasks", as: "task", cond: { $eq: ["$$task.completed", false] } } },
-                as: "task",
-                in: {
-                  _id: "$$task._id",
-                  title: "$$task.title",
-                  dueDate: "$$task.dueDate",
-                  priority: "$$task.priority",
-                  projectId: "$_id",
-                  projectName: "$name"
-                }
-              }
-            }
-          }
-        }
+      const projects = await Project.find({ userId, status: "active" }).select("name description").sort({ updatedAt: -1 }).lean();
+      const ids = projects.map((project) => project._id);
+      const names = new Map(projects.map((project) => [project._id.toString(), project.name]));
+      const [counts2, dated, undated] = await Promise.all([
+        ids.length === 0 ? Promise.resolve([]) : Task.aggregate([
+          { $match: { userId, projectId: { $in: ids } } },
+          { $group: { _id: { projectId: "$projectId", completed: "$completed" }, n: { $sum: 1 } } }
+        ]),
+        ids.length === 0 ? Promise.resolve([]) : Task.find({ userId, projectId: { $in: ids }, completed: false, dueDate: { $gte: "0000-01-01" } }).select("title dueDate priority projectId").sort({ dueDate: 1, title: 1 }).limit(OPEN_LIMIT).lean(),
+        ids.length === 0 ? Promise.resolve([]) : Task.find({ userId, projectId: { $in: ids }, completed: false, dueDate: null }).select("title dueDate priority projectId").sort({ title: 1 }).limit(OPEN_LIMIT).lean()
       ]);
-      const openTasks = rows.flatMap((row) => row.openTasks).sort((a, b) => {
-        if (a.dueDate && b.dueDate && a.dueDate !== b.dueDate) return a.dueDate < b.dueDate ? -1 : 1;
-        if (a.dueDate && !b.dueDate) return -1;
-        if (!a.dueDate && b.dueDate) return 1;
-        return a.title.localeCompare(b.title);
-      }).map((task) => ({
-        id: task._id.toString(),
-        projectId: task.projectId.toString(),
-        projectName: task.projectName,
-        title: task.title,
-        dueDate: task.dueDate,
-        priority: task.priority,
-        completed: false
-      }));
+      const tally = /* @__PURE__ */ new Map();
+      for (const row of counts2) {
+        const id = row._id.projectId.toString();
+        const bucket = tally.get(id) ?? { total: 0, done: 0 };
+        bucket.total += row.n;
+        if (row._id.completed) bucket.done += row.n;
+        tally.set(id, bucket);
+      }
+      let openTaskCount = 0;
+      for (const bucket of tally.values()) openTaskCount += bucket.total - bucket.done;
+      const open = [...dated, ...undated].slice(0, OPEN_LIMIT).flatMap((task) => {
+        const projectName = names.get(task.projectId.toString());
+        if (!projectName) return [];
+        return [
+          {
+            id: task._id.toString(),
+            projectId: task.projectId.toString(),
+            projectName,
+            title: task.title,
+            dueDate: task.dueDate,
+            priority: task.priority,
+            completed: false
+          }
+        ];
+      });
       res.json({
-        projects: rows.map((project) => ({
-          id: project._id.toString(),
-          name: project.name,
-          description: project.description,
-          percentComplete: project.taskCount === 0 ? 0 : Math.round(project.completedCount / project.taskCount * 100),
-          completedCount: project.completedCount,
-          taskCount: project.taskCount
-        })),
-        openTasks
+        projects: projects.map((project) => {
+          const bucket = tally.get(project._id.toString()) ?? { total: 0, done: 0 };
+          return {
+            id: project._id.toString(),
+            name: project.name,
+            description: project.description,
+            percentComplete: bucket.total === 0 ? 0 : Math.round(bucket.done / bucket.total * 100),
+            completedCount: bucket.done,
+            taskCount: bucket.total
+          };
+        }),
+        openTasks: open,
+        openTaskCount
       });
     })
   );
@@ -1831,6 +1849,14 @@ function notesRouter() {
 import { Router as Router6 } from "express";
 import { Types as Types5 } from "mongoose";
 
+// src/dates.ts
+function shiftISODate(iso, days) {
+  const [year, month, day] = iso.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
 // src/page.ts
 import { Types as Types4 } from "mongoose";
 var PAGE_SIZE = 50;
@@ -1900,84 +1926,119 @@ function nextTaskCursor(items, limit) {
   return encodeCursor([String(last.order), last.createdAt.toISOString(), last._id.toString()]);
 }
 
-// src/dates.ts
-function shiftISODate(iso, days) {
-  const [year, month, day] = iso.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
 // src/routes/notifications.ts
 var NINETY_DAYS_MS2 = 90 * 24 * 60 * 60 * 1e3;
+var KEY = /^([a-f\d]{24}):(overdue|due-soon):(\d{4}-\d{2}-\d{2})$/i;
+function requireToday(value) {
+  const today = typeof value === "string" ? normalizeDueDate(value) : null;
+  if (!today) throw new HttpError(400, "Use a valid date.");
+  return today;
+}
+async function dueRows(userId, today) {
+  const tomorrow = shiftISODate(today, 1);
+  const tasks = await Task.find({
+    userId,
+    completed: false,
+    $or: [{ dueDate: { $gte: "0000-01-01", $lt: today } }, { dueDate: { $gt: today, $lte: tomorrow } }]
+  }).select("title dueDate projectId").lean();
+  const projectIds = [...new Set(tasks.map((task) => task.projectId.toString()))];
+  const keys = tasks.flatMap((task) => {
+    if (!task.dueDate || task.dueDate === today) return [];
+    const kind = task.dueDate < today ? "overdue" : "due-soon";
+    return [`${task._id.toString()}:${kind}:${task.dueDate}`];
+  });
+  const [projects, stored] = await Promise.all([
+    projectIds.length === 0 ? Promise.resolve([]) : Project.find({ userId, _id: { $in: projectIds } }).select("name").lean(),
+    keys.length === 0 ? Promise.resolve([]) : Notification.find({ userId, key: { $in: keys } }).select("key read createdAt").lean()
+  ]);
+  const names = new Map(projects.map((project) => [project._id.toString(), project.name]));
+  const flags = new Map(stored.map((item) => [item.key, item]));
+  return tasks.flatMap((task) => {
+    if (!task.dueDate || task.dueDate === today || task.dueDate > tomorrow) return [];
+    const projectName = names.get(task.projectId.toString());
+    if (!projectName) return [];
+    const kind = task.dueDate < today ? "overdue" : "due-soon";
+    const key = `${task._id.toString()}:${kind}:${task.dueDate}`;
+    const saved = flags.get(key);
+    return [
+      {
+        key,
+        taskId: task._id,
+        projectId: task.projectId,
+        kind,
+        title: task.title,
+        projectName,
+        dueDate: task.dueDate,
+        read: saved?.read ?? false,
+        createdAt: saved?.createdAt.toISOString() ?? `${task.dueDate}T00:00:00.000Z`
+      }
+    ];
+  });
+}
+function present(row) {
+  return {
+    id: row.key,
+    projectId: row.projectId.toString(),
+    taskId: row.taskId.toString(),
+    kind: row.kind,
+    title: row.title,
+    projectName: row.projectName,
+    dueDate: row.dueDate,
+    read: row.read,
+    createdAt: row.createdAt
+  };
+}
 function notificationsRouter() {
   const router = Router6();
   router.use(requireAuth);
   router.get(
     "/",
     asyncHandler(async (req, res) => {
-      const userId = currentUserId(req);
-      const todayParam = typeof req.query.today === "string" ? req.query.today : "";
-      const today = normalizeDueDate(todayParam);
-      if (!today) throw new HttpError(400, "Use a valid date.");
-      const tomorrow = shiftISODate(today, 1);
-      const tasks = await Task.find({ userId, completed: false, dueDate: { $ne: null } }).select("title dueDate projectId").lean();
-      const projects = await Project.find({ userId }).select("name").lean();
-      const names = new Map(projects.map((project) => [project._id.toString(), project.name]));
-      const expireAt = new Date(Date.now() + NINETY_DAYS_MS2);
-      const userObjectId = new Types5.ObjectId(userId);
-      const writes = tasks.flatMap((task) => {
-        if (!task.dueDate) return [];
-        const kind = task.dueDate < today ? "overdue" : task.dueDate > today && task.dueDate <= tomorrow ? "due-soon" : null;
-        if (!kind) return [];
-        const key = `${task._id.toString()}:${kind}:${task.dueDate}`;
-        return [
-          {
-            updateOne: {
-              filter: { userId: userObjectId, key },
-              update: {
-                $setOnInsert: {
-                  userId: userObjectId,
-                  projectId: task.projectId,
-                  taskId: task._id,
-                  kind,
-                  dueDate: task.dueDate,
-                  read: false,
-                  key,
-                  expireAt
-                },
-                $set: {
-                  title: task.title,
-                  projectName: names.get(task.projectId.toString()) ?? "Project"
-                }
-              },
-              upsert: true
-            }
-          }
-        ];
-      });
-      await Notification.bulkWrite([
-        ...writes,
-        {
-          updateMany: {
-            filter: { userId: userObjectId, expireAt: { $exists: false } },
-            update: { $set: { expireAt } }
-          }
-        }
-      ]);
+      const today = requireToday(req.query.today);
+      const rows = await dueRows(currentUserId(req), today);
+      rows.sort((a, b) => a.createdAt === b.createdAt ? a.key < b.key ? 1 : -1 : a.createdAt < b.createdAt ? 1 : -1);
+      const cursor = decodeCursor(req.query.cursor);
+      const filtered = cursor && cursor.length === 2 ? rows.filter((row) => row.createdAt < cursor[0] || row.createdAt === cursor[0] && row.key < cursor[1]) : rows;
       const limit = pageLimit(req.query.limit);
-      const cursor = beforeCursor(req.query.cursor);
-      const filter = cursor ? { $and: [{ userId }, beforeFilter(cursor)] } : { userId };
-      const items = await Notification.find(filter).select("projectId taskId kind title projectName dueDate read createdAt").sort({ createdAt: -1, _id: -1 }).limit(limit + 1).lean();
-      const next = nextDateCursor(items, limit);
-      if (next) res.set("X-Next-Cursor", next);
-      res.json(items.slice(0, limit).map(publicNotification));
+      const page = filtered.slice(0, limit);
+      const last = page[limit - 1];
+      if (filtered.length > limit && last) res.set("X-Next-Cursor", encodeCursor([last.createdAt, last.key]));
+      res.json(page.map(present));
     })
   );
   router.post(
     "/read-all",
     asyncHandler(async (req, res) => {
-      await Notification.updateMany({ userId: currentUserId(req), read: false }, { read: true });
+      const userId = currentUserId(req);
+      const today = typeof req.query.today === "string" && req.query.today ? requireToday(req.query.today) : null;
+      if (today) {
+        const rows = await dueRows(userId, today);
+        const userObjectId = new Types5.ObjectId(userId);
+        const expireAt = new Date(Date.now() + NINETY_DAYS_MS2);
+        if (rows.length > 0) {
+          await Notification.bulkWrite(
+            rows.map((row) => ({
+              updateOne: {
+                filter: { userId: userObjectId, key: row.key },
+                update: {
+                  $set: { read: true, title: row.title, projectName: row.projectName },
+                  $setOnInsert: {
+                    userId: userObjectId,
+                    projectId: row.projectId,
+                    taskId: row.taskId,
+                    kind: row.kind,
+                    dueDate: row.dueDate,
+                    key: row.key,
+                    expireAt
+                  }
+                },
+                upsert: true
+              }
+            }))
+          );
+        }
+      }
+      await Notification.updateMany({ userId, read: false }, { read: true });
       res.status(204).send();
     })
   );
@@ -1986,10 +2047,39 @@ function notificationsRouter() {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req);
       const id = objectId(req.params.id);
-      if (!id) throw new HttpError(404, "Notification not found.");
-      const item = await Notification.findOneAndUpdate({ _id: id, userId }, { read: true }, { new: true });
+      if (id) {
+        const item2 = await Notification.findOneAndUpdate({ _id: id, userId }, { read: true }, { new: true });
+        if (!item2) throw new HttpError(404, "Notification not found.");
+        res.json(publicNotification(item2));
+        return;
+      }
+      const match = KEY.exec(req.params.id);
+      if (!match) throw new HttpError(404, "Notification not found.");
+      const taskId = match[1] ?? "";
+      const kind = match[2];
+      const dueDate2 = match[3] ?? "";
+      const task = await Task.findOne({ _id: taskId, userId, completed: false, dueDate: dueDate2 }).select("title projectId dueDate");
+      if (!task?.dueDate) throw new HttpError(404, "Notification not found.");
+      const project = await Project.findOne({ _id: task.projectId, userId }).select("name");
+      if (!project) throw new HttpError(404, "Notification not found.");
+      const item = await Notification.findOneAndUpdate(
+        { userId, key: req.params.id },
+        {
+          $set: { read: true, title: task.title, projectName: project.name },
+          $setOnInsert: {
+            userId,
+            projectId: task.projectId,
+            taskId: task._id,
+            kind,
+            dueDate: dueDate2,
+            key: req.params.id,
+            expireAt: new Date(Date.now() + NINETY_DAYS_MS2)
+          }
+        },
+        { new: true, upsert: true }
+      );
       if (!item) throw new HttpError(404, "Notification not found.");
-      res.json(publicNotification(item));
+      res.json({ ...publicNotification(item), id: req.params.id });
     })
   );
   return router;
@@ -2235,106 +2325,59 @@ function queryText(value) {
   if (typeof value !== "string") return "";
   return value.trim().slice(0, 200);
 }
-function escapeRegex(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 function textSearch(value) {
   const cleaned = value.replace(/[^\p{L}\p{N}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
   if (cleaned.length < 3) return null;
   return cleaned;
 }
-async function settle(query) {
-  try {
-    return await query;
-  } catch (error) {
-    console.error(error);
-    return [];
-  }
-}
-function mergeById(groups, idOf) {
-  const seen = /* @__PURE__ */ new Set();
-  const merged = [];
-  for (const group of groups) {
-    for (const item of group) {
-      const id = idOf(item);
-      if (seen.has(id)) continue;
-      seen.add(id);
-      merged.push(item);
-      if (merged.length >= RESULT_LIMIT) return merged;
-    }
-  }
-  return merged;
-}
-async function whenText(text2, query) {
-  if (!text2) return [];
-  return settle(query());
-}
+var score = { score: { $meta: "textScore" } };
+var projectFields = { name: 1, description: 1, status: 1, createdAt: 1, updatedAt: 1, ...score };
+var taskFields = { projectId: 1, title: 1, completed: 1, ...score };
+var noteFields = { projectId: 1, title: 1, body: 1, ...score };
 function searchRouter() {
   const router = Router8();
   router.use(requireAuth);
   router.get(
     "/",
     asyncHandler(async (req, res) => {
-      const query = queryText(req.query.q);
-      if (!query) {
+      const text2 = textSearch(queryText(req.query.q));
+      if (!text2) {
         res.json({ projects: [], tasks: [], notes: [] });
         return;
       }
       const userId = currentUserId(req);
-      const prefix = { $regex: `^${escapeRegex(query)}`, $options: "i" };
-      const text2 = textSearch(query);
-      const projectFields = "name description status createdAt updatedAt";
-      const [projectText, projectName, taskText, taskTitle, noteText, noteTitle, ownedProjects] = await Promise.all([
-        whenText(
-          text2,
-          () => Project.find({ userId, $text: { $search: text2 ?? "" } }).select(projectFields).limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean()
-        ),
-        settle(
-          Project.find({ userId, name: prefix }).select(projectFields).sort({ updatedAt: -1 }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean()
-        ),
-        whenText(
-          text2,
-          () => Task.find({ userId, $text: { $search: text2 ?? "" } }).select("projectId title completed").limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean()
-        ),
-        settle(
-          Task.find({ userId, title: prefix }).select("projectId title completed").sort({ updatedAt: -1 }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean()
-        ),
-        whenText(
-          text2,
-          () => Note.find({ userId, $text: { $search: text2 ?? "" } }).select("projectId title body").limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean()
-        ),
-        settle(
-          Note.find({ userId, title: prefix }).select("projectId title body").sort({ updatedAt: -1 }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean()
-        ),
-        Project.find({ userId }).select("name").maxTimeMS(TIME_MS).lean()
+      const search = { $search: text2 };
+      const [projects, tasks, notes] = await Promise.all([
+        Project.find({ userId, $text: search }).select(projectFields).sort({ score: { $meta: "textScore" } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean(),
+        Task.find({ userId, $text: search }).select(taskFields).sort({ score: { $meta: "textScore" } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean(),
+        Note.find({ userId, $text: search }).select(noteFields).sort({ score: { $meta: "textScore" } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean()
       ]);
-      const projects = mergeById([projectText, projectName], (item) => item._id.toString());
-      const tasks = mergeById([taskText, taskTitle], (item) => item._id.toString());
-      const notes = mergeById([noteText, noteTitle], (item) => item._id.toString());
-      const names = new Map(ownedProjects.map((project) => [project._id.toString(), project.name]));
+      const projectIds = [...new Set([...tasks, ...notes].map((item) => item.projectId.toString()))];
+      const named = projectIds.length === 0 ? [] : await Project.find({ userId, _id: { $in: projectIds } }).select("name").maxTimeMS(TIME_MS).lean();
+      const names = new Map(named.map((project) => [project._id.toString(), project.name]));
       res.json({
         projects: projects.map(publicProject),
         tasks: tasks.flatMap((task) => {
-          const projectName2 = names.get(task.projectId.toString());
-          if (!projectName2) return [];
+          const projectName = names.get(task.projectId.toString());
+          if (!projectName) return [];
           return [
             {
               id: task._id.toString(),
               projectId: task.projectId.toString(),
-              projectName: projectName2,
+              projectName,
               title: task.title,
               completed: task.completed
             }
           ];
         }),
         notes: notes.flatMap((note) => {
-          const projectName2 = names.get(note.projectId.toString());
-          if (!projectName2) return [];
+          const projectName = names.get(note.projectId.toString());
+          if (!projectName) return [];
           return [
             {
               id: note._id.toString(),
               projectId: note.projectId.toString(),
-              projectName: projectName2,
+              projectName,
               title: note.title,
               body: note.body
             }
@@ -2410,12 +2453,12 @@ function tasksRouter() {
 
 // src/routes/today.ts
 import { Router as Router10 } from "express";
-import { Types as Types6 } from "mongoose";
-function present(task) {
+var FIELDS = "projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt";
+function present2(task, projectName) {
   return {
     id: task._id.toString(),
     projectId: task.projectId.toString(),
-    projectName: task.projectName,
+    projectName,
     title: task.title,
     completed: task.completed,
     dueDate: task.dueDate,
@@ -2436,49 +2479,20 @@ function todayRouter() {
     asyncHandler(async (req, res) => {
       const date = typeof req.query.date === "string" ? normalizeDueDate(req.query.date) : null;
       if (!date) throw new HttpError(400, "Use a valid date.");
-      const userId = new Types6.ObjectId(currentUserId(req));
-      const visible = await Task.aggregate([
-        { $match: { userId } },
-        { $sort: { order: 1, createdAt: 1 } },
-        {
-          $lookup: {
-            from: "projects",
-            let: { projectId: "$projectId" },
-            pipeline: [
-              {
-                $match: {
-                  $expr: {
-                    $and: [{ $eq: ["$_id", "$$projectId"] }, { $eq: ["$userId", userId] }, { $eq: ["$status", "active"] }]
-                  }
-                }
-              },
-              { $project: { name: 1 } }
-            ],
-            as: "project"
-          }
-        },
-        { $unwind: "$project" },
-        {
-          $project: {
-            projectId: 1,
-            projectName: "$project.name",
-            title: 1,
-            completed: 1,
-            dueDate: 1,
-            priority: 1,
-            labelIds: 1,
-            plannedFor: 1,
-            completedOn: 1,
-            order: 1,
-            createdAt: 1,
-            updatedAt: 1
-          }
-        }
+      const userId = currentUserId(req);
+      const [open, plannedDone, finishedOn, projects] = await Promise.all([
+        Task.find({ userId, completed: false }).select(FIELDS).lean(),
+        Task.find({ userId, completed: true, plannedFor: date }).select(FIELDS).lean(),
+        Task.find({ userId, completed: true, completedOn: date }).select(FIELDS).lean(),
+        Project.find({ userId, status: "active" }).select("name").lean()
       ]);
+      const names = new Map(projects.map((project) => [project._id.toString(), project.name]));
+      const merged = /* @__PURE__ */ new Map();
+      for (const task of [...open, ...plannedDone, ...finishedOn]) merged.set(task._id.toString(), task);
+      const visible = [...merged.values()].filter((task) => names.has(task.projectId.toString())).sort((a, b) => a.order - b.order || a.createdAt.getTime() - b.createdAt.getTime());
+      const show = (task) => present2(task, names.get(task.projectId.toString()) ?? "");
       const plannedForDate = visible.filter((task) => task.plannedFor === date);
-      const dueToday = visible.filter(
-        (task) => !task.completed && task.dueDate === date && task.plannedFor !== date
-      );
+      const dueToday = visible.filter((task) => !task.completed && task.dueDate === date && task.plannedFor !== date);
       const planned = [...plannedForDate, ...dueToday];
       const overdue = visible.filter(
         (task) => !task.completed && Boolean(task.dueDate) && (task.dueDate ?? "") < date && task.plannedFor !== date
@@ -2492,11 +2506,11 @@ function todayRouter() {
       const finished = visible.filter((task) => task.completed && task.completedOn === date && task.plannedFor !== date);
       res.json({
         date,
-        planned: planned.map(present),
-        carried: carried.map(present),
-        overdue: overdue.map(present),
-        available: available.map(present),
-        finished: finished.map(present)
+        planned: planned.map(show),
+        carried: carried.map(show),
+        overdue: overdue.map(show),
+        available: available.map(show),
+        finished: finished.map(show)
       });
     })
   );
@@ -2514,6 +2528,8 @@ function createApp(options = {}) {
       crossOriginEmbedderPolicy: false
     })
   );
+  app2.use(compression());
+  app2.use(privateRevalidate());
   app2.use(express.json({ limit: "1mb" }));
   app2.use(guardOrigin);
   app2.use((_req, res, next) => {
@@ -2523,6 +2539,20 @@ function createApp(options = {}) {
   app2.get("/api/version", (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
     res.json({ version: APP_VERSION, minimum: MINIMUM_CLIENT_VERSION });
+  });
+  app2.get("/api/health", (_req, res) => {
+    const started = Date.now();
+    connectDb().then(async () => {
+      const db = mongoose3.connection.db;
+      if (!db) throw new Error("Database is not connected.");
+      await db.command({ ping: 1 });
+    }).then(() => {
+      const body = { ok: true, db: "up", latencyMs: Date.now() - started };
+      res.json(body);
+    }).catch(() => {
+      const body = { ok: false, db: "down", latencyMs: Date.now() - started };
+      res.status(503).json(body);
+    });
   });
   app2.use((req, _res, next) => {
     const logout = req.method === "POST" && req.path === "/api/auth/logout";
@@ -2602,7 +2632,8 @@ function resolveRequestUrl(url, header) {
 
 // src/vercel.ts
 var app = createApp();
-void connectDb().catch(() => {
+void connectDb({ indexes: true }).catch((error) => {
+  console.error(error);
 });
 function handler(req, res) {
   req.url = resolveRequestUrl(req.url, (name) => {

@@ -143,11 +143,23 @@ export function benchRouter(): Router {
       const plans = await Promise.all([
         summarize('projects', Project.find({ userId, status: 'active' }).sort({ updatedAt: -1 })),
         summarize('tasks', Task.find({ userId, projectId }).sort({ order: 1, createdAt: 1, _id: 1 })),
-        summarize('tasks-due', Task.find({ userId, completed: false, dueDate: { $ne: null } })),
+        summarize(
+          'tasks-due',
+          Task.find({
+            userId,
+            completed: false,
+            $or: [
+              { dueDate: { $gte: '0000-01-01', $lt: '2026-10-16' } },
+              { dueDate: { $gt: '2026-10-16', $lte: '2026-10-17' } },
+            ],
+          }),
+        ),
+        summarize('tasks-open', Task.find({ userId, completed: false })),
+        summarize('tasks-planned', Task.find({ userId, plannedFor: '2026-10-16' })),
         summarize('notes', Note.find({ userId }).sort({ updatedAt: -1 })),
         summarize('notes-project', Note.find({ userId, projectId }).sort({ updatedAt: -1 })),
         summarize('activity', Activity.find({ projectId }).sort({ createdAt: -1, _id: -1 })),
-        summarize('notifications', Notification.find({ userId }).sort({ createdAt: -1, _id: -1 })),
+        summarize('notifications', Notification.find({ userId, key: { $in: ['000000000000000000000000:overdue:2026-10-14'] } })),
       ])
       let text: unknown = null
       try {

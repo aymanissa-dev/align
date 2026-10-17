@@ -1,7 +1,14 @@
 import { Router } from 'express'
 import { Types } from 'mongoose'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
-import { Project } from '../models.ts'
+import { Project, Task } from '../models.ts'
+
+const OPEN_LIMIT = 40
+
+type CountRow = {
+  _id: { projectId: Types.ObjectId; completed: boolean }
+  n: number
+}
 
 type OpenRow = {
   _id: Types.ObjectId
@@ -9,16 +16,6 @@ type OpenRow = {
   dueDate: string | null
   priority: 'low' | 'medium' | 'high' | 'urgent'
   projectId: Types.ObjectId
-  projectName: string
-}
-
-type DashboardRow = {
-  _id: Types.ObjectId
-  name: string
-  description: string
-  taskCount: number
-  completedCount: number
-  openTasks: OpenRow[]
 }
 
 export function dashboardRouter(): Router {
@@ -29,80 +26,76 @@ export function dashboardRouter(): Router {
     '/',
     asyncHandler(async (req, res) => {
       const userId = new Types.ObjectId(currentUserId(req))
-      const rows = await Project.aggregate<DashboardRow>([
-        { $match: { userId, status: 'active' } },
-        { $sort: { updatedAt: -1 } },
-        {
-          $lookup: {
-            from: 'tasks',
-            let: { projectId: '$_id' },
-            pipeline: [
-              {
-                $match: {
-                  $expr: {
-                    $and: [{ $eq: ['$projectId', '$$projectId'] }, { $eq: ['$userId', userId] }],
-                  },
-                },
-              },
-              { $project: { title: 1, dueDate: 1, priority: 1, completed: 1, projectId: 1 } },
-            ],
-            as: 'tasks',
-          },
-        },
-        {
-          $project: {
-            name: 1,
-            description: 1,
-            taskCount: { $size: '$tasks' },
-            completedCount: {
-              $size: { $filter: { input: '$tasks', as: 'task', cond: { $eq: ['$$task.completed', true] } } },
-            },
-            openTasks: {
-              $map: {
-                input: { $filter: { input: '$tasks', as: 'task', cond: { $eq: ['$$task.completed', false] } } },
-                as: 'task',
-                in: {
-                  _id: '$$task._id',
-                  title: '$$task.title',
-                  dueDate: '$$task.dueDate',
-                  priority: '$$task.priority',
-                  projectId: '$_id',
-                  projectName: '$name',
-                },
-              },
-            },
-          },
-        },
+      const projects = await Project.find({ userId, status: 'active' })
+        .select('name description')
+        .sort({ updatedAt: -1 })
+        .lean()
+      const ids = projects.map((project) => project._id)
+      const names = new Map(projects.map((project) => [project._id.toString(), project.name]))
+      const [counts, dated, undated] = await Promise.all([
+        ids.length === 0
+          ? Promise.resolve([] as CountRow[])
+          : Task.aggregate<CountRow>([
+              { $match: { userId, projectId: { $in: ids } } },
+              { $group: { _id: { projectId: '$projectId', completed: '$completed' }, n: { $sum: 1 } } },
+            ]),
+        ids.length === 0
+          ? Promise.resolve([] as OpenRow[])
+          : Task.find({ userId, projectId: { $in: ids }, completed: false, dueDate: { $gte: '0000-01-01' } })
+              .select('title dueDate priority projectId')
+              .sort({ dueDate: 1, title: 1 })
+              .limit(OPEN_LIMIT)
+              .lean<OpenRow[]>(),
+        ids.length === 0
+          ? Promise.resolve([] as OpenRow[])
+          : Task.find({ userId, projectId: { $in: ids }, completed: false, dueDate: null })
+              .select('title dueDate priority projectId')
+              .sort({ title: 1 })
+              .limit(OPEN_LIMIT)
+              .lean<OpenRow[]>(),
       ])
 
-      const openTasks = rows
-        .flatMap((row) => row.openTasks)
-        .sort((a, b) => {
-          if (a.dueDate && b.dueDate && a.dueDate !== b.dueDate) return a.dueDate < b.dueDate ? -1 : 1
-          if (a.dueDate && !b.dueDate) return -1
-          if (!a.dueDate && b.dueDate) return 1
-          return a.title.localeCompare(b.title)
-        })
-        .map((task) => ({
-          id: task._id.toString(),
-          projectId: task.projectId.toString(),
-          projectName: task.projectName,
-          title: task.title,
-          dueDate: task.dueDate,
-          priority: task.priority,
-          completed: false as const,
-        }))
+      const tally = new Map<string, { total: number; done: number }>()
+      for (const row of counts) {
+        const id = row._id.projectId.toString()
+        const bucket = tally.get(id) ?? { total: 0, done: 0 }
+        bucket.total += row.n
+        if (row._id.completed) bucket.done += row.n
+        tally.set(id, bucket)
+      }
+      let openTaskCount = 0
+      for (const bucket of tally.values()) openTaskCount += bucket.total - bucket.done
+
+      const open = [...dated, ...undated].slice(0, OPEN_LIMIT).flatMap((task) => {
+        const projectName = names.get(task.projectId.toString())
+        if (!projectName) return []
+        return [
+          {
+            id: task._id.toString(),
+            projectId: task.projectId.toString(),
+            projectName,
+            title: task.title,
+            dueDate: task.dueDate,
+            priority: task.priority,
+            completed: false as const,
+          },
+        ]
+      })
 
       res.json({
-        projects: rows.map((project) => ({
-          id: project._id.toString(),
-          name: project.name,
-          description: project.description,
-          percentComplete: project.taskCount === 0 ? 0 : Math.round((project.completedCount / project.taskCount) * 100),
-          completedCount: project.completedCount,
-          taskCount: project.taskCount,
-        })),
-        openTasks,
+        projects: projects.map((project) => {
+          const bucket = tally.get(project._id.toString()) ?? { total: 0, done: 0 }
+          return {
+            id: project._id.toString(),
+            name: project.name,
+            description: project.description,
+            percentComplete: bucket.total === 0 ? 0 : Math.round((bucket.done / bucket.total) * 100),
+            completedCount: bucket.done,
+            taskCount: bucket.total,
+          }
+        }),
+        openTasks: open,
+        openTaskCount,
       })
     }),
   )

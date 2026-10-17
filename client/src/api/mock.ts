@@ -971,7 +971,7 @@ export const mockApi = {
     })
   },
 
-  async markAllNotificationsRead() {
+  async markAllNotificationsRead(_today: string) {
     await write((state, user) => {
       for (const item of state.notifications) {
         if (item.userId === user.id) item.read = true
@@ -1060,6 +1060,7 @@ export const mockApi = {
           }
         }),
         openTasks,
+        openTaskCount: openTasks.length,
       }
       return data
     })
@@ -1069,7 +1070,7 @@ export const mockApi = {
     return read((state, user) => {
       const needle = query.trim().toLowerCase()
       const empty: SearchResults = { projects: [], tasks: [], notes: [] }
-      if (!needle) return empty
+      if (needle.length < 3) return empty
 
       const projects = state.projects.filter((project) => project.userId === user.id)
       const projectName = new Map(projects.map((project) => [project.id, project.name]))

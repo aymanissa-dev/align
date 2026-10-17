@@ -29,10 +29,9 @@ const projectSchema = new Schema(
   },
   { timestamps: true },
 )
-projectSchema.index({ userId: 1, status: 1 })
-projectSchema.index({ userId: 1, name: 1 })
+projectSchema.index({ userId: 1, status: 1, updatedAt: -1 })
 projectSchema.index(
-  { name: 'text', description: 'text' },
+  { userId: 1, name: 'text', description: 'text' },
   { weights: { name: 5, description: 1 }, name: 'ProjectTextIndex' },
 )
 
@@ -45,7 +44,6 @@ const labelSchema = new Schema(
   { timestamps: true },
 )
 labelSchema.index({ userId: 1, name: 1 }, { unique: true })
-labelSchema.index({ userId: 1 })
 
 const taskSchema = new Schema(
   {
@@ -69,14 +67,11 @@ taskSchema.index(
   { unique: true, partialFilterExpression: { clientId: { $type: 'string' } } },
 )
 taskSchema.index({ projectId: 1, completed: 1 })
-taskSchema.index({ userId: 1, projectId: 1 })
-taskSchema.index({ userId: 1, projectId: 1, completed: 1, dueDate: 1 })
 taskSchema.index({ userId: 1, plannedFor: 1 })
 taskSchema.index({ userId: 1, completedOn: 1 })
 taskSchema.index({ userId: 1, projectId: 1, order: 1, createdAt: 1, _id: 1 })
-taskSchema.index({ userId: 1, dueDate: 1 })
-taskSchema.index({ userId: 1, title: 1 })
-taskSchema.index({ title: 'text' }, { name: 'TaskTextIndex' })
+taskSchema.index({ userId: 1, completed: 1, dueDate: 1 })
+taskSchema.index({ userId: 1, title: 'text' }, { name: 'TaskTextIndex' })
 
 const noteSchema = new Schema(
   {
@@ -89,9 +84,8 @@ const noteSchema = new Schema(
 )
 noteSchema.index({ userId: 1, projectId: 1, updatedAt: -1 })
 noteSchema.index({ userId: 1, updatedAt: -1 })
-noteSchema.index({ userId: 1, title: 1 })
 noteSchema.index(
-  { title: 'text', body: 'text' },
+  { userId: 1, title: 'text', body: 'text' },
   { weights: { title: 5, body: 1 }, name: 'NoteTextIndex' },
 )
 
@@ -105,8 +99,6 @@ const activitySchema = new Schema(
   { timestamps: { createdAt: true, updatedAt: false } },
 )
 activitySchema.index({ projectId: 1, createdAt: -1, _id: -1 })
-activitySchema.index({ userId: 1, projectId: 1 })
-activitySchema.index({ userId: 1, createdAt: -1 })
 
 const notificationSchema = new Schema(
   {
@@ -125,7 +117,6 @@ const notificationSchema = new Schema(
 )
 notificationSchema.index({ userId: 1, key: 1 }, { unique: true })
 notificationSchema.index({ userId: 1, read: 1, createdAt: -1 })
-notificationSchema.index({ userId: 1, createdAt: -1 })
 notificationSchema.index({ expireAt: 1 }, { expireAfterSeconds: 0 })
 
 const whiteboardSchema = new Schema(

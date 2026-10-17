@@ -58,7 +58,7 @@ export function Layout({ children }: { children?: ReactNode }) {
       const next = query ? `/search?q=${encodeURIComponent(query)}` : '/search'
       const current = `${location.pathname}${location.search}`
       if (current !== next) navigate(next)
-    }, 200)
+    }, 300)
     return () => window.clearTimeout(handle)
   }, [search, location.pathname, location.search, navigate])
 

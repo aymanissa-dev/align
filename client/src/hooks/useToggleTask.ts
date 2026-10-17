@@ -98,7 +98,15 @@ export function useToggleTask() {
           }
         }
 
-        queryClient.setQueryData<DashboardData>(['dashboard'], { projects, openTasks })
+        queryClient.setQueryData<DashboardData>(['dashboard'], {
+          ...previousDashboard,
+          projects,
+          openTasks,
+          openTaskCount: Math.max(
+            0,
+            (previousDashboard.openTaskCount ?? previousDashboard.openTasks.length) + (nextCompleted ? -1 : 1),
+          ),
+        })
       }
 
       for (const [key, data] of previousToday) {
@@ -117,6 +125,8 @@ export function useToggleTask() {
       void queryClient.invalidateQueries({ queryKey: ['tasks', target.projectId] })
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] })
       void queryClient.invalidateQueries({ queryKey: ['today'] })
+      void queryClient.invalidateQueries({ queryKey: ['notifications'] })
+      void queryClient.invalidateQueries({ queryKey: ['activity'] })
     },
   })
 }

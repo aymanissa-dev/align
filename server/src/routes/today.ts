@@ -1,14 +1,15 @@
 import { Router } from 'express'
-import { Types } from 'mongoose'
+import type { Types } from 'mongoose'
 import { HttpError } from '../errors.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
-import { Task } from '../models.ts'
+import { Project, Task } from '../models.ts'
 import { normalizeDueDate } from '../validate.ts'
 
-type TodayRow = {
+const FIELDS = 'projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt'
+
+type TodayTask = {
   _id: Types.ObjectId
   projectId: Types.ObjectId
-  projectName: string
   title: string
   completed: boolean
   dueDate: string | null
@@ -21,11 +22,11 @@ type TodayRow = {
   updatedAt: Date
 }
 
-function present(task: TodayRow) {
+function present(task: TodayTask, projectName: string) {
   return {
     id: task._id.toString(),
     projectId: task.projectId.toString(),
-    projectName: task.projectName,
+    projectName,
     title: task.title,
     completed: task.completed,
     dueDate: task.dueDate,
@@ -48,50 +49,23 @@ export function todayRouter(): Router {
     asyncHandler(async (req, res) => {
       const date = typeof req.query.date === 'string' ? normalizeDueDate(req.query.date) : null
       if (!date) throw new HttpError(400, 'Use a valid date.')
-      const userId = new Types.ObjectId(currentUserId(req))
-      const visible = await Task.aggregate<TodayRow>([
-        { $match: { userId } },
-        { $sort: { order: 1, createdAt: 1 } },
-        {
-          $lookup: {
-            from: 'projects',
-            let: { projectId: '$projectId' },
-            pipeline: [
-              {
-                $match: {
-                  $expr: {
-                    $and: [{ $eq: ['$_id', '$$projectId'] }, { $eq: ['$userId', userId] }, { $eq: ['$status', 'active'] }],
-                  },
-                },
-              },
-              { $project: { name: 1 } },
-            ],
-            as: 'project',
-          },
-        },
-        { $unwind: '$project' },
-        {
-          $project: {
-            projectId: 1,
-            projectName: '$project.name',
-            title: 1,
-            completed: 1,
-            dueDate: 1,
-            priority: 1,
-            labelIds: 1,
-            plannedFor: 1,
-            completedOn: 1,
-            order: 1,
-            createdAt: 1,
-            updatedAt: 1,
-          },
-        },
+      const userId = currentUserId(req)
+      const [open, plannedDone, finishedOn, projects] = await Promise.all([
+        Task.find({ userId, completed: false }).select(FIELDS).lean<TodayTask[]>(),
+        Task.find({ userId, completed: true, plannedFor: date }).select(FIELDS).lean<TodayTask[]>(),
+        Task.find({ userId, completed: true, completedOn: date }).select(FIELDS).lean<TodayTask[]>(),
+        Project.find({ userId, status: 'active' }).select('name').lean(),
       ])
+      const names = new Map(projects.map((project) => [project._id.toString(), project.name]))
+      const merged = new Map<string, TodayTask>()
+      for (const task of [...open, ...plannedDone, ...finishedOn]) merged.set(task._id.toString(), task)
+      const visible = [...merged.values()]
+        .filter((task) => names.has(task.projectId.toString()))
+        .sort((a, b) => a.order - b.order || a.createdAt.getTime() - b.createdAt.getTime())
 
+      const show = (task: TodayTask) => present(task, names.get(task.projectId.toString()) ?? '')
       const plannedForDate = visible.filter((task) => task.plannedFor === date)
-      const dueToday = visible.filter(
-        (task) => !task.completed && task.dueDate === date && task.plannedFor !== date,
-      )
+      const dueToday = visible.filter((task) => !task.completed && task.dueDate === date && task.plannedFor !== date)
       const planned = [...plannedForDate, ...dueToday]
       const overdue = visible.filter(
         (task) => !task.completed && Boolean(task.dueDate) && (task.dueDate ?? '') < date && task.plannedFor !== date,
@@ -112,11 +86,11 @@ export function todayRouter(): Router {
 
       res.json({
         date,
-        planned: planned.map(present),
-        carried: carried.map(present),
-        overdue: overdue.map(present),
-        available: available.map(present),
-        finished: finished.map(present),
+        planned: planned.map(show),
+        carried: carried.map(show),
+        overdue: overdue.map(show),
+        available: available.map(show),
+        finished: finished.map(show),
       })
     }),
   )

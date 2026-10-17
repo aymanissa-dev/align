@@ -1,7 +1,11 @@
+import compression from 'compression'
 import express, { type Express } from 'express'
 import rateLimit from 'express-rate-limit'
 import helmet from 'helmet'
+import mongoose from 'mongoose'
+import type { HealthReport } from '../../shared/contract.ts'
 import { connectDb } from './db.ts'
+import { privateRevalidate } from './httpCache.ts'
 import { errorHandler } from './middleware.ts'
 import { guardOrigin } from './security.ts'
 import { APP_VERSION, MINIMUM_CLIENT_VERSION } from './version.ts'
@@ -31,6 +35,8 @@ export function createApp(options: AppOptions = {}): Express {
       crossOriginEmbedderPolicy: false,
     }),
   )
+  app.use(compression())
+  app.use(privateRevalidate())
   app.use(express.json({ limit: '1mb' }))
   app.use(guardOrigin)
   app.use((_req, res, next) => {
@@ -40,6 +46,23 @@ export function createApp(options: AppOptions = {}): Express {
   app.get('/api/version', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store')
     res.json({ version: APP_VERSION, minimum: MINIMUM_CLIENT_VERSION })
+  })
+  app.get('/api/health', (_req, res) => {
+    const started = Date.now()
+    connectDb()
+      .then(async () => {
+        const db = mongoose.connection.db
+        if (!db) throw new Error('Database is not connected.')
+        await db.command({ ping: 1 })
+      })
+      .then(() => {
+        const body: HealthReport = { ok: true, db: 'up', latencyMs: Date.now() - started }
+        res.json(body)
+      })
+      .catch(() => {
+        const body: HealthReport = { ok: false, db: 'down', latencyMs: Date.now() - started }
+        res.status(503).json(body)
+      })
   })
   app.use((req, _res, next) => {
     const logout = req.method === 'POST' && req.path === '/api/auth/logout'

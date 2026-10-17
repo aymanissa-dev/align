@@ -53,7 +53,9 @@ async function networkFirstApi(request) {
   try {
     const response = await fetch(request, { signal: controller.signal, cache: 'no-store' })
     clearTimeout(timer)
-    if (response && response.ok) cache.put(request, response.clone()).catch(() => {})
+    // A 304 has an empty body. Hand it back so the page can reuse its copy.
+    if (response.status === 304) return response
+    if (response.ok) cache.put(request, response.clone()).catch(() => {})
     return response
   } catch {
     clearTimeout(timer)

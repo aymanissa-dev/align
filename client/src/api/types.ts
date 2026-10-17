@@ -1,16 +1,30 @@
 /**
  * Client contract for Align.
  *
- * Paths match the build plan. JSON is the resource itself (or an array),
+ * Paths match the server routes. JSON is the resource itself (or an array),
  * not an envelope. Errors are `{ "error": string }` with an HTTP error status.
- * Deletes return 204.
- *
- * Profile, password, and account deletion are included so Settings works
- * before those routes exist on the server.
+ * Deletes return 204. Request bodies are the shared zod schemas.
  */
+import type { z } from 'zod'
+import type { HealthReport } from '../../../shared/contract.ts'
+import type {
+  labelCreateSchema,
+  labelPatchSchema,
+  loginSchema,
+  noteCreateSchema,
+  notePatchSchema,
+  priorities,
+  projectCreateSchema,
+  projectPatchSchema,
+  registerSchema,
+  taskCreateSchema,
+  taskPatchSchema,
+} from '../../../shared/schemas.ts'
+
+export type { HealthReport }
 
 export type ProjectStatus = 'active' | 'archived'
-export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent'
+export type TaskPriority = (typeof priorities)[number]
 
 export type User = {
   id: string
@@ -157,6 +171,7 @@ export type TodayData = {
 export type DashboardData = {
   projects: DashboardProject[]
   openTasks: OpenTask[]
+  openTaskCount: number
 }
 
 export type SearchTask = {
@@ -181,71 +196,22 @@ export type SearchResults = {
   notes: SearchNote[]
 }
 
-export type RegisterInput = {
-  name: string
-  email: string
-  password: string
-}
-
-export type LoginInput = {
-  email: string
-  password: string
-}
-
-export type ProjectInput = {
-  name: string
-  description?: string
-}
-
-export type ProjectPatch = {
-  name?: string
-  description?: string
-}
-
-export type TaskInput = {
-  title: string
-  dueDate?: string | null
-  priority?: TaskPriority
-  labelIds?: string[]
-  plannedFor?: string | null
-  clientId?: string
-}
-
-export type TaskPatch = {
-  title?: string
-  completed?: boolean
-  dueDate?: string | null
-  priority?: TaskPriority
-  labelIds?: string[]
-  plannedFor?: string | null
-  completedOn?: string | null
-  order?: number
-}
+export type RegisterInput = z.infer<typeof registerSchema>
+export type LoginInput = z.infer<typeof loginSchema>
+export type ProjectInput = z.infer<typeof projectCreateSchema>
+export type ProjectPatch = z.infer<typeof projectPatchSchema>
+export type TaskInput = z.infer<typeof taskCreateSchema>
+export type TaskPatch = z.infer<typeof taskPatchSchema>
 
 export type ResetResult = {
   message: string
   resetToken?: string
 }
 
-export type LabelInput = {
-  name: string
-  color: string
-}
-
-export type LabelPatch = {
-  name?: string
-  color?: string
-}
-
-export type NoteInput = {
-  title?: string
-  body?: string
-}
-
-export type NotePatch = {
-  title?: string
-  body?: string
-}
+export type LabelInput = z.infer<typeof labelCreateSchema>
+export type LabelPatch = z.infer<typeof labelPatchSchema>
+export type NoteInput = z.infer<typeof noteCreateSchema>
+export type NotePatch = z.infer<typeof notePatchSchema>
 
 export interface AlignApi {
   /** POST /api/auth/register */
@@ -335,8 +301,8 @@ export interface AlignApi {
   listNotifications(today: string): Promise<AppNotification[]>
   /** POST /api/notifications/:id/read */
   markNotificationRead(id: string): Promise<AppNotification>
-  /** POST /api/notifications/read-all */
-  markAllNotificationsRead(): Promise<void>
+  /** POST /api/notifications/read-all?today= */
+  markAllNotificationsRead(today: string): Promise<void>
 
   /** GET /api/today?date= */
   getToday(date: string, init?: RequestInit): Promise<TodayData>

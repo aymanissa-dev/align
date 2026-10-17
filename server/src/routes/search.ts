@@ -11,10 +11,6 @@ function queryText(value: unknown): string {
   return value.trim().slice(0, 200)
 }
 
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
 function textSearch(value: string): string | null {
   const cleaned = value
     .replace(/[^\p{L}\p{N}\s'-]/gu, ' ')
@@ -24,34 +20,10 @@ function textSearch(value: string): string | null {
   return cleaned
 }
 
-async function settle<T>(query: Promise<T[]>): Promise<T[]> {
-  try {
-    return await query
-  } catch (error) {
-    console.error(error)
-    return []
-  }
-}
-
-function mergeById<T>(groups: T[][], idOf: (item: T) => string): T[] {
-  const seen = new Set<string>()
-  const merged: T[] = []
-  for (const group of groups) {
-    for (const item of group) {
-      const id = idOf(item)
-      if (seen.has(id)) continue
-      seen.add(id)
-      merged.push(item)
-      if (merged.length >= RESULT_LIMIT) return merged
-    }
-  }
-  return merged
-}
-
-async function whenText<T>(text: string | null, query: () => Promise<T[]>): Promise<T[]> {
-  if (!text) return []
-  return settle(query())
-}
+const score = { score: { $meta: 'textScore' as const } }
+const projectFields = { name: 1, description: 1, status: 1, createdAt: 1, updatedAt: 1, ...score }
+const taskFields = { projectId: 1, title: 1, completed: 1, ...score }
+const noteFields = { projectId: 1, title: 1, body: 1, ...score }
 
 export function searchRouter(): Router {
   const router = Router()
@@ -60,70 +32,41 @@ export function searchRouter(): Router {
   router.get(
     '/',
     asyncHandler(async (req, res) => {
-      const query = queryText(req.query.q)
-      if (!query) {
+      const text = textSearch(queryText(req.query.q))
+      if (!text) {
         res.json({ projects: [], tasks: [], notes: [] })
         return
       }
 
       const userId = currentUserId(req)
-      const prefix = { $regex: `^${escapeRegex(query)}`, $options: 'i' }
-      const text = textSearch(query)
-
-      const projectFields = 'name description status createdAt updatedAt'
-      const [projectText, projectName, taskText, taskTitle, noteText, noteTitle, ownedProjects] = await Promise.all([
-        whenText(text, () =>
-          Project.find({ userId, $text: { $search: text ?? '' } })
-            .select(projectFields)
-            .limit(RESULT_LIMIT)
-            .maxTimeMS(TIME_MS)
-            .lean(),
-        ),
-        settle(
-          Project.find({ userId, name: prefix })
-            .select(projectFields)
-            .sort({ updatedAt: -1 })
-            .limit(RESULT_LIMIT)
-            .maxTimeMS(TIME_MS)
-            .lean(),
-        ),
-        whenText(text, () =>
-          Task.find({ userId, $text: { $search: text ?? '' } })
-            .select('projectId title completed')
-            .limit(RESULT_LIMIT)
-            .maxTimeMS(TIME_MS)
-            .lean(),
-        ),
-        settle(
-          Task.find({ userId, title: prefix })
-            .select('projectId title completed')
-            .sort({ updatedAt: -1 })
-            .limit(RESULT_LIMIT)
-            .maxTimeMS(TIME_MS)
-            .lean(),
-        ),
-        whenText(text, () =>
-          Note.find({ userId, $text: { $search: text ?? '' } })
-            .select('projectId title body')
-            .limit(RESULT_LIMIT)
-            .maxTimeMS(TIME_MS)
-            .lean(),
-        ),
-        settle(
-          Note.find({ userId, title: prefix })
-            .select('projectId title body')
-            .sort({ updatedAt: -1 })
-            .limit(RESULT_LIMIT)
-            .maxTimeMS(TIME_MS)
-            .lean(),
-        ),
-        Project.find({ userId }).select('name').maxTimeMS(TIME_MS).lean(),
+      const search = { $search: text }
+      const [projects, tasks, notes] = await Promise.all([
+        Project.find({ userId, $text: search })
+          .select(projectFields)
+          .sort({ score: { $meta: 'textScore' } })
+          .limit(RESULT_LIMIT)
+          .maxTimeMS(TIME_MS)
+          .lean(),
+        Task.find({ userId, $text: search })
+          .select(taskFields)
+          .sort({ score: { $meta: 'textScore' } })
+          .limit(RESULT_LIMIT)
+          .maxTimeMS(TIME_MS)
+          .lean(),
+        Note.find({ userId, $text: search })
+          .select(noteFields)
+          .sort({ score: { $meta: 'textScore' } })
+          .limit(RESULT_LIMIT)
+          .maxTimeMS(TIME_MS)
+          .lean(),
       ])
 
-      const projects = mergeById([projectText, projectName], (item) => item._id.toString())
-      const tasks = mergeById([taskText, taskTitle], (item) => item._id.toString())
-      const notes = mergeById([noteText, noteTitle], (item) => item._id.toString())
-      const names = new Map(ownedProjects.map((project) => [project._id.toString(), project.name]))
+      const projectIds = [...new Set([...tasks, ...notes].map((item) => item.projectId.toString()))]
+      const named =
+        projectIds.length === 0
+          ? []
+          : await Project.find({ userId, _id: { $in: projectIds } }).select('name').maxTimeMS(TIME_MS).lean()
+      const names = new Map(named.map((project) => [project._id.toString(), project.name]))
 
       res.json({
         projects: projects.map(publicProject),

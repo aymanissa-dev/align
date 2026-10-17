@@ -2,6 +2,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, type ReactNode } from 'react'
 import { applyAccent, applyTheme, readTheme } from './lib/theme.ts'
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { ConnectionStatus } from './components/ConnectionStatus.tsx'
 import { AppErrorBoundary } from './components/ErrorBoundary.tsx'
 import { subscribeSignedOut } from './lib/authChannel.ts'
 import { forceSignOut } from './lib/forceSignOut.ts'
@@ -129,6 +130,7 @@ export default function App() {
         <ThemeSync />
         <ToastProvider>
           <BrowserRouter>
+            <ConnectionStatus />
             <AuthBroadcast />
             <AppErrorBoundary>
             <Routes>

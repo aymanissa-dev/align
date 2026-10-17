@@ -25,6 +25,17 @@ import type {
 
 const OFFLINE_MESSAGE = "You're offline. This change is saved on this device and will sync when you reconnect."
 
+type CachedGet = { etag: string; body: string; headers: [string, string][] }
+const etags = new Map<string, CachedGet>()
+
+function rememberGet(path: string, response: Response, body: string) {
+  const etag = response.headers.get('etag')
+  if (!etag || body.length > 1_000_000) return
+  const headers: [string, string][] = []
+  response.headers.forEach((value, key) => headers.push([key, value]))
+  etags.set(path, { etag, body, headers })
+}
+
 /**
  * Fetch client for the Align API.
  * Sends cookies with `credentials: 'include'` (the JWT lives in an httpOnly cookie).
@@ -67,6 +78,8 @@ async function fetchResponse(path: string, init: RequestInit = {}, refreshed = f
   const headers = new Headers(init.headers)
   headers.set('Accept', 'application/json')
   if (init.body) headers.set('Content-Type', 'application/json')
+  const cached = method === 'GET' || method === 'HEAD' ? etags.get(path) : undefined
+  if (cached) headers.set('If-None-Match', cached.etag)
 
   let response: Response | undefined
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -111,6 +124,12 @@ async function fetchResponse(path: string, init: RequestInit = {}, refreshed = f
     const ok = await refreshSession()
     if (ok) return fetchResponse(path, init, true)
     forceSignOut()
+  }
+  if (response.status === 304 && cached) {
+    response = new Response(cached.body, { status: 200, headers: cached.headers })
+  } else if ((method === 'GET' || method === 'HEAD') && response.ok) {
+    const body = await response.clone().text()
+    rememberGet(path, response, body)
   }
   if (response.ok) noteNetworkSuccess({ trusted: method !== 'GET' && method !== 'HEAD' })
   if (!response.ok) {
@@ -300,8 +319,8 @@ export const httpApi = {
   markNotificationRead(id) {
     return request<AppNotification>(`/api/notifications/${id}/read`, { method: 'POST' })
   },
-  async markAllNotificationsRead() {
-    await request<void>('/api/notifications/read-all', { method: 'POST' })
+  async markAllNotificationsRead(today) {
+    await request<void>(withQuery('/api/notifications/read-all', { today }), { method: 'POST' })
   },
   getToday(date, init?: RequestInit) {
     return request<TodayData>(withQuery('/api/today', { date }), init)

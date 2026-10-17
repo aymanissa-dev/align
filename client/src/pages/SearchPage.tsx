@@ -15,7 +15,7 @@ export function SearchPage() {
   const results = useQuery({
     queryKey: ['search', query],
     queryFn: () => api.search(query),
-    enabled: query.length > 0,
+    enabled: query.length >= 3,
   })
 
   const total =
@@ -29,9 +29,11 @@ export function SearchPage() {
         description={
           !query
             ? 'Find a project, task, or note.'
-            : results.data
-              ? `${total} ${total === 1 ? 'match' : 'matches'}`
-              : 'Looking through your workspace.'
+            : query.length < 3
+              ? 'Type at least 3 characters.'
+              : results.data
+                ? `${total} ${total === 1 ? 'match' : 'matches'}`
+                : 'Looking through your workspace.'
         }
       />
 

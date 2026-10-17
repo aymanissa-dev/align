@@ -72,6 +72,8 @@ describe('dashboard and search', () => {
 
     const empty = await owner.agent.get('/api/search').query({ q: '   ' })
     expect(empty.body).toEqual({ projects: [], tasks: [], notes: [] })
+    const short = await owner.agent.get('/api/search').query({ q: 'wi' })
+    expect(short.body).toEqual({ projects: [], tasks: [], notes: [] })
 
     const indexes = await Project.collection.indexes()
     const taskIndexes = await Task.collection.indexes()

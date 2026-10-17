@@ -14,6 +14,7 @@ import { getQueueVersion, pendingTaskCreates, subscribeQueue } from '../lib/offl
 import { groupToday } from '../lib/todayGroups.ts'
 import { useToggleTask } from '../hooks/useToggleTask.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
+import { invalidateWorkspace } from '../queryClient.ts'
 import { cn } from '../lib/cn.ts'
 
 export function TodayPage() {
@@ -68,7 +69,7 @@ export function TodayPage() {
     onSuccess: async (_task, plannedFor) => {
       setTitle('')
       toast(plannedFor === tomorrow ? 'Added for tomorrow' : 'Added for today')
-      await queryClient.invalidateQueries({ queryKey: ['today', date] })
+      await invalidateWorkspace()
     },
     onError: (error) => {
       if (error instanceof ApiError && error.queued) {

@@ -4,8 +4,8 @@ import { connectDb } from './db.ts'
 import { resolveRequestUrl } from './requestPath.ts'
 
 const app = createApp()
-void connectDb().catch(() => {
-  // The request middleware connects again and reports a failure if this misses.
+void connectDb({ indexes: true }).catch((error: unknown) => {
+  console.error(error)
 })
 
 export default function handler(req: IncomingMessage, res: ServerResponse): void {

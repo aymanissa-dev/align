@@ -16,20 +16,40 @@ function cache(): Cache {
 
 let indexesReady: Promise<void> | null = null
 
+/** A collection can hold one text index. Drop the unscoped copy before creating the user-prefixed one. */
+async function dropUnscopedText(collection: mongoose.Collection, name: string): Promise<void> {
+  let indexes: { name?: string; key?: Record<string, unknown> }[]
+  try {
+    indexes = await collection.indexes()
+  } catch {
+    return
+  }
+  const found = indexes.find((index) => index.name === name)
+  if (!found || found.key?.userId === 1) return
+  await collection.dropIndex(name)
+}
+
 function ensureIndexes(): Promise<void> {
   indexesReady ??= Promise.all([
-    User.syncIndexes(),
-    Project.syncIndexes(),
-    Label.syncIndexes(),
-    Task.syncIndexes(),
-    Note.syncIndexes(),
-    Activity.syncIndexes(),
-    Notification.syncIndexes(),
-    Whiteboard.syncIndexes(),
-    Session.syncIndexes(),
-    AuthToken.syncIndexes(),
-    RateLimit.syncIndexes(),
+    dropUnscopedText(Project.collection, 'ProjectTextIndex'),
+    dropUnscopedText(Task.collection, 'TaskTextIndex'),
+    dropUnscopedText(Note.collection, 'NoteTextIndex'),
   ])
+    .then(() =>
+      Promise.all([
+        User.syncIndexes(),
+        Project.syncIndexes(),
+        Label.syncIndexes(),
+        Task.syncIndexes(),
+        Note.syncIndexes(),
+        Activity.syncIndexes(),
+        Notification.syncIndexes(),
+        Whiteboard.syncIndexes(),
+        Session.syncIndexes(),
+        AuthToken.syncIndexes(),
+        RateLimit.syncIndexes(),
+      ]),
+    )
     .then(() => undefined)
     .catch((error: unknown) => {
       indexesReady = null
@@ -38,22 +58,16 @@ function ensureIndexes(): Promise<void> {
   return indexesReady
 }
 
-async function prepareIndexes(): Promise<void> {
-  if (process.env.NODE_ENV === 'test') {
-    await ensureIndexes()
-    return
-  }
-  void ensureIndexes().catch((error: unknown) => {
-    console.error(error)
-  })
-}
-
 function databaseFailure(error: unknown): HttpError {
   console.error(error)
   return new HttpError(500, 'Database connection failed.')
 }
 
-export async function connectDb(): Promise<typeof mongoose> {
+function shouldSync(options?: { indexes?: boolean }): boolean {
+  return options?.indexes === true || process.env.NODE_ENV === 'test'
+}
+
+export async function connectDb(options?: { indexes?: boolean }): Promise<typeof mongoose> {
   const uri = process.env.MONGODB_URI
   if (!uri || uri === 'memory') {
     throw new HttpError(500, 'Database is not configured.')
@@ -61,7 +75,7 @@ export async function connectDb(): Promise<typeof mongoose> {
 
   const state = cache()
   if (state.conn) {
-    await prepareIndexes()
+    if (shouldSync(options)) await ensureIndexes()
     return state.conn
   }
 
@@ -71,8 +85,8 @@ export async function connectDb(): Promise<typeof mongoose> {
       .connect(uri, {
         serverSelectionTimeoutMS: 5000,
         maxPoolSize: 5,
-        minPoolSize: 0,
-        maxIdleTimeMS: 10_000,
+        minPoolSize: 1,
+        maxIdleTimeMS: 60_000,
         socketTimeoutMS: 20_000,
       })
       .then((connection) => {
@@ -87,12 +101,12 @@ export async function connectDb(): Promise<typeof mongoose> {
 
   try {
     state.conn = await state.promise
-    await prepareIndexes()
   } catch (error) {
     state.conn = null
     state.promise = null
     throw error instanceof HttpError ? error : databaseFailure(error)
   }
+  if (shouldSync(options)) await ensureIndexes()
   return state.conn
 }
 

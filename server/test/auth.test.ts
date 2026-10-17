@@ -5,6 +5,24 @@ import { Project } from '../src/models.ts'
 import { app, registerUser } from './helpers.ts'
 
 describe('auth', () => {
+  it('reports database health without requiring a session', async () => {
+    const health = await request(app).get('/api/health')
+    expect(health.status).toBe(200)
+    expect(health.body.ok).toBe(true)
+    expect(health.body.db).toBe('up')
+    expect(typeof health.body.latencyMs).toBe('number')
+  })
+
+  it('answers 304 when a GET representation has not changed', async () => {
+    const { agent } = await registerUser()
+    const first = await agent.get('/api/projects')
+    expect(first.status).toBe(200)
+    const etag = first.headers.etag as string
+    expect(etag).toBeTruthy()
+    const second = await agent.get('/api/projects').set('If-None-Match', etag)
+    expect(second.status).toBe(304)
+  })
+
   it('publishes the minimum client version without waiting on the database', async () => {
     const version = await request(app).get('/api/version')
     expect(version.status).toBe(200)

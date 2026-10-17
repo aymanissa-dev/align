@@ -31,6 +31,7 @@ export function DashboardPage() {
   }
 
   const { projects, openTasks } = dashboard.data
+  const openTaskCount = dashboard.data.openTaskCount ?? openTasks.length
   const empty = projects.length === 0 && openTasks.length === 0
 
   function onToggle(task: OpenTask) {
@@ -58,7 +59,7 @@ export function DashboardPage() {
 
       <div className="mt-6 grid divide-y divide-neutral-200 border border-neutral-200 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
         <Stat label="Active projects" value={projects.length} />
-        <Stat label="Open tasks" value={openTasks.length} />
+        <Stat label="Open tasks" value={openTaskCount} />
         <Stat label="Tasks done" value={completed} />
       </div>
 
@@ -150,7 +151,7 @@ export function DashboardPage() {
           <section className="border border-neutral-200">
             <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
               <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Open tasks</h2>
-              <Badge>{openTasks.length}</Badge>
+              <Badge>{openTaskCount}</Badge>
             </div>
             {openTasks.length === 0 ? (
               <p className="px-4 py-6 text-sm text-neutral-500">Nothing outstanding.</p>
