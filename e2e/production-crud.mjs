@@ -140,9 +140,46 @@ async function holdOfflineBar(browser, signedIn) {
       }
     }
     console.log('offline probes', hits.length, 'gaps', gaps.join(','))
+
+    await armLongBackoff(swPage, probes, offlineAt)
+    await setTargetsOffline(browser, pageSession, false)
+    const onlineAt = Date.now()
+    await swPage.evaluate(() => window.dispatchEvent(new Event('online')))
+    await bar.waitFor({ state: 'hidden', timeout: 2_000 })
+    const clearedIn = Date.now() - onlineAt
+    let reconnect = []
+    for (let attempt = 0; attempt < 20 && reconnect.length === 0; attempt += 1) {
+      reconnect = probes.filter((probe) => probe.t >= onlineAt).sort((a, b) => a.t - b.t)
+      if (reconnect.length === 0) await swPage.waitForTimeout(50)
+    }
+    if (reconnect.length === 0) throw new Error('online did not start a health probe')
+    const lag = reconnect[0].t - onlineAt
+    if (lag > 500) throw new Error(`online probe waited ${lag}ms for the backoff timer`)
+    console.log('bar cleared', clearedIn, 'ms', 'probe lag', lag, 'ms')
   } finally {
     await swContext.close()
   }
+}
+
+/** The next health check is at least 8s away, so a fast clear cannot be the scheduled probe. */
+async function armLongBackoff(swPage, probes, offlineAt) {
+  const steps = [1000, 2000, 4000, 8000, 16000, 30000]
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const hits = probes.filter((probe) => probe.t >= offlineAt).sort((a, b) => a.t - b.t)
+    const last = hits[hits.length - 1]
+    if (!last) throw new Error('no offline probes before reconnect')
+    const gaps = hits.slice(1).map((hit, index) => hit.t - hits[index].t)
+    let start = 0
+    if (gaps.length > 0) {
+      start = steps.findIndex((step) => Math.abs(gaps[0] - step) <= step * 0.35)
+      if (start < 0) start = 0
+    }
+    const armed = steps[Math.min(start + gaps.length, steps.length - 1)]
+    const remaining = armed - (Date.now() - last.t)
+    if (remaining >= 8_000) return
+    await swPage.waitForTimeout(Math.max(200, remaining + 500))
+  }
+  throw new Error('backoff never reached a long wait')
 }
 
 async function setTargetsOffline(browser, pageSession, offline) {

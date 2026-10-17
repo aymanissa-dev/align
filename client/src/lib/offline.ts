@@ -624,7 +624,10 @@ let probeTimer: number | undefined
 let probeInFlight = false
 let scheduledDelay = 0
 let lastProbeAt = 0
-let retryAfterFlight = false
+let probeEpoch = 0
+let probeAbort: AbortController | undefined
+/** After an online event: two quick failures (500ms, then 1s) before the normal backoff. */
+let reconnectLeft = 0
 
 function healthUp(body: unknown, ok: boolean): boolean {
   if (!ok || !body || typeof body !== 'object') return false
@@ -651,43 +654,49 @@ function scheduleProbe(delay: number) {
 /** Reachability probe. Failures wait 1s, 2s, 4s, 8s, 16s, then 30s. */
 async function runProbe() {
   if (probeInFlight) return
+  const epoch = probeEpoch
   probeInFlight = true
   clearProbeTimer()
   scheduledDelay = 0
   lastProbeAt = Date.now()
+  const controller = new AbortController()
+  probeAbort = controller
+  const timeout = window.setTimeout(() => controller.abort(), 4_000)
   let ok = false
   try {
     // The query keeps a cached /api/health from matching. The worker does not
-    // intercept this URL; a hit header is still not the network.
+    // intercept this URL; a hit header is still not the network. Each attempt
+    // gets a new controller so a cancelled probe cannot abort the next one.
     const response = await fetch(`/api/health?t=${Date.now()}`, {
       cache: 'no-store',
       credentials: 'include',
       headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(4_000),
+      signal: controller.signal,
     })
-    if (response.headers.get('X-Align-Cache') === 'hit') {
-      ok = false
-    } else {
+    if (epoch === probeEpoch && response.headers.get('X-Align-Cache') !== 'hit') {
       const body: unknown = await response.json().catch(() => null)
       ok = healthUp(body, response.ok)
     }
   } catch {
     ok = false
   } finally {
-    probeInFlight = false
+    window.clearTimeout(timeout)
+    if (probeAbort === controller) probeAbort = undefined
+    if (epoch === probeEpoch) probeInFlight = false
   }
+  if (epoch !== probeEpoch) return
   if (ok) {
-    retryAfterFlight = false
+    reconnectLeft = 0
     if (unreachable) markReachable()
     probeStep = 0
     if (queuedCount() > 0) void flushOfflineQueue()
     scheduleProbe(queuedCount() > 0 ? PROBE_STEPS_MS[0] : HEALTHY_PROBE_MS)
     return
   }
-  if (retryAfterFlight) {
-    retryAfterFlight = false
-    probeStep = 0
-    void runProbe()
+  if (reconnectLeft > 0) {
+    const delay = reconnectLeft === 2 ? 500 : 1_000
+    reconnectLeft -= 1
+    scheduleProbe(delay)
     return
   }
   markUnreachable()
@@ -702,14 +711,23 @@ async function runProbe() {
  * step already armed, is left alone so startup does not insert a third request.
  */
 function probeNow() {
-  if (probeInFlight) {
-    if (Date.now() - lastProbeAt >= PROBE_STEPS_MS[0]) retryAfterFlight = true
-    return
-  }
+  if (probeInFlight) return
   const since = lastProbeAt === 0 ? Number.POSITIVE_INFINITY : Date.now() - lastProbeAt
   const shortBackoffArmed = probeTimer !== undefined && scheduledDelay <= PROBE_STEPS_MS[1]
   if (shortBackoffArmed && since < PROBE_STEPS_MS[0]) return
   probeStep = 0
+  clearProbeTimer()
+  scheduledDelay = 0
+  void runProbe()
+}
+
+/** Window 'online' always cancels the backoff and checks, even if a probe is running. */
+function probeOnOnline() {
+  reconnectLeft = 2
+  probeEpoch += 1
+  probeAbort?.abort()
+  probeAbort = undefined
+  probeInFlight = false
   clearProbeTimer()
   scheduledDelay = 0
   void runProbe()
@@ -721,9 +739,10 @@ export function startOfflineSync() {
   syncStarted = true
   window.addEventListener('online', () => {
     abortInFlightFlush()
-    probeNow()
+    probeOnOnline()
   })
   window.addEventListener('offline', () => {
+    reconnectLeft = 0
     markUnreachable()
     if (probeInFlight) return
     // A short backoff is already armed. A second offline signal must not insert a probe.

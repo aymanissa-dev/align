@@ -2,6 +2,9 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import { startOfflineSync } from './lib/offline.ts'
+
+startOfflineSync()
 
 if ('serviceWorker' in navigator) {
   let hadController = !!navigator.serviceWorker.controller
