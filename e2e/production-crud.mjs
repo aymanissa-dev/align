@@ -374,8 +374,8 @@ try {
     throw new Error(`upcoming ${badgeCount} vs ${viewAllLabel}`)
   }
   await viewAll.click()
-  await page.getByRole('heading', { name: 'All dated', exact: true }).waitFor()
-  await page.getByText(laterTitle).waitFor()
+  const dated = page.locator('section').filter({ has: page.getByRole('heading', { name: 'All dated', exact: true }) })
+  await dated.getByText(laterTitle).waitFor()
   pass('upcoming labels')
 
   await holdOfflineBar(browser, context)
