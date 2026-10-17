@@ -127,18 +127,99 @@ async function holdOfflineBar(browser, signedIn) {
     const answered = hits.filter((probe) => !probe.failed)
     if (answered.length) throw new Error(`health was answered while offline ${JSON.stringify(answered)}`)
     const gaps = hits.slice(1).map((hit, index) => hit.t - hits[index].t)
-    if (hits.length < 4 || hits.length > 12) {
+    if (hits.length < 4 || hits.length > 10) {
       throw new Error(`offline probe count ${hits.length} gaps ${gaps.join(',')}`)
     }
-    if (gaps.some((gap) => gap < 700)) throw new Error(`probes overlapped or did not back off ${gaps.join(',')}`)
-    const floors = [800, 1500, 3000, 6000, 12000]
-    const tail = gaps[0] > 5000 ? gaps.slice(1) : gaps
-    for (let index = 0; index < Math.min(tail.length, floors.length); index += 1) {
-      if (tail[index] + 250 < floors[index]) {
-        throw new Error(`probe backoff ${tail.join(',')} expected at least ${floors[index]} at ${index}`)
+    const steps = [1000, 2000, 4000, 8000, 16000, 30000]
+    let stepIndex = steps.findIndex((step) => Math.abs(gaps[0] - step) <= step * 0.35)
+    if (stepIndex < 0) throw new Error(`probe backoff ${gaps.join(',')} is not 1s,2s,4s,8s,16s,30s`)
+    for (let index = 0; index < gaps.length && stepIndex + index < steps.length; index += 1) {
+      const step = steps[stepIndex + index]
+      if (Math.abs(gaps[index] - step) > step * 0.35) {
+        throw new Error(`probe backoff ${gaps.join(',')} expected ${step} at ${index}`)
       }
     }
     console.log('offline probes', hits.length, 'gaps', gaps.join(','))
+  } finally {
+    await swContext.close()
+  }
+}
+
+async function setTargetsOffline(browser, pageSession, offline) {
+  const conditions = {
+    offline,
+    latency: 0,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+  }
+  await pageSession.send('Network.emulateNetworkConditions', conditions)
+  await offlineServiceWorkers(browser, conditions).catch((error) => {
+    console.log('service worker offline', error instanceof Error ? error.message : error)
+  })
+}
+
+/** Cached project data stays up for 60s offline, and one queued add syncs once. */
+async function offlineProjectRoundTrip(browser, signedIn, projectUrl, existingTitle) {
+  const projectId = projectUrl.split('/projects/')[1]?.split(/[?#]/)[0]
+  if (!projectId) throw new Error(`project url ${projectUrl}`)
+  const state = await signedIn.storageState()
+  const swContext = await browser.newContext({
+    timezoneId: 'Asia/Riyadh',
+    viewport: { width: 1280, height: 800 },
+    storageState: state,
+  })
+  const swPage = await swContext.newPage()
+  swPage.setDefaultTimeout(25_000)
+  const offlineTitle = `Offline wick ${Date.now().toString(36)}`
+  try {
+    await swPage.goto(projectUrl)
+    await swPage.waitForFunction(() => navigator.serviceWorker?.controller != null, null, { timeout: 30_000 })
+    await swPage.getByRole('heading', { level: 1, name: /E2E Lamp/ }).waitFor()
+    await swPage.waitForTimeout(2000)
+    await swPage.getByText(existingTitle).waitFor()
+    const tasksUrl = `${base}/api/projects/${projectId}/tasks`
+    const before = await (await swContext.request.get(tasksUrl)).json()
+    if (!before.some((task) => task.title === existingTitle)) throw new Error('task missing before offline')
+
+    const pageSession = await swContext.newCDPSession(swPage)
+    await setTargetsOffline(browser, pageSession, true)
+    const until = Date.now() + 60_000
+    while (Date.now() < until) {
+      if (await swPage.getByRole('heading', { name: 'Something went wrong' }).count()) {
+        throw new Error('project page showed the error state while offline')
+      }
+      if (!(await swPage.getByText(existingTitle).first().isVisible())) {
+        throw new Error('cached task disappeared while offline')
+      }
+      await swPage.waitForTimeout(2000)
+    }
+
+    await swPage.getByLabel('Task title').fill(offlineTitle)
+    await swPage.getByRole('button', { name: 'Add', exact: true }).click()
+    await swPage.getByText(offlineTitle).waitFor()
+    const queued = await (await swContext.request.get(tasksUrl)).json()
+    if (queued.some((task) => task.title === offlineTitle)) throw new Error('offline add reached the server')
+
+    await setTargetsOffline(browser, pageSession, false)
+    await swPage.evaluate(() => {
+      window.dispatchEvent(new Event('online'))
+      window.dispatchEvent(new Event('focus'))
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    let seen = 0
+    const deadline = Date.now() + 8_000
+    while (Date.now() < deadline) {
+      const tasks = await (await swContext.request.get(tasksUrl)).json()
+      seen = tasks.filter((task) => task.title === offlineTitle).length
+      if (seen > 1) throw new Error(`offline add synced ${seen} times`)
+      if (seen === 1) break
+      await swPage.waitForTimeout(500)
+    }
+    if (seen !== 1) throw new Error(`offline add synced ${seen} times`)
+    await swPage.waitForTimeout(2000)
+    const after = await (await swContext.request.get(tasksUrl)).json()
+    const count = after.filter((task) => task.title === offlineTitle).length
+    if (count !== 1) throw new Error(`offline add synced ${count} times`)
   } finally {
     await swContext.close()
   }
@@ -380,6 +461,9 @@ try {
 
   await holdOfflineBar(browser, context)
   pass('offline bar holds')
+
+  await offlineProjectRoundTrip(browser, context, projectUrl, renamedTask)
+  pass('offline project cache')
 
   await page.goto(projectUrl)
   await page.getByRole('button', { name: `Delete “${renamedTask}”` }).click()

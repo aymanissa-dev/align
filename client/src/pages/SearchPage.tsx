@@ -38,7 +38,7 @@ export function SearchPage() {
       />
 
       {query && results.isLoading ? <ListSkeleton rows={4} /> : null}
-      {query && results.isError ? (
+      {query && results.isError && !results.data ? (
         <div className="mt-8">
           <ErrorState onRetry={() => void results.refetch()} />
         </div>

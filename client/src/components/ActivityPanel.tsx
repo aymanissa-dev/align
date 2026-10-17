@@ -17,8 +17,8 @@ export function ActivityPanel({ projectId }: { projectId: string }) {
     queryFn: () => api.listActivity(projectId),
   })
 
-  if (activity.isLoading) return <ListSkeleton rows={4} />
-  if (activity.isError || !activity.data) {
+  if (!activity.data) {
+    if (activity.isLoading) return <ListSkeleton rows={4} />
     return (
       <div className="mt-8">
         <ErrorState onRetry={() => void activity.refetch()} />

@@ -27,8 +27,8 @@ export function DashboardPage() {
   const [showAllDated, setShowAllDated] = useState(false)
 
   if (!user) return null
-  if (dashboard.isLoading) return <ListSkeleton />
-  if (dashboard.isError || !dashboard.data) {
+  if (!dashboard.data) {
+    if (dashboard.isLoading) return <ListSkeleton />
     return <ErrorState onRetry={() => void dashboard.refetch()} />
   }
 

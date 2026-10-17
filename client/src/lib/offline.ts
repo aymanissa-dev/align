@@ -579,6 +579,7 @@ export function noteNetworkSuccess(options?: { trusted?: boolean }): void {
     onlineManager.setOnline(true)
     markReachable()
     probeStep = 0
+    if (!probeInFlight) scheduleProbe(queuedCount() > 0 ? PROBE_STEPS_MS[0] : HEALTHY_PROBE_MS)
   }
   if (queuedCount() > 0) void flushOfflineQueue()
 }
@@ -621,7 +622,9 @@ let syncStarted = false
 let probeStep = 0
 let probeTimer: number | undefined
 let probeInFlight = false
+let scheduledDelay = 0
 let lastProbeAt = 0
+let retryAfterFlight = false
 
 function healthUp(body: unknown, ok: boolean): boolean {
   if (!ok || !body || typeof body !== 'object') return false
@@ -637,18 +640,21 @@ function clearProbeTimer() {
 
 function scheduleProbe(delay: number) {
   clearProbeTimer()
+  scheduledDelay = delay
   probeTimer = window.setTimeout(() => {
     probeTimer = undefined
+    scheduledDelay = 0
     void runProbe()
   }, delay)
 }
 
-/** Reachability probe. Failures wait 1s, 2s, 4s, … 30s. The online event starts over. */
+/** Reachability probe. Failures wait 1s, 2s, 4s, 8s, 16s, then 30s. */
 async function runProbe() {
   if (probeInFlight) return
   probeInFlight = true
-  lastProbeAt = Date.now()
   clearProbeTimer()
+  scheduledDelay = 0
+  lastProbeAt = Date.now()
   let ok = false
   try {
     // The query keeps a cached /api/health from matching. The worker does not
@@ -671,10 +677,17 @@ async function runProbe() {
     probeInFlight = false
   }
   if (ok) {
+    retryAfterFlight = false
     if (unreachable) markReachable()
     probeStep = 0
     if (queuedCount() > 0) void flushOfflineQueue()
     scheduleProbe(queuedCount() > 0 ? PROBE_STEPS_MS[0] : HEALTHY_PROBE_MS)
+    return
+  }
+  if (retryAfterFlight) {
+    retryAfterFlight = false
+    probeStep = 0
+    void runProbe()
     return
   }
   markUnreachable()
@@ -683,10 +696,22 @@ async function runProbe() {
   scheduleProbe(delay)
 }
 
-function resetProbe(force = false) {
+/**
+ * Check now and start the backoff over.
+ * A probe already in flight is the check. One that just failed, with the 1s or 2s
+ * step already armed, is left alone so startup does not insert a third request.
+ */
+function probeNow() {
+  if (probeInFlight) {
+    if (Date.now() - lastProbeAt >= PROBE_STEPS_MS[0]) retryAfterFlight = true
+    return
+  }
+  const since = lastProbeAt === 0 ? Number.POSITIVE_INFINITY : Date.now() - lastProbeAt
+  const shortBackoffArmed = probeTimer !== undefined && scheduledDelay <= PROBE_STEPS_MS[1]
+  if (shortBackoffArmed && since < PROBE_STEPS_MS[0]) return
   probeStep = 0
-  if (probeInFlight) return
-  if (!force && probeTimer !== undefined && Date.now() - lastProbeAt < 800) return
+  clearProbeTimer()
+  scheduledDelay = 0
   void runProbe()
 }
 
@@ -696,18 +721,20 @@ export function startOfflineSync() {
   syncStarted = true
   window.addEventListener('online', () => {
     abortInFlightFlush()
-    resetProbe(true)
+    probeNow()
   })
   window.addEventListener('offline', () => {
-    const alreadyDown = unreachable
     markUnreachable()
     if (probeInFlight) return
-    if (alreadyDown && probeTimer !== undefined && Date.now() - lastProbeAt < 800) return
+    // A short backoff is already armed. A second offline signal must not insert a probe.
+    if (probeTimer !== undefined && scheduledDelay !== HEALTHY_PROBE_MS) return
     probeStep = 0
+    clearProbeTimer()
     void runProbe()
   })
-  onlineManager.subscribe((online) => {
-    if (online) resetProbe()
+  window.addEventListener('focus', () => probeNow())
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') probeNow()
   })
   void runProbe()
 }

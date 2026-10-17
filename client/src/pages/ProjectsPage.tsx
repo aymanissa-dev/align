@@ -79,8 +79,8 @@ export function ProjectsPage() {
       </div>
 
       <div className="mt-2">
-        {projects.isLoading ? <ListSkeleton rows={3} header={false} /> : null}
-        {projects.isError ? <div className="mt-8"><ErrorState onRetry={() => void projects.refetch()} /></div> : null}
+        {projects.isLoading && !projects.data ? <ListSkeleton rows={3} header={false} /> : null}
+        {projects.isError && !projects.data ? <div className="mt-8"><ErrorState onRetry={() => void projects.refetch()} /></div> : null}
         {projects.data && projects.data.length === 0 ? (
           <div className="mt-8">
             {status === 'active' ? (

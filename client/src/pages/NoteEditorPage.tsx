@@ -22,7 +22,6 @@ export function NoteEditorPage() {
     enabled: Boolean(id),
   })
 
-  if (note.isLoading) return <ListSkeleton />
   if (note.error instanceof ApiError && note.error.status === 404) {
     return (
       <EmptyState
@@ -36,7 +35,10 @@ export function NoteEditorPage() {
       />
     )
   }
-  if (note.isError || !note.data) return <ErrorState onRetry={() => void note.refetch()} />
+  if (!note.data) {
+    if (note.isLoading) return <ListSkeleton />
+    return <ErrorState onRetry={() => void note.refetch()} />
+  }
 
   return <Editor key={`${note.data.id}:${note.data.version}`} note={note.data} />
 }

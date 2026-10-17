@@ -320,7 +320,7 @@ export function Whiteboard({ projectId }: { projectId: string }) {
     setDraft(null)
   }
 
-  if (board.isError) {
+  if (board.isError && !board.data) {
     return (
       <div className="mt-8">
         <ErrorState onRetry={() => void board.refetch()} />

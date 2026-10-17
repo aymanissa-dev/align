@@ -53,7 +53,6 @@ export function ProjectDetailPage() {
     onError: (error) => toast(errorMessage(error)),
   })
 
-  if (project.isLoading) return <ListSkeleton />
   if (project.error instanceof ApiError && project.error.status === 404) {
     return (
       <EmptyState
@@ -67,7 +66,10 @@ export function ProjectDetailPage() {
       />
     )
   }
-  if (project.isError || !project.data) return <ErrorState onRetry={() => void project.refetch()} />
+  if (!project.data) {
+    if (project.isLoading) return <ListSkeleton />
+    return <ErrorState onRetry={() => void project.refetch()} />
+  }
 
   const current = project.data
 
@@ -156,8 +158,10 @@ function NotesPanel({ projectId }: { projectId: string }) {
     onError: (error) => toast(errorMessage(error)),
   })
 
-  if (notes.isLoading) return <ListSkeleton rows={3} />
-  if (notes.isError || !notes.data) return <div className="mt-8"><ErrorState onRetry={() => void notes.refetch()} /></div>
+  if (!notes.data) {
+    if (notes.isLoading) return <ListSkeleton rows={3} />
+    return <div className="mt-8"><ErrorState onRetry={() => void notes.refetch()} /></div>
+  }
 
   return (
     <div className="mt-8">

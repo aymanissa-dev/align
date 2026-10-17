@@ -20,8 +20,8 @@ export function NotesPage() {
   const notes = useQuery({ queryKey: ['notes'], queryFn: () => api.listNotes() })
   const projects = useQuery({ queryKey: ['projects', 'all'], queryFn: () => api.listProjects() })
 
-  const loading = notes.isLoading || projects.isLoading
-  const failed = notes.isError || projects.isError
+  const loading = (notes.isLoading && !notes.data) || (projects.isLoading && !projects.data)
+  const failed = (!notes.data && notes.isError) || (!projects.data && projects.isError)
   const activeProjects = (projects.data ?? []).filter((project) => project.status === 'active')
 
   function onNew() {
