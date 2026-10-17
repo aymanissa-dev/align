@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { quoteTitle, recordActivity } from '../activity.ts'
+import { assertVersion, expectedVersion, stampVersion } from '../concurrency.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { Activity, Note, Notification, Project, Task, Whiteboard } from '../models.ts'
 import { afterTaskCursor, afterTaskFilter, beforeCursor, beforeFilter, nextDateCursor, nextTaskCursor, pageLimit } from '../page.ts'
@@ -37,7 +38,7 @@ export function projectsRouter(): Router {
         filter.status = status
       }
       const projects = await Project.find(filter)
-        .select('name description status createdAt updatedAt')
+        .select('name description status createdAt updatedAt __v')
         .sort({ updatedAt: -1 })
         .lean()
       res.json(projects.map(publicProject))
@@ -61,6 +62,7 @@ export function projectsRouter(): Router {
         type: 'create',
         summary: `Created project ${quoteTitle(project.name)}`,
       })
+      stampVersion(res, project.__v)
       res.status(201).json(publicProject(project))
     }),
   )
@@ -74,7 +76,7 @@ export function projectsRouter(): Router {
       const cursor = afterTaskCursor(req.query.cursor)
       const base = { userId, projectId: project._id }
       const tasks = await Task.find(cursor ? { $and: [base, afterTaskFilter(cursor)] } : base)
-        .select('projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt')
+        .select('projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt __v')
         .sort({ order: 1, createdAt: 1, _id: 1 })
         .limit(limit + 1)
         .lean()
@@ -120,6 +122,7 @@ export function projectsRouter(): Router {
           type: 'create',
           summary: `Created task ${quoteTitle(task.title)}`,
         })
+        stampVersion(res, task.__v)
         res.status(201).json(publicTask(task))
       } catch (error) {
         if (input.clientId && isDuplicateKey(error)) {
@@ -140,7 +143,7 @@ export function projectsRouter(): Router {
       const userId = currentUserId(req)
       const project = await requireProject(userId, req.params.id)
       const notes = await Note.find({ userId, projectId: project._id })
-        .select('projectId title body createdAt updatedAt')
+        .select('projectId title body createdAt updatedAt __v')
         .sort({ updatedAt: -1 })
         .lean()
       res.json(notes.map(publicNote))
@@ -166,6 +169,7 @@ export function projectsRouter(): Router {
         type: 'create',
         summary: `Created note ${quoteTitle(note.title)}`,
       })
+      stampVersion(res, note.__v)
       res.status(201).json(publicNote(note))
     }),
   )
@@ -218,6 +222,7 @@ export function projectsRouter(): Router {
     '/:id',
     asyncHandler(async (req, res) => {
       const project = await requireProject(currentUserId(req), req.params.id)
+      stampVersion(res, project.__v)
       res.json(publicProject(project))
     }),
   )
@@ -226,6 +231,7 @@ export function projectsRouter(): Router {
     '/:id',
     asyncHandler(async (req, res) => {
       const project = await requireProject(currentUserId(req), req.params.id)
+      assertVersion(project.__v, expectedVersion(req))
       const input = parseBody(projectPatchSchema, req.body)
       if (input.name !== undefined) project.name = input.name
       if (input.description !== undefined) project.description = input.description
@@ -236,6 +242,7 @@ export function projectsRouter(): Router {
         type: 'update',
         summary: `Updated project ${quoteTitle(project.name)}`,
       })
+      stampVersion(res, project.__v)
       res.json(publicProject(project))
     }),
   )
@@ -244,6 +251,7 @@ export function projectsRouter(): Router {
     '/:id/archive',
     asyncHandler(async (req, res) => {
       const project = await requireProject(currentUserId(req), req.params.id)
+      assertVersion(project.__v, expectedVersion(req))
       project.status = project.status === 'active' ? 'archived' : 'active'
       await project.save()
       await recordActivity({
@@ -252,6 +260,7 @@ export function projectsRouter(): Router {
         type: 'update',
         summary: project.status === 'archived' ? `Archived project ${quoteTitle(project.name)}` : `Restored project ${quoteTitle(project.name)}`,
       })
+      stampVersion(res, project.__v)
       res.json(publicProject(project))
     }),
   )

@@ -1,4 +1,5 @@
 import mongoose, { Schema, model, type HydratedDocument, type InferSchemaType } from 'mongoose'
+import { wordList } from '../../shared/search.ts'
 import { slowQueries } from './slow.ts'
 
 const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000
@@ -26,10 +27,15 @@ const projectSchema = new Schema(
     name: { type: String, required: true },
     description: { type: String, default: '' },
     status: { type: String, enum: ['active', 'archived'], default: 'active', required: true },
+    searchWords: { type: [String] },
   },
-  { timestamps: true },
+  { timestamps: true, optimisticConcurrency: true },
 )
+projectSchema.pre('save', function () {
+  this.searchWords = wordList(this.name, this.description)
+})
 projectSchema.index({ userId: 1, status: 1, updatedAt: -1 })
+projectSchema.index({ userId: 1, searchWords: 1 }, { name: 'ProjectSearchWords' })
 projectSchema.index(
   { userId: 1, name: 'text', description: 'text' },
   { weights: { name: 5, description: 1 }, name: 'ProjectTextIndex' },
@@ -41,7 +47,7 @@ const labelSchema = new Schema(
     name: { type: String, required: true },
     color: { type: String, required: true },
   },
-  { timestamps: true },
+  { timestamps: true, optimisticConcurrency: true },
 )
 labelSchema.index({ userId: 1, name: 1 }, { unique: true })
 
@@ -59,9 +65,13 @@ const taskSchema = new Schema(
     order: { type: Number, required: true },
     // Client-generated id so a retried or replayed create returns the same task.
     clientId: { type: String },
+    searchWords: { type: [String] },
   },
-  { timestamps: true },
+  { timestamps: true, optimisticConcurrency: true },
 )
+taskSchema.pre('save', function () {
+  this.searchWords = wordList(this.title)
+})
 taskSchema.index(
   { userId: 1, clientId: 1 },
   { unique: true, partialFilterExpression: { clientId: { $type: 'string' } } },
@@ -72,6 +82,7 @@ taskSchema.index({ userId: 1, completedOn: 1 })
 taskSchema.index({ userId: 1, projectId: 1, order: 1, createdAt: 1, _id: 1 })
 taskSchema.index({ userId: 1, completed: 1, dueDate: 1 })
 taskSchema.index({ userId: 1, title: 'text' }, { name: 'TaskTextIndex' })
+taskSchema.index({ userId: 1, searchWords: 1 }, { name: 'TaskSearchWords' })
 
 const noteSchema = new Schema(
   {
@@ -79,11 +90,16 @@ const noteSchema = new Schema(
     projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true },
     title: { type: String, required: true },
     body: { type: String, default: '' },
+    searchWords: { type: [String] },
   },
-  { timestamps: true },
+  { timestamps: true, optimisticConcurrency: true },
 )
+noteSchema.pre('save', function () {
+  this.searchWords = wordList(this.title, this.body)
+})
 noteSchema.index({ userId: 1, projectId: 1, updatedAt: -1 })
 noteSchema.index({ userId: 1, updatedAt: -1 })
+noteSchema.index({ userId: 1, searchWords: 1 }, { name: 'NoteSearchWords' })
 noteSchema.index(
   { userId: 1, title: 'text', body: 'text' },
   { weights: { title: 5, body: 1 }, name: 'NoteTextIndex' },

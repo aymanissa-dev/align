@@ -37,8 +37,15 @@ const COMMON = new Set([
   'charlie',
 ])
 
-export const MEDIUM_PASSWORD_MESSAGE =
-  'Use at least 10 characters, or a stronger mix of letters, numbers, and symbols.'
+/**
+ * 10+ characters always passes. Under 10, the score must be at least 2:
+ * 8–9 characters need two classes, and shorter passwords need three
+ * (lowercase, uppercase, numbers, symbols).
+ */
+export const MEDIUM_PASSWORD_HINT =
+  'Use 10+ characters. Under 10, mix at least two of lowercase, uppercase, numbers, and symbols — three if under 8.'
+
+export const MEDIUM_PASSWORD_MESSAGE = MEDIUM_PASSWORD_HINT
 
 export function passwordScore(password: string): 0 | 1 | 2 | 3 | 4 {
   if (!password) return 0

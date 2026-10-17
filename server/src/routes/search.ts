@@ -1,9 +1,12 @@
 import { Router } from 'express'
+import { relevanceScore, searchTokens } from '../../../shared/search.ts'
+import { ensureSearchWords } from '../db.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { Note, Project, Task } from '../models.ts'
 import { publicProject } from '../serialize.ts'
 
 const RESULT_LIMIT = 20
+const CANDIDATE_LIMIT = 60
 const TIME_MS = 800
 
 function queryText(value: unknown): string {
@@ -11,19 +14,21 @@ function queryText(value: unknown): string {
   return value.trim().slice(0, 200)
 }
 
-function textSearch(value: string): string | null {
-  const cleaned = value
-    .replace(/[^\p{L}\p{N}\s'-]/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  if (cleaned.length < 3) return null
-  return cleaned
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-const score = { score: { $meta: 'textScore' as const } }
-const projectFields = { name: 1, description: 1, status: 1, createdAt: 1, updatedAt: 1, ...score }
-const taskFields = { projectId: 1, title: 1, completed: 1, ...score }
-const noteFields = { projectId: 1, title: 1, body: 1, ...score }
+/** Every token is a case-sensitive prefix of a lowercase searchWords entry, ANDed. */
+function tokenFilter(userId: string, tokens: string[]) {
+  return {
+    userId,
+    $and: tokens.map((token) => ({ searchWords: { $regex: `^${escapeRegExp(token)}` } })),
+  }
+}
+
+function byScore<T extends { score: number }>(items: T[]): T[] {
+  return [...items].sort((a, b) => b.score - a.score).slice(0, RESULT_LIMIT)
+}
 
 export function searchRouter(): Router {
   const router = Router()
@@ -32,31 +37,29 @@ export function searchRouter(): Router {
   router.get(
     '/',
     asyncHandler(async (req, res) => {
-      const text = textSearch(queryText(req.query.q))
-      if (!text) {
+      const tokens = searchTokens(queryText(req.query.q))
+      if (!tokens) {
         res.json({ projects: [], tasks: [], notes: [] })
         return
       }
 
+      await ensureSearchWords()
       const userId = currentUserId(req)
-      const search = { $search: text }
+      const filter = tokenFilter(userId, tokens)
       const [projects, tasks, notes] = await Promise.all([
-        Project.find({ userId, $text: search })
-          .select(projectFields)
-          .sort({ score: { $meta: 'textScore' } })
-          .limit(RESULT_LIMIT)
+        Project.find(filter)
+          .select('name description status createdAt updatedAt __v')
+          .limit(CANDIDATE_LIMIT)
           .maxTimeMS(TIME_MS)
           .lean(),
-        Task.find({ userId, $text: search })
-          .select(taskFields)
-          .sort({ score: { $meta: 'textScore' } })
-          .limit(RESULT_LIMIT)
+        Task.find(filter)
+          .select('projectId title completed')
+          .limit(CANDIDATE_LIMIT)
           .maxTimeMS(TIME_MS)
           .lean(),
-        Note.find({ userId, $text: search })
-          .select(noteFields)
-          .sort({ score: { $meta: 'textScore' } })
-          .limit(RESULT_LIMIT)
+        Note.find(filter)
+          .select('projectId title body')
+          .limit(CANDIDATE_LIMIT)
           .maxTimeMS(TIME_MS)
           .lean(),
       ])
@@ -68,34 +71,61 @@ export function searchRouter(): Router {
           : await Project.find({ userId, _id: { $in: projectIds } }).select('name').maxTimeMS(TIME_MS).lean()
       const names = new Map(named.map((project) => [project._id.toString(), project.name]))
 
-      res.json({
-        projects: projects.map(publicProject),
-        tasks: tasks.flatMap((task) => {
+      const rankedProjects = byScore(
+        projects.map((project) => ({
+          project,
+          score: relevanceScore(tokens, [
+            { text: project.name, weight: 5 },
+            { text: project.description, weight: 1 },
+          ]),
+        })),
+      )
+      const rankedTasks = byScore(
+        tasks.flatMap((task) => {
           const projectName = names.get(task.projectId.toString())
           if (!projectName) return []
           return [
             {
-              id: task._id.toString(),
-              projectId: task.projectId.toString(),
+              task,
               projectName,
-              title: task.title,
-              completed: task.completed,
+              score: relevanceScore(tokens, [{ text: task.title, weight: 5 }]),
             },
           ]
         }),
-        notes: notes.flatMap((note) => {
+      )
+      const rankedNotes = byScore(
+        notes.flatMap((note) => {
           const projectName = names.get(note.projectId.toString())
           if (!projectName) return []
           return [
             {
-              id: note._id.toString(),
-              projectId: note.projectId.toString(),
+              note,
               projectName,
-              title: note.title,
-              body: note.body,
+              score: relevanceScore(tokens, [
+                { text: note.title, weight: 5 },
+                { text: note.body, weight: 1 },
+              ]),
             },
           ]
         }),
+      )
+
+      res.json({
+        projects: rankedProjects.map((item) => publicProject(item.project)),
+        tasks: rankedTasks.map((item) => ({
+          id: item.task._id.toString(),
+          projectId: item.task.projectId.toString(),
+          projectName: item.projectName,
+          title: item.task.title,
+          completed: item.task.completed,
+        })),
+        notes: rankedNotes.map((item) => ({
+          id: item.note._id.toString(),
+          projectId: item.note.projectId.toString(),
+          projectName: item.projectName,
+          title: item.note.title,
+          body: item.note.body,
+        })),
       })
     }),
   )

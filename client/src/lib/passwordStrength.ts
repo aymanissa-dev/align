@@ -1,6 +1,6 @@
 import { passwordScore } from '../../../shared/passwordPolicy.ts'
 
-export { isMediumPassword, MEDIUM_PASSWORD_MESSAGE, passwordScore } from '../../../shared/passwordPolicy.ts'
+export { isMediumPassword, MEDIUM_PASSWORD_HINT, MEDIUM_PASSWORD_MESSAGE, passwordScore } from '../../../shared/passwordPolicy.ts'
 
 export type PasswordStrength = {
   score: 0 | 1 | 2 | 3 | 4

@@ -27,7 +27,7 @@ export function ProjectsPage() {
   })
 
   const archive = useMutation({
-    mutationFn: (id: string) => api.archiveProject(id),
+    mutationFn: (input: { id: string; version?: number }) => api.archiveProject(input.id, { version: input.version }),
     onSuccess: async (project) => {
       await invalidateWorkspace()
       toast(project.status === 'archived' ? 'Project archived' : 'Project restored')
@@ -117,7 +117,7 @@ export function ProjectsPage() {
                   </div>
                   <div className="flex shrink-0 gap-4">
                     <TextButton onClick={() => setEditing(project)}>Edit</TextButton>
-                    <TextButton onClick={() => archive.mutate(project.id)} disabled={archive.isPending}>
+                    <TextButton onClick={() => archive.mutate({ id: project.id, version: project.version })} disabled={archive.isPending}>
                       {project.status === 'active' ? 'Archive' : 'Restore'}
                     </TextButton>
                     <TextButton onClick={() => setDeleting(project)}>Delete</TextButton>

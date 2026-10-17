@@ -37,7 +37,7 @@ function pass(name) {
 
 try {
   await page.goto(`${base}/register`)
-  await page.getByText('At least 10 characters, or a stronger mix.').waitFor()
+  await page.getByText('Use 10+ characters. Under 10, mix at least two of lowercase, uppercase, numbers, and symbols — three if under 8.').waitFor()
   pass('password hint')
   await page.locator('#name').fill('E2E Owner')
   await page.locator('#email').fill(email)
@@ -158,6 +158,59 @@ try {
   await page.getByText(renamedTask).waitFor()
   pass('search')
 
+  await page.goto(projectUrl)
+  await page.getByRole('tab', { name: 'Tasks' }).click()
+  const overdueTitle = `R2 overdue ${stamp}`
+  const futureTitle = `R2 future ${stamp}`
+  await page.getByLabel('Task title').fill(overdueTitle)
+  await page.getByRole('button', { name: 'Add', exact: true }).click()
+  await page.getByText(overdueTitle).waitFor()
+  await page.getByLabel('Task title').fill(futureTitle)
+  await page.getByRole('button', { name: 'Add', exact: true }).click()
+  await page.getByText(futureTitle).waitFor()
+  await page.locator('#sidebar-search').fill(`R2 ov ${stamp}`)
+  await page.waitForURL(/\/search\?/)
+  await page.getByText(overdueTitle).waitFor()
+  await page.getByText(futureTitle).waitFor({ state: 'hidden' })
+  pass('multi-word search')
+
+  const conflictTitle = `Conflict base ${stamp}`
+  const conflictNext = `Title from A ${stamp}`
+  await page.goto(projectUrl)
+  await page.getByRole('tab', { name: 'Tasks' }).click()
+  await page.getByLabel('Task title').fill(conflictTitle)
+  await page.getByRole('button', { name: 'Add', exact: true }).click()
+  await page.getByText(conflictTitle).waitFor()
+  const stale = await context.newPage()
+  const watcher = await context.newPage()
+  stale.setDefaultTimeout(20_000)
+  watcher.setDefaultTimeout(20_000)
+  await stale.goto(projectUrl)
+  await watcher.goto(projectUrl)
+  await stale.getByText(conflictTitle).waitFor()
+  await watcher.getByText(conflictTitle).waitFor()
+  await stale.getByRole('button', { name: `Edit “${conflictTitle}”` }).click()
+  await page.getByRole('button', { name: `Edit “${conflictTitle}”` }).click()
+  await page.getByRole('listitem').getByLabel('Task title').fill(conflictNext)
+  await page.getByRole('listitem').getByLabel('Priority').selectOption('high')
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await page.getByText(conflictNext).waitFor()
+  await watcher.getByText(conflictNext).waitFor()
+  await stale.getByRole('listitem').getByLabel('Priority').selectOption('low')
+  await stale.getByRole('button', { name: 'Save', exact: true }).click()
+  await stale.getByRole('dialog', { name: 'This was changed elsewhere' }).waitFor()
+  const during = await (await context.request.get(`${base}/api/projects/${project.id}/tasks`)).json()
+  const duringTask = during.find((task) => task.title === conflictNext)
+  if (!duringTask || duringTask.priority !== 'high') throw new Error(`stale write landed ${JSON.stringify(during)}`)
+  await stale.getByRole('button', { name: 'Overwrite' }).click()
+  await stale.getByText(conflictNext).waitFor()
+  const after = await (await context.request.get(`${base}/api/projects/${project.id}/tasks`)).json()
+  const afterTask = after.find((task) => task.title === conflictNext)
+  if (!afterTask || afterTask.priority !== 'low') throw new Error(`overwrite ${JSON.stringify(afterTask)}`)
+  await stale.close()
+  await watcher.close()
+  pass('two-tab conflict')
+
   await page.getByRole('button', { name: /Notifications/ }).click()
   await page.getByRole('button', { name: `Mark “${renamedTask}” read` }).click()
   pass('notification')
@@ -173,6 +226,27 @@ try {
   await page2.goto(`${base}/settings`)
   if ((await page2.locator('#profile-name').inputValue()) !== profileName) throw new Error('second tab name')
   pass('settings')
+
+  const probeStart = Date.now()
+  const probeHits = []
+  const onProbe = (request) => {
+    if (new URL(request.url()).pathname === '/api/health') probeHits.push(Date.now())
+  }
+  page.on('request', onProbe)
+  await context.setOffline(true)
+  await page.evaluate(() => window.dispatchEvent(new Event('offline')))
+  await page.getByText("You're offline.").waitFor()
+  await page.waitForTimeout(7500)
+  page.off('request', onProbe)
+  await context.setOffline(false)
+  await page.evaluate(() => window.dispatchEvent(new Event('online')))
+  const gaps = probeHits.map((hit, index) => (index === 0 ? 0 : hit - probeHits[index - 1])).slice(1)
+  if (probeHits.length < 3 || probeHits.length > 7) {
+    throw new Error(`probe count ${probeHits.length} in ${Date.now() - probeStart}ms gaps ${gaps.join(',')}`)
+  }
+  if (gaps.some((gap) => gap < 700)) throw new Error(`probe gaps too small ${gaps.join(',')}`)
+  if (gaps.length >= 2 && gaps[1] + 200 < gaps[0]) throw new Error(`probe did not back off ${gaps.join(',')}`)
+  pass('probe backoff')
 
   await page.goto(projectUrl)
   await page.getByRole('button', { name: `Delete “${renamedTask}”` }).click()

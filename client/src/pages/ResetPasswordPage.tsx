@@ -6,7 +6,7 @@ import { AuthFrame } from '../components/AuthFrame.tsx'
 import { PasswordMeter } from '../components/PasswordMeter.tsx'
 import { Button, Field, Input } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
-import { isMediumPassword, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
+import { isMediumPassword, MEDIUM_PASSWORD_HINT, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
 export function ResetPasswordPage() {
@@ -49,7 +49,7 @@ export function ResetPasswordPage() {
   return (
     <AuthFrame title="Choose a new password" lede="This replaces the password on your account.">
       <form onSubmit={onSubmit} className="space-y-4" noValidate>
-        <Field label="New password" htmlFor="password" hint="At least 10 characters, or a stronger mix." error={error}>
+        <Field label="New password" htmlFor="password" hint={MEDIUM_PASSWORD_HINT} error={error}>
           <Input
             id="password"
             type="password"

@@ -21,6 +21,7 @@ import type {
   User,
   VerifyLink,
   WhiteboardScene,
+  WriteOpts,
 } from './types.ts'
 
 const OFFLINE_MESSAGE = "You're offline. This change is saved on this device and will sync when you reconnect."
@@ -101,7 +102,7 @@ async function fetchResponse(path: string, init: RequestInit = {}, refreshed = f
       if (canQueue) {
         markUnreachable()
         try {
-          enqueueWrite({ path, method, body })
+          enqueueWrite({ path, method, body, match: headers.get('If-Match') ?? undefined })
         } catch {
           throw new ApiError(0, "You're offline, and this change could not be saved on this device.")
         }
@@ -176,6 +177,13 @@ async function collectPages<T>(path: string, init?: RequestInit): Promise<T[]> {
   return all
 }
 
+function withMatch(init: RequestInit, opts?: WriteOpts): RequestInit {
+  if (!opts || (opts.version === undefined && !opts.overwrite)) return init
+  const headers = new Headers(init.headers)
+  headers.set('If-Match', opts.overwrite ? '*' : `W/"${opts.version}"`)
+  return { ...init, headers }
+}
+
 function withQuery(path: string, params: Record<string, string | undefined>): string {
   const search = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
@@ -244,11 +252,11 @@ export const httpApi = {
   getProject(id) {
     return request<Project>(`/api/projects/${id}`)
   },
-  updateProject(id, input) {
-    return request<Project>(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(input) })
+  updateProject(id, input, opts) {
+    return request<Project>(`/api/projects/${id}`, withMatch({ method: 'PATCH', body: JSON.stringify(input) }, opts))
   },
-  archiveProject(id) {
-    return request<Project>(`/api/projects/${id}/archive`, { method: 'PATCH' })
+  archiveProject(id, opts) {
+    return request<Project>(`/api/projects/${id}/archive`, withMatch({ method: 'PATCH' }, opts))
   },
   async deleteProject(id) {
     await request<void>(`/api/projects/${id}`, { method: 'DELETE' })
@@ -262,8 +270,8 @@ export const httpApi = {
       body: JSON.stringify({ ...input, clientId: input.clientId ?? crypto.randomUUID() }),
     })
   },
-  updateTask(id, input) {
-    return request<Task>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(input) })
+  updateTask(id, input, opts) {
+    return request<Task>(`/api/tasks/${id}`, withMatch({ method: 'PATCH', body: JSON.stringify(input) }, opts))
   },
   async deleteTask(id) {
     await request<void>(`/api/tasks/${id}`, { method: 'DELETE' })
@@ -274,8 +282,8 @@ export const httpApi = {
   createLabel(input) {
     return request<Label>('/api/labels', { method: 'POST', body: JSON.stringify(input) })
   },
-  updateLabel(id, input) {
-    return request<Label>(`/api/labels/${id}`, { method: 'PATCH', body: JSON.stringify(input) })
+  updateLabel(id, input, opts) {
+    return request<Label>(`/api/labels/${id}`, withMatch({ method: 'PATCH', body: JSON.stringify(input) }, opts))
   },
   async deleteLabel(id) {
     await request<void>(`/api/labels/${id}`, { method: 'DELETE' })
@@ -295,8 +303,8 @@ export const httpApi = {
   getNote(id) {
     return request<Note>(`/api/notes/${id}`)
   },
-  updateNote(id, input) {
-    return request<Note>(`/api/notes/${id}`, { method: 'PATCH', body: JSON.stringify(input) })
+  updateNote(id, input, opts) {
+    return request<Note>(`/api/notes/${id}`, withMatch({ method: 'PATCH', body: JSON.stringify(input) }, opts))
   },
   async deleteNote(id) {
     await request<void>(`/api/notes/${id}`, { method: 'DELETE' })

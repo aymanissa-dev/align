@@ -36,8 +36,8 @@ export function TodayPage() {
   })
 
   const plan = useMutation({
-    mutationFn: (input: { id: string; plannedFor: string | null }) =>
-      api.updateTask(input.id, { plannedFor: input.plannedFor }),
+    mutationFn: (input: { id: string; plannedFor: string | null; version?: number }) =>
+      api.updateTask(input.id, { plannedFor: input.plannedFor }, { version: input.version }),
     onMutate: async (input) => {
       await queryClient.cancelQueries({ queryKey: ['today', date] })
       const previous = queryClient.getQueryData<TodayData>(['today', date])
@@ -107,6 +107,7 @@ export function TodayPage() {
     plannedFor: task.plannedFor,
     completedOn: null,
     order: -1,
+    version: 0,
     createdAt: '',
     updatedAt: '',
   }))
@@ -121,7 +122,7 @@ export function TodayPage() {
   function onToggle(task: TodayTask) {
     if (task.id.startsWith('queued:')) return
     toggle.mutate(
-      { id: task.id, projectId: task.projectId, completed: task.completed },
+      { id: task.id, projectId: task.projectId, completed: task.completed, version: task.version },
       { onError: (error) => toast(errorMessage(error)) },
     )
   }
@@ -203,7 +204,7 @@ export function TodayPage() {
                   <button
                     type="button"
                     className="focus-ring inline-flex min-h-11 items-center px-2 text-xs text-neutral-800 hover:text-neutral-950"
-                    onClick={() => plan.mutate({ id: task.id, plannedFor: null })}
+                    onClick={() => plan.mutate({ id: task.id, plannedFor: null, version: task.version })}
                   >
                     Remove
                   </button>
@@ -225,7 +226,7 @@ export function TodayPage() {
                 <button
                   type="button"
                   className="focus-ring inline-flex min-h-11 items-center px-2 text-xs text-neutral-800 hover:text-neutral-950"
-                  onClick={() => plan.mutate({ id: task.id, plannedFor: date })}
+                  onClick={() => plan.mutate({ id: task.id, plannedFor: date, version: task.version })}
                 >
                   Today
                 </button>
@@ -241,7 +242,7 @@ export function TodayPage() {
                 <button
                   type="button"
                   className="focus-ring inline-flex min-h-11 items-center px-2 text-xs text-neutral-800 hover:text-neutral-950"
-                  onClick={() => plan.mutate({ id: task.id, plannedFor: date })}
+                  onClick={() => plan.mutate({ id: task.id, plannedFor: date, version: task.version })}
                 >
                   Keep today
                 </button>
@@ -258,7 +259,7 @@ export function TodayPage() {
                   <button
                     type="button"
                     className="focus-ring inline-flex min-h-11 items-center px-2 text-xs text-neutral-800 hover:text-neutral-950"
-                    onClick={() => plan.mutate({ id: task.id, plannedFor: date })}
+                    onClick={() => plan.mutate({ id: task.id, plannedFor: date, version: task.version })}
                   >
                     Move to today
                   </button>
@@ -277,7 +278,7 @@ export function TodayPage() {
                     <button
                       type="button"
                       className={cn(buttonClass('secondary'), 'min-h-11 px-3 text-xs')}
-                      onClick={() => plan.mutate({ id: task.id, plannedFor: date })}
+                      onClick={() => plan.mutate({ id: task.id, plannedFor: date, version: task.version })}
                     >
                       Today
                     </button>
@@ -285,7 +286,7 @@ export function TodayPage() {
                       type="button"
                       className={cn(buttonClass('primary'), 'min-h-11 px-3 text-xs')}
                       aria-label={`Add “${task.title}” for tomorrow`}
-                      onClick={() => plan.mutate({ id: task.id, plannedFor: tomorrow })}
+                      onClick={() => plan.mutate({ id: task.id, plannedFor: tomorrow, version: task.version })}
                     >
                       Add for tomorrow
                     </button>

@@ -5,7 +5,7 @@ import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { Project, Task } from '../models.ts'
 import { normalizeDueDate } from '../validate.ts'
 
-const FIELDS = 'projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt'
+const FIELDS = 'projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt __v'
 
 type TodayTask = {
   _id: Types.ObjectId
@@ -20,6 +20,7 @@ type TodayTask = {
   order: number
   createdAt: Date
   updatedAt: Date
+  __v?: number
 }
 
 function present(task: TodayTask, projectName: string) {
@@ -35,6 +36,7 @@ function present(task: TodayTask, projectName: string) {
     plannedFor: task.plannedFor,
     completedOn: task.completedOn,
     order: task.order,
+    version: typeof task.__v === 'number' ? task.__v : 0,
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),
   }

@@ -8,6 +8,7 @@ type ToggleTarget = {
   id: string
   projectId: string
   completed: boolean
+  version?: number
 }
 
 function byDue(a: OpenTask, b: OpenTask): number {
@@ -37,10 +38,14 @@ export function useToggleTask() {
 
   return useMutation({
     mutationFn: (target: ToggleTarget) =>
-      api.updateTask(target.id, {
-        completed: !target.completed,
-        completedOn: target.completed ? null : localISODate(),
-      }),
+      api.updateTask(
+        target.id,
+        {
+          completed: !target.completed,
+          completedOn: target.completed ? null : localISODate(),
+        },
+        { version: target.version },
+      ),
     onMutate: async (target) => {
       await queryClient.cancelQueries({ queryKey: ['tasks', target.projectId] })
       await queryClient.cancelQueries({ queryKey: ['dashboard'] })

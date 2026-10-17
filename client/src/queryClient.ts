@@ -1,10 +1,11 @@
 import { QueryClient } from '@tanstack/react-query'
 import { ApiError } from './api/errors.ts'
+import { broadcastWorkspaceChange } from './lib/dataChannel.ts'
 
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      refetchOnWindowFocus: false,
+      refetchOnWindowFocus: true,
       retry: (failureCount, error) => {
         if (error instanceof ApiError && error.status < 500) return false
         return failureCount < 1
@@ -17,7 +18,7 @@ export const queryClient = new QueryClient({
   },
 })
 
-export function invalidateWorkspace(): Promise<void> {
+function invalidateQueries(): Promise<void> {
   return Promise.all([
     queryClient.invalidateQueries({ queryKey: ['projects'] }),
     queryClient.invalidateQueries({ queryKey: ['project'] }),
@@ -31,4 +32,13 @@ export function invalidateWorkspace(): Promise<void> {
     queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
     queryClient.invalidateQueries({ queryKey: ['search'] }),
   ]).then(() => undefined)
+}
+
+export function invalidateWorkspace(): Promise<void> {
+  broadcastWorkspaceChange()
+  return invalidateQueries()
+}
+
+export function invalidateFromPeer(): Promise<void> {
+  return invalidateQueries()
 }

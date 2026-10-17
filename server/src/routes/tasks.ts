@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { quoteTitle, recordActivity } from '../activity.ts'
+import { assertVersion, expectedVersion, stampVersion } from '../concurrency.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { Notification } from '../models.ts'
 import { publicTask } from '../serialize.ts'
@@ -15,6 +16,7 @@ export function tasksRouter(): Router {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req)
       const task = await requireTask(userId, req.params.id)
+      assertVersion(task.__v, expectedVersion(req))
       const input = parseBody(taskPatchSchema, req.body)
       const wasCompleted = task.completed
       const planningOnly =
@@ -51,6 +53,7 @@ export function tasksRouter(): Router {
         summary: finished ? `Completed task ${quoteTitle(task.title)}` : `Updated task ${quoteTitle(task.title)}`,
       })
       if (task.completed) await Notification.deleteMany({ userId, taskId: task._id, kind: 'overdue' })
+      stampVersion(res, task.__v)
       res.json(publicTask(task))
     }),
   )

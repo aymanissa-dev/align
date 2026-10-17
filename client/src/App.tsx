@@ -5,6 +5,8 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from
 import { ConnectionStatus } from './components/ConnectionStatus.tsx'
 import { AppErrorBoundary } from './components/ErrorBoundary.tsx'
 import { subscribeSignedOut } from './lib/authChannel.ts'
+import { subscribeWorkspaceChange } from './lib/dataChannel.ts'
+import { invalidateFromPeer } from './queryClient.ts'
 import { forceSignOut } from './lib/forceSignOut.ts'
 import { AuthProvider } from './auth/AuthProvider.tsx'
 import { useAuth } from './auth/auth-context.ts'
@@ -51,6 +53,11 @@ function AuthBroadcast() {
       navigate('/login?signedOut=1', { replace: true })
     })
   }, [navigate])
+  return null
+}
+
+function DataBroadcast() {
+  useEffect(() => subscribeWorkspaceChange(() => void invalidateFromPeer()), [])
   return null
 }
 
@@ -132,6 +139,7 @@ export default function App() {
           <BrowserRouter>
             <ConnectionStatus />
             <AuthBroadcast />
+            <DataBroadcast />
             <AppErrorBoundary>
             <Routes>
               <Route

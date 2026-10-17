@@ -26,6 +26,33 @@ describe('tasks and notes', () => {
     expect((await agent.patch(`/api/tasks/${first.body.id}`).send({ completed: 'yes' })).status).toBe(400)
   })
 
+  it('rejects a stale task write and keeps fields the caller did not send', async () => {
+    const { agent } = await registerUser()
+    const project = await agent.post('/api/projects').send({ name: 'Conflict' })
+    const id = project.body.id as string
+    const created = await agent.post(`/api/projects/${id}/tasks`).send({ title: 'Original', priority: 'medium' })
+    expect(created.body.version).toBe(0)
+    const taskId = created.body.id as string
+
+    const saved = await agent
+      .patch(`/api/tasks/${taskId}`)
+      .set('If-Match', 'W/"0"')
+      .send({ title: 'Title from A', priority: 'high' })
+    expect(saved.status).toBe(200)
+    expect(saved.headers.etag).toBe('W/"1"')
+
+    const lost = await agent.patch(`/api/tasks/${taskId}`).set('If-Match', 'W/"0"').send({ priority: 'low' })
+    expect(lost.status).toBe(409)
+    expect(lost.body.error).toBe('This was changed elsewhere.')
+
+    const current = await agent.get(`/api/projects/${id}/tasks`)
+    expect(current.body[0]).toMatchObject({ title: 'Title from A', priority: 'high', version: 1 })
+
+    const overwrite = await agent.patch(`/api/tasks/${taskId}`).set('If-Match', '*').send({ priority: 'low' })
+    expect(overwrite.status).toBe(200)
+    expect(overwrite.body).toMatchObject({ title: 'Title from A', priority: 'low' })
+  })
+
   it('returns the existing task when a create is retried with the same clientId', async () => {
     const { agent } = await registerUser()
     const project = await agent.post('/api/projects').send({ name: 'Idem' })
@@ -74,6 +101,16 @@ describe('tasks and notes', () => {
     expect(one.body.body).toBe('Calm and specific.')
 
     expect((await agent.patch(`/api/notes/${named.body.id}`).send({ title: '   ' })).status).toBe(400)
+
+    const bumped = await agent.patch(`/api/notes/${named.body.id}`).set('If-Match', 'W/"0"').send({ body: 'Updated once.' })
+    expect(bumped.status).toBe(200)
+    const stale = await agent
+      .patch(`/api/notes/${named.body.id}`)
+      .set('If-Match', 'W/"0"')
+      .send({ body: 'stale' })
+    expect(stale.status).toBe(409)
+    expect(stale.body.error).toBe('This was changed elsewhere.')
+    expect((await agent.get(`/api/notes/${named.body.id}`)).body.body).toBe('Updated once.')
     expect((await agent.delete(`/api/notes/${named.body.id}`)).status).toBe(204)
     expect((await agent.get(`/api/notes/${named.body.id}`)).status).toBe(404)
   })

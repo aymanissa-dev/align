@@ -2,8 +2,11 @@ import { useState, type FormEvent } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/index.ts'
-import type { Project } from '../api/types.ts'
+import type { Project, ProjectPatch } from '../api/types.ts'
+import { ConflictDialog } from './ConflictDialog.tsx'
+import { isConflict } from '../lib/conflict.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
+import { projectFieldPatch } from '../lib/patch.ts'
 import { invalidateWorkspace } from '../queryClient.ts'
 import { useToast } from './toast-context.ts'
 import { Button, Field, Input, Modal, Textarea } from './ui.tsx'
@@ -32,6 +35,7 @@ function ProjectForm({ project, onClose }: { project: Project | null; onClose: (
   const [description, setDescription] = useState(project?.description ?? '')
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
+  const [conflict, setConflict] = useState<ProjectPatch | null>(null)
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault()
@@ -45,7 +49,13 @@ function ProjectForm({ project, onClose }: { project: Project | null; onClose: (
     let inserted = false
     try {
       if (project) {
-        await api.updateProject(project.id, { name, description })
+        const patch = projectFieldPatch(project, { name: name.trim(), description })
+        if (Object.keys(patch).length === 0) {
+          onClose()
+          return
+        }
+        setConflict(null)
+        await api.updateProject(project.id, patch, { version: project.version })
         await invalidateWorkspace()
         toast('Project updated')
         onClose()
@@ -57,8 +67,9 @@ function ProjectForm({ project, onClose }: { project: Project | null; onClose: (
           id: tempId,
           name: trimmed,
           description: about,
-          status: 'active',
-          createdAt: new Date().toISOString(),
+        status: 'active',
+        version: 0,
+        createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         }
         previous = queryClient.getQueryData<Project[]>(['projects', 'active'])
@@ -77,6 +88,25 @@ function ProjectForm({ project, onClose }: { project: Project | null; onClose: (
       }
     } catch (caught) {
       if (inserted) queryClient.setQueryData(['projects', 'active'], previous)
+      if (project && isConflict(caught)) {
+        setConflict(projectFieldPatch(project, { name: name.trim(), description }))
+        return
+      }
+      setError(errorMessage(caught))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  async function overwrite() {
+    if (!project || !conflict) return
+    setPending(true)
+    try {
+      await api.updateProject(project.id, conflict, { version: project.version, overwrite: true })
+      await invalidateWorkspace()
+      toast('Project updated')
+      onClose()
+    } catch (caught) {
       setError(errorMessage(caught))
     } finally {
       setPending(false)
@@ -84,6 +114,19 @@ function ProjectForm({ project, onClose }: { project: Project | null; onClose: (
   }
 
   return (
+    <>
+    <ConflictDialog
+      open={conflict !== null}
+      pending={pending}
+      onClose={() => setConflict(null)}
+      onReload={() => {
+        setConflict(null)
+        void queryClient.invalidateQueries({ queryKey: ['project', project?.id] })
+        void queryClient.invalidateQueries({ queryKey: ['projects'] })
+        onClose()
+      }}
+      onOverwrite={() => void overwrite()}
+    />
     <form onSubmit={onSubmit} className="space-y-4" noValidate>
       <Field label="Name" htmlFor="project-name" error={error}>
         <Input
@@ -114,5 +157,6 @@ function ProjectForm({ project, onClose }: { project: Project | null; onClose: (
         </Button>
       </div>
     </form>
+    </>
   )
 }

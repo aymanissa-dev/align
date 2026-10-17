@@ -1,5 +1,6 @@
 import type { ErrorRequestHandler, NextFunction, Request, RequestHandler, Response } from 'express'
 import { ZodError } from 'zod'
+import { CONFLICT_MESSAGE } from '../../shared/contract.ts'
 import { HttpError } from './errors.ts'
 import { Session, User } from './models.ts'
 import { accessFromRequest } from './session.ts'
@@ -73,6 +74,10 @@ export const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
       return
     }
     res.status(409).json({ error: 'That record already exists.' })
+    return
+  }
+  if (isRecord(error) && error.name === 'VersionError') {
+    res.status(409).json({ error: CONFLICT_MESSAGE })
     return
   }
   if (isRecord(error) && error.name === 'CastError') {

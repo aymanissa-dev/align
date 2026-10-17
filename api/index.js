@@ -8,6 +8,38 @@ import mongoose3 from "mongoose";
 // src/db.ts
 import mongoose2 from "mongoose";
 
+// ../shared/search.ts
+function searchTokens(value) {
+  const cleaned = value.replace(/[^\p{L}\p{N}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
+  if (cleaned.replace(/\s/g, "").length < 3) return null;
+  const tokens = cleaned.toLowerCase().split(/\s+/).filter((token) => token.length > 0);
+  return tokens.length > 0 ? tokens : null;
+}
+function wordList(...parts) {
+  const words = /* @__PURE__ */ new Set();
+  for (const part of parts) {
+    if (!part) continue;
+    for (const word of part.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+      if (word) words.add(word);
+    }
+  }
+  return [...words];
+}
+function relevanceScore(tokens, fields) {
+  let score = 0;
+  for (const token of tokens) {
+    let best = 0;
+    for (const field of fields) {
+      for (const word of wordList(field.text)) {
+        if (word === token) best = Math.max(best, 10 * field.weight);
+        else if (word.startsWith(token)) best = Math.max(best, 4 * field.weight + Math.min(token.length, 8));
+      }
+    }
+    score += best;
+  }
+  return score;
+}
+
 // src/errors.ts
 var HttpError = class extends Error {
   status;
@@ -63,11 +95,16 @@ var projectSchema = new Schema(
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     name: { type: String, required: true },
     description: { type: String, default: "" },
-    status: { type: String, enum: ["active", "archived"], default: "active", required: true }
+    status: { type: String, enum: ["active", "archived"], default: "active", required: true },
+    searchWords: { type: [String] }
   },
-  { timestamps: true }
+  { timestamps: true, optimisticConcurrency: true }
 );
+projectSchema.pre("save", function() {
+  this.searchWords = wordList(this.name, this.description);
+});
 projectSchema.index({ userId: 1, status: 1, updatedAt: -1 });
+projectSchema.index({ userId: 1, searchWords: 1 }, { name: "ProjectSearchWords" });
 projectSchema.index(
   { userId: 1, name: "text", description: "text" },
   { weights: { name: 5, description: 1 }, name: "ProjectTextIndex" }
@@ -78,7 +115,7 @@ var labelSchema = new Schema(
     name: { type: String, required: true },
     color: { type: String, required: true }
   },
-  { timestamps: true }
+  { timestamps: true, optimisticConcurrency: true }
 );
 labelSchema.index({ userId: 1, name: 1 }, { unique: true });
 var taskSchema = new Schema(
@@ -94,10 +131,14 @@ var taskSchema = new Schema(
     completedOn: { type: String, default: null },
     order: { type: Number, required: true },
     // Client-generated id so a retried or replayed create returns the same task.
-    clientId: { type: String }
+    clientId: { type: String },
+    searchWords: { type: [String] }
   },
-  { timestamps: true }
+  { timestamps: true, optimisticConcurrency: true }
 );
+taskSchema.pre("save", function() {
+  this.searchWords = wordList(this.title);
+});
 taskSchema.index(
   { userId: 1, clientId: 1 },
   { unique: true, partialFilterExpression: { clientId: { $type: "string" } } }
@@ -108,17 +149,23 @@ taskSchema.index({ userId: 1, completedOn: 1 });
 taskSchema.index({ userId: 1, projectId: 1, order: 1, createdAt: 1, _id: 1 });
 taskSchema.index({ userId: 1, completed: 1, dueDate: 1 });
 taskSchema.index({ userId: 1, title: "text" }, { name: "TaskTextIndex" });
+taskSchema.index({ userId: 1, searchWords: 1 }, { name: "TaskSearchWords" });
 var noteSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     projectId: { type: Schema.Types.ObjectId, ref: "Project", required: true },
     title: { type: String, required: true },
-    body: { type: String, default: "" }
+    body: { type: String, default: "" },
+    searchWords: { type: [String] }
   },
-  { timestamps: true }
+  { timestamps: true, optimisticConcurrency: true }
 );
+noteSchema.pre("save", function() {
+  this.searchWords = wordList(this.title, this.body);
+});
 noteSchema.index({ userId: 1, projectId: 1, updatedAt: -1 });
 noteSchema.index({ userId: 1, updatedAt: -1 });
+noteSchema.index({ userId: 1, searchWords: 1 }, { name: "NoteSearchWords" });
 noteSchema.index(
   { userId: 1, title: "text", body: "text" },
   { weights: { title: 5, body: 1 }, name: "NoteTextIndex" }
@@ -236,6 +283,32 @@ function cache() {
   return globalCache.__alignMongoose;
 }
 var indexesReady = null;
+var wordsReady = null;
+async function fillSearchWords(model2, words) {
+  for (; ; ) {
+    const docs = await model2.find({ searchWords: { $exists: false } }).limit(200);
+    if (docs.length === 0) return;
+    await model2.bulkWrite(
+      docs.map((doc) => ({
+        updateOne: {
+          filter: { _id: doc._id },
+          update: { $set: { searchWords: words(doc) } }
+        }
+      }))
+    );
+  }
+}
+function ensureSearchWords() {
+  wordsReady ??= Promise.all([
+    fillSearchWords(Task, (doc) => wordList(doc.title)),
+    fillSearchWords(Note, (doc) => wordList(doc.title, doc.body)),
+    fillSearchWords(Project, (doc) => wordList(doc.name, doc.description))
+  ]).then(() => void 0).catch((error) => {
+    wordsReady = null;
+    throw error;
+  });
+  return wordsReady;
+}
 async function dropUnscopedText(collection, name) {
   let indexes;
   try {
@@ -276,6 +349,7 @@ function ensureIndexes() {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         await syncAllIndexes();
+        await ensureSearchWords();
         return;
       } catch (error) {
         last = error;
@@ -347,6 +421,9 @@ function privateRevalidate() {
 
 // src/middleware.ts
 import { ZodError } from "zod";
+
+// ../shared/contract.ts
+var CONFLICT_MESSAGE = "This was changed elsewhere.";
 
 // src/session.ts
 import { createHash, randomBytes } from "node:crypto";
@@ -521,6 +598,10 @@ var errorHandler = (error, _req, res, _next) => {
     res.status(409).json({ error: "That record already exists." });
     return;
   }
+  if (isRecord(error) && error.name === "VersionError") {
+    res.status(409).json({ error: CONFLICT_MESSAGE });
+    return;
+  }
   if (isRecord(error) && error.name === "CastError") {
     res.status(404).json({ error: "Not found." });
     return;
@@ -691,6 +772,9 @@ async function enforceAuthLimit(route, ip, email2) {
 function docId(doc) {
   return doc.id || doc._id.toString();
 }
+function versionOf(doc) {
+  return typeof doc.__v === "number" ? doc.__v : 0;
+}
 function publicUser(user) {
   return {
     id: user.id,
@@ -707,6 +791,7 @@ function publicProject(project) {
     name: project.name,
     description: project.description,
     status: project.status,
+    version: versionOf(project),
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString()
   };
@@ -716,6 +801,7 @@ function publicLabel(label) {
     id: docId(label),
     name: label.name,
     color: label.color,
+    version: versionOf(label),
     createdAt: label.createdAt.toISOString()
   };
 }
@@ -731,6 +817,7 @@ function publicTask(task) {
     plannedFor: task.plannedFor ?? null,
     completedOn: task.completedOn ?? null,
     order: task.order,
+    version: versionOf(task),
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString()
   };
@@ -763,6 +850,7 @@ function publicNote(note) {
     projectId: note.projectId.toString(),
     title: note.title,
     body: note.body,
+    version: versionOf(note),
     createdAt: note.createdAt.toISOString(),
     updatedAt: note.updatedAt.toISOString()
   };
@@ -834,21 +922,22 @@ var COMMON = /* @__PURE__ */ new Set([
   "hello",
   "charlie"
 ]);
-var MEDIUM_PASSWORD_MESSAGE = "Use at least 10 characters, or a stronger mix of letters, numbers, and symbols.";
+var MEDIUM_PASSWORD_HINT = "Use 10+ characters. Under 10, mix at least two of lowercase, uppercase, numbers, and symbols \u2014 three if under 8.";
+var MEDIUM_PASSWORD_MESSAGE = MEDIUM_PASSWORD_HINT;
 function passwordScore(password2) {
   if (!password2) return 0;
   const lower = password2.toLowerCase();
   if (COMMON.has(lower) || /^(.)\1+$/.test(password2)) return 0;
-  let score2 = 0;
-  if (password2.length >= 8) score2 += 1;
-  if (password2.length >= 12) score2 += 1;
+  let score = 0;
+  if (password2.length >= 8) score += 1;
+  if (password2.length >= 12) score += 1;
   const classes = Number(/[a-z]/.test(password2)) + Number(/[A-Z]/.test(password2)) + Number(/\d/.test(password2)) + Number(/[^A-Za-z0-9]/.test(password2));
-  if (classes >= 2) score2 += 1;
-  if (classes >= 3) score2 += 1;
+  if (classes >= 2) score += 1;
+  if (classes >= 3) score += 1;
   if (/^(?:0123|1234|2345|3456|4567|5678|6789|qwer|asdf|zxcv|abcd)/i.test(password2) && password2.length < 12) {
-    score2 = Math.min(score2, 1);
+    score = Math.min(score, 1);
   }
-  return Math.min(4, score2);
+  return Math.min(4, score);
 }
 function isMediumPassword(password2) {
   if (password2.length < 1 || password2.length > 128) return false;
@@ -1433,14 +1522,22 @@ function dashboardRouter() {
     "/",
     asyncHandler(async (req, res) => {
       const userId = new Types2.ObjectId(currentUserId(req));
-      const [projects, counts, dated, undated] = await Promise.all([
-        Project.find({ userId, status: "active" }).select("name description").sort({ updatedAt: -1 }).lean(),
+      const projects = await Project.find({ userId, status: "active" }).select("name description").sort({ updatedAt: -1 }).lean();
+      const activeIds = projects.map((project) => project._id);
+      const datedFilter = {
+        userId,
+        completed: false,
+        projectId: { $in: activeIds },
+        dueDate: { $gte: "0000-01-01" }
+      };
+      const [counts, dated, undated, datedOpenCount] = await Promise.all([
         Task.aggregate([
           { $match: { userId } },
           { $group: { _id: { projectId: "$projectId", completed: "$completed" }, n: { $sum: 1 } } }
         ]),
-        Task.find({ userId, completed: false, dueDate: { $gte: "0000-01-01" } }).select("title dueDate priority projectId").sort({ dueDate: 1, title: 1 }).limit(OPEN_LIMIT).lean(),
-        Task.find({ userId, completed: false, dueDate: null }).select("title dueDate priority projectId").sort({ title: 1 }).limit(OPEN_LIMIT).lean()
+        Task.find(datedFilter).select("title dueDate priority projectId").sort({ dueDate: 1, title: 1 }).limit(OPEN_LIMIT * 2).lean(),
+        Task.find({ userId, completed: false, projectId: { $in: activeIds }, dueDate: null }).select("title dueDate priority projectId").sort({ title: 1 }).limit(OPEN_LIMIT).lean(),
+        Task.countDocuments(datedFilter)
       ]);
       const names = new Map(projects.map((project) => [project._id.toString(), project.name]));
       const tally = /* @__PURE__ */ new Map();
@@ -1456,7 +1553,7 @@ function dashboardRouter() {
         if (!names.has(id)) continue;
         openTaskCount += bucket.total - bucket.done;
       }
-      const open = [...dated, ...undated].slice(0, OPEN_LIMIT).flatMap((task) => {
+      const open = [...dated, ...undated].flatMap((task) => {
         const projectName = names.get(task.projectId.toString());
         if (!projectName) return [];
         return [
@@ -1484,7 +1581,8 @@ function dashboardRouter() {
           };
         }),
         openTasks: open,
-        openTaskCount
+        openTaskCount,
+        datedOpenCount
       });
     })
   );
@@ -1505,6 +1603,24 @@ async function recordActivity(input) {
     type: input.type,
     summary: input.summary.slice(0, 240)
   });
+}
+
+// src/concurrency.ts
+function expectedVersion(req) {
+  const raw = req.get("If-Match");
+  if (!raw) return void 0;
+  const value = raw.trim();
+  if (value === "*") return "*";
+  const match = /^(?:W\/)?"(\d+)"$/.exec(value);
+  if (!match) throw new HttpError(400, "If-Match must be a version.");
+  return Number(match[1]);
+}
+function assertVersion(current, expected) {
+  if (expected === void 0 || expected === "*") return;
+  if ((current ?? 0) !== expected) throw new HttpError(409, CONFLICT_MESSAGE);
+}
+function stampVersion(res, version) {
+  res.set("ETag", `W/"${version ?? 0}"`);
 }
 
 // src/scope.ts
@@ -1556,7 +1672,7 @@ function labelsRouter() {
   router.get(
     "/",
     asyncHandler(async (req, res) => {
-      const labels = await Label.find({ userId: currentUserId(req) }).select("name color createdAt").sort({ name: 1 }).lean();
+      const labels = await Label.find({ userId: currentUserId(req) }).select("name color createdAt __v").sort({ name: 1 }).lean();
       res.json(labels.map(publicLabel));
     })
   );
@@ -1580,6 +1696,7 @@ function labelsRouter() {
         type: "create",
         summary: `Created label ${quoteTitle(label.name)}`
       });
+      stampVersion(res, label.__v);
       res.status(201).json(publicLabel(label));
     })
   );
@@ -1591,6 +1708,7 @@ function labelsRouter() {
       if (!labelId) throw new HttpError(404, "Label not found.");
       const label = await Label.findOne({ _id: labelId, userId });
       if (!label) throw new HttpError(404, "Label not found.");
+      assertVersion(label.__v, expectedVersion(req));
       const input = parseBody(labelPatchSchema, req.body);
       if (input.name !== void 0 && input.name.toLowerCase() !== label.name.toLowerCase()) {
         const duplicate = await Label.findOne({
@@ -1607,6 +1725,7 @@ function labelsRouter() {
         type: "update",
         summary: `Updated label ${quoteTitle(label.name)}`
       });
+      stampVersion(res, label.__v);
       res.json(publicLabel(label));
     })
   );
@@ -1640,7 +1759,7 @@ function notesRouter() {
   router.get(
     "/",
     asyncHandler(async (req, res) => {
-      const notes = await Note.find({ userId: currentUserId(req) }).select("projectId title body createdAt updatedAt").sort({ updatedAt: -1 }).lean();
+      const notes = await Note.find({ userId: currentUserId(req) }).select("projectId title body createdAt updatedAt __v").sort({ updatedAt: -1 }).lean();
       res.json(notes.map(publicNote));
     })
   );
@@ -1648,6 +1767,7 @@ function notesRouter() {
     "/:id",
     asyncHandler(async (req, res) => {
       const note = await requireNote(currentUserId(req), req.params.id);
+      stampVersion(res, note.__v);
       res.json(publicNote(note));
     })
   );
@@ -1656,6 +1776,7 @@ function notesRouter() {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req);
       const note = await requireNote(userId, req.params.id);
+      assertVersion(note.__v, expectedVersion(req));
       const input = parseBody(notePatchSchema, req.body);
       if (input.title !== void 0) note.title = input.title;
       if (input.body !== void 0) note.body = input.body;
@@ -1667,6 +1788,7 @@ function notesRouter() {
         type: "update",
         summary: `Updated note ${quoteTitle(note.title)}`
       });
+      stampVersion(res, note.__v);
       res.json(publicNote(note));
     })
   );
@@ -1951,7 +2073,7 @@ function projectsRouter() {
         }
         filter.status = status;
       }
-      const projects = await Project.find(filter).select("name description status createdAt updatedAt").sort({ updatedAt: -1 }).lean();
+      const projects = await Project.find(filter).select("name description status createdAt updatedAt __v").sort({ updatedAt: -1 }).lean();
       res.json(projects.map(publicProject));
     })
   );
@@ -1972,6 +2094,7 @@ function projectsRouter() {
         type: "create",
         summary: `Created project ${quoteTitle(project.name)}`
       });
+      stampVersion(res, project.__v);
       res.status(201).json(publicProject(project));
     })
   );
@@ -1983,7 +2106,7 @@ function projectsRouter() {
       const limit = pageLimit(req.query.limit);
       const cursor = afterTaskCursor(req.query.cursor);
       const base = { userId, projectId: project._id };
-      const tasks = await Task.find(cursor ? { $and: [base, afterTaskFilter(cursor)] } : base).select("projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt").sort({ order: 1, createdAt: 1, _id: 1 }).limit(limit + 1).lean();
+      const tasks = await Task.find(cursor ? { $and: [base, afterTaskFilter(cursor)] } : base).select("projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt __v").sort({ order: 1, createdAt: 1, _id: 1 }).limit(limit + 1).lean();
       const next = nextTaskCursor(tasks, limit);
       if (next) res.set("X-Next-Cursor", next);
       res.json(tasks.slice(0, limit).map(publicTask));
@@ -2025,6 +2148,7 @@ function projectsRouter() {
           type: "create",
           summary: `Created task ${quoteTitle(task.title)}`
         });
+        stampVersion(res, task.__v);
         res.status(201).json(publicTask(task));
       } catch (error) {
         if (input.clientId && isDuplicateKey(error)) {
@@ -2043,7 +2167,7 @@ function projectsRouter() {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req);
       const project = await requireProject(userId, req.params.id);
-      const notes = await Note.find({ userId, projectId: project._id }).select("projectId title body createdAt updatedAt").sort({ updatedAt: -1 }).lean();
+      const notes = await Note.find({ userId, projectId: project._id }).select("projectId title body createdAt updatedAt __v").sort({ updatedAt: -1 }).lean();
       res.json(notes.map(publicNote));
     })
   );
@@ -2066,6 +2190,7 @@ function projectsRouter() {
         type: "create",
         summary: `Created note ${quoteTitle(note.title)}`
       });
+      stampVersion(res, note.__v);
       res.status(201).json(publicNote(note));
     })
   );
@@ -2110,6 +2235,7 @@ function projectsRouter() {
     "/:id",
     asyncHandler(async (req, res) => {
       const project = await requireProject(currentUserId(req), req.params.id);
+      stampVersion(res, project.__v);
       res.json(publicProject(project));
     })
   );
@@ -2117,6 +2243,7 @@ function projectsRouter() {
     "/:id",
     asyncHandler(async (req, res) => {
       const project = await requireProject(currentUserId(req), req.params.id);
+      assertVersion(project.__v, expectedVersion(req));
       const input = parseBody(projectPatchSchema, req.body);
       if (input.name !== void 0) project.name = input.name;
       if (input.description !== void 0) project.description = input.description;
@@ -2127,6 +2254,7 @@ function projectsRouter() {
         type: "update",
         summary: `Updated project ${quoteTitle(project.name)}`
       });
+      stampVersion(res, project.__v);
       res.json(publicProject(project));
     })
   );
@@ -2134,6 +2262,7 @@ function projectsRouter() {
     "/:id/archive",
     asyncHandler(async (req, res) => {
       const project = await requireProject(currentUserId(req), req.params.id);
+      assertVersion(project.__v, expectedVersion(req));
       project.status = project.status === "active" ? "archived" : "active";
       await project.save();
       await recordActivity({
@@ -2142,6 +2271,7 @@ function projectsRouter() {
         type: "update",
         summary: project.status === "archived" ? `Archived project ${quoteTitle(project.name)}` : `Restored project ${quoteTitle(project.name)}`
       });
+      stampVersion(res, project.__v);
       res.json(publicProject(project));
     })
   );
@@ -2166,69 +2296,100 @@ function projectsRouter() {
 // src/routes/search.ts
 import { Router as Router7 } from "express";
 var RESULT_LIMIT = 20;
+var CANDIDATE_LIMIT = 60;
 var TIME_MS = 800;
 function queryText(value) {
   if (typeof value !== "string") return "";
   return value.trim().slice(0, 200);
 }
-function textSearch(value) {
-  const cleaned = value.replace(/[^\p{L}\p{N}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
-  if (cleaned.length < 3) return null;
-  return cleaned;
+function escapeRegExp2(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-var score = { score: { $meta: "textScore" } };
-var projectFields = { name: 1, description: 1, status: 1, createdAt: 1, updatedAt: 1, ...score };
-var taskFields = { projectId: 1, title: 1, completed: 1, ...score };
-var noteFields = { projectId: 1, title: 1, body: 1, ...score };
+function tokenFilter(userId, tokens) {
+  return {
+    userId,
+    $and: tokens.map((token) => ({ searchWords: { $regex: `^${escapeRegExp2(token)}` } }))
+  };
+}
+function byScore(items) {
+  return [...items].sort((a, b) => b.score - a.score).slice(0, RESULT_LIMIT);
+}
 function searchRouter() {
   const router = Router7();
   router.use(requireAuth);
   router.get(
     "/",
     asyncHandler(async (req, res) => {
-      const text2 = textSearch(queryText(req.query.q));
-      if (!text2) {
+      const tokens = searchTokens(queryText(req.query.q));
+      if (!tokens) {
         res.json({ projects: [], tasks: [], notes: [] });
         return;
       }
+      await ensureSearchWords();
       const userId = currentUserId(req);
-      const search = { $search: text2 };
+      const filter = tokenFilter(userId, tokens);
       const [projects, tasks, notes] = await Promise.all([
-        Project.find({ userId, $text: search }).select(projectFields).sort({ score: { $meta: "textScore" } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean(),
-        Task.find({ userId, $text: search }).select(taskFields).sort({ score: { $meta: "textScore" } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean(),
-        Note.find({ userId, $text: search }).select(noteFields).sort({ score: { $meta: "textScore" } }).limit(RESULT_LIMIT).maxTimeMS(TIME_MS).lean()
+        Project.find(filter).select("name description status createdAt updatedAt __v").limit(CANDIDATE_LIMIT).maxTimeMS(TIME_MS).lean(),
+        Task.find(filter).select("projectId title completed").limit(CANDIDATE_LIMIT).maxTimeMS(TIME_MS).lean(),
+        Note.find(filter).select("projectId title body").limit(CANDIDATE_LIMIT).maxTimeMS(TIME_MS).lean()
       ]);
       const projectIds = [...new Set([...tasks, ...notes].map((item) => item.projectId.toString()))];
       const named = projectIds.length === 0 ? [] : await Project.find({ userId, _id: { $in: projectIds } }).select("name").maxTimeMS(TIME_MS).lean();
       const names = new Map(named.map((project) => [project._id.toString(), project.name]));
-      res.json({
-        projects: projects.map(publicProject),
-        tasks: tasks.flatMap((task) => {
+      const rankedProjects = byScore(
+        projects.map((project) => ({
+          project,
+          score: relevanceScore(tokens, [
+            { text: project.name, weight: 5 },
+            { text: project.description, weight: 1 }
+          ])
+        }))
+      );
+      const rankedTasks = byScore(
+        tasks.flatMap((task) => {
           const projectName = names.get(task.projectId.toString());
           if (!projectName) return [];
           return [
             {
-              id: task._id.toString(),
-              projectId: task.projectId.toString(),
+              task,
               projectName,
-              title: task.title,
-              completed: task.completed
+              score: relevanceScore(tokens, [{ text: task.title, weight: 5 }])
             }
           ];
-        }),
-        notes: notes.flatMap((note) => {
+        })
+      );
+      const rankedNotes = byScore(
+        notes.flatMap((note) => {
           const projectName = names.get(note.projectId.toString());
           if (!projectName) return [];
           return [
             {
-              id: note._id.toString(),
-              projectId: note.projectId.toString(),
+              note,
               projectName,
-              title: note.title,
-              body: note.body
+              score: relevanceScore(tokens, [
+                { text: note.title, weight: 5 },
+                { text: note.body, weight: 1 }
+              ])
             }
           ];
         })
+      );
+      res.json({
+        projects: rankedProjects.map((item) => publicProject(item.project)),
+        tasks: rankedTasks.map((item) => ({
+          id: item.task._id.toString(),
+          projectId: item.task.projectId.toString(),
+          projectName: item.projectName,
+          title: item.task.title,
+          completed: item.task.completed
+        })),
+        notes: rankedNotes.map((item) => ({
+          id: item.note._id.toString(),
+          projectId: item.note.projectId.toString(),
+          projectName: item.projectName,
+          title: item.note.title,
+          body: item.note.body
+        }))
       });
     })
   );
@@ -2245,6 +2406,7 @@ function tasksRouter() {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req);
       const task = await requireTask(userId, req.params.id);
+      assertVersion(task.__v, expectedVersion(req));
       const input = parseBody(taskPatchSchema, req.body);
       const wasCompleted = task.completed;
       const planningOnly = input.plannedFor !== void 0 && input.title === void 0 && input.completed === void 0 && input.dueDate === void 0 && input.priority === void 0 && input.labelIds === void 0 && input.order === void 0 && input.completedOn === void 0;
@@ -2272,6 +2434,7 @@ function tasksRouter() {
         summary: finished ? `Completed task ${quoteTitle(task.title)}` : `Updated task ${quoteTitle(task.title)}`
       });
       if (task.completed) await Notification.deleteMany({ userId, taskId: task._id, kind: "overdue" });
+      stampVersion(res, task.__v);
       res.json(publicTask(task));
     })
   );
@@ -2299,7 +2462,7 @@ function tasksRouter() {
 
 // src/routes/today.ts
 import { Router as Router9 } from "express";
-var FIELDS = "projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt";
+var FIELDS = "projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt __v";
 function present2(task, projectName) {
   return {
     id: task._id.toString(),
@@ -2313,6 +2476,7 @@ function present2(task, projectName) {
     plannedFor: task.plannedFor,
     completedOn: task.completedOn,
     order: task.order,
+    version: typeof task.__v === "number" ? task.__v : 0,
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString()
   };

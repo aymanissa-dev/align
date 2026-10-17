@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/auth-context.ts'
@@ -23,6 +24,7 @@ export function DashboardPage() {
     queryKey: ['dashboard'],
     queryFn: ({ signal }) => api.getDashboard({ signal }),
   })
+  const [showAllDated, setShowAllDated] = useState(false)
 
   if (!user) return null
   if (dashboard.isLoading) return <ListSkeleton />
@@ -42,7 +44,10 @@ export function DashboardPage() {
   }
 
   const completed = projects.reduce((sum, project) => sum + project.completedCount, 0)
-  const upcoming = openTasks.filter((task) => isUpcoming(task.dueDate))
+  const dated = openTasks.filter((task) => task.dueDate)
+  const upcoming = dated.filter((task) => isUpcoming(task.dueDate))
+  const datedOpenCount = dashboard.data.datedOpenCount ?? dated.length
+  const shown = showAllDated ? dated : upcoming
 
   return (
     <div>
@@ -80,13 +85,13 @@ export function DashboardPage() {
         <section className="mt-8 border border-neutral-200">
           <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
             <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Upcoming</h2>
-            <Badge>{upcoming.length}</Badge>
+            <Badge>{showAllDated ? datedOpenCount : upcoming.length}</Badge>
           </div>
-          {upcoming.length === 0 ? (
+          {shown.length === 0 ? (
             <p className="px-4 py-6 text-sm text-neutral-500">Nothing overdue or due in the next week.</p>
           ) : (
             <ul>
-              {upcoming.map((task) => (
+              {shown.map((task) => (
                 <li key={task.id} className="flex items-start gap-3 border-b border-neutral-200 px-4 py-3 last:border-b-0">
                   <CheckButton
                     checked={task.completed}
@@ -109,6 +114,17 @@ export function DashboardPage() {
               ))}
             </ul>
           )}
+          {!showAllDated && datedOpenCount > upcoming.length ? (
+            <div className="border-t border-neutral-200 px-4 py-3">
+              <button
+                type="button"
+                className="focus-ring text-sm text-neutral-950 underline underline-offset-4"
+                onClick={() => setShowAllDated(true)}
+              >
+                View all ({datedOpenCount})
+              </button>
+            </div>
+          ) : null}
         </section>
 
         <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">

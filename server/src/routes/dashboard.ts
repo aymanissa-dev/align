@@ -26,22 +26,30 @@ export function dashboardRouter(): Router {
     '/',
     asyncHandler(async (req, res) => {
       const userId = new Types.ObjectId(currentUserId(req))
-      const [projects, counts, dated, undated] = await Promise.all([
-        Project.find({ userId, status: 'active' }).select('name description').sort({ updatedAt: -1 }).lean(),
+      const projects = await Project.find({ userId, status: 'active' }).select('name description').sort({ updatedAt: -1 }).lean()
+      const activeIds = projects.map((project) => project._id)
+      const datedFilter = {
+        userId,
+        completed: false,
+        projectId: { $in: activeIds },
+        dueDate: { $gte: '0000-01-01' },
+      }
+      const [counts, dated, undated, datedOpenCount] = await Promise.all([
         Task.aggregate<CountRow>([
           { $match: { userId } },
           { $group: { _id: { projectId: '$projectId', completed: '$completed' }, n: { $sum: 1 } } },
         ]),
-        Task.find({ userId, completed: false, dueDate: { $gte: '0000-01-01' } })
+        Task.find(datedFilter)
           .select('title dueDate priority projectId')
           .sort({ dueDate: 1, title: 1 })
-          .limit(OPEN_LIMIT)
+          .limit(OPEN_LIMIT * 2)
           .lean<OpenRow[]>(),
-        Task.find({ userId, completed: false, dueDate: null })
+        Task.find({ userId, completed: false, projectId: { $in: activeIds }, dueDate: null })
           .select('title dueDate priority projectId')
           .sort({ title: 1 })
           .limit(OPEN_LIMIT)
           .lean<OpenRow[]>(),
+        Task.countDocuments(datedFilter),
       ])
       const names = new Map(projects.map((project) => [project._id.toString(), project.name]))
 
@@ -59,7 +67,7 @@ export function dashboardRouter(): Router {
         openTaskCount += bucket.total - bucket.done
       }
 
-      const open = [...dated, ...undated].slice(0, OPEN_LIMIT).flatMap((task) => {
+      const open = [...dated, ...undated].flatMap((task) => {
         const projectName = names.get(task.projectId.toString())
         if (!projectName) return []
         return [
@@ -89,6 +97,7 @@ export function dashboardRouter(): Router {
         }),
         openTasks: open,
         openTaskCount,
+        datedOpenCount,
       })
     }),
   )

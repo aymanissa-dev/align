@@ -9,6 +9,7 @@ export type QueuedWrite = {
   path: string
   method: string
   body?: string
+  match?: string
   attempts: number
   lastError?: string
 }
@@ -24,7 +25,8 @@ export const QUEUE_EVENT = 'align-offline-queue'
 export const REACH_EVENT = 'align-reachability'
 export const FLUSH_EVENT = 'align-offline-flush'
 
-const RETRY_MS = 2_000
+const PROBE_STEPS_MS = [1000, 2000, 4000, 8000, 16000, 30000]
+const HEALTHY_PROBE_MS = 30_000
 const FLUSH_TIMEOUT_MS = 8_000
 
 let ownerId: string | null = null
@@ -66,8 +68,8 @@ export function markReachable() {
   window.dispatchEvent(new CustomEvent(REACH_EVENT))
 }
 
-function signature(item: { userId: string; method: string; path: string; body?: string }): string {
-  return `${item.userId}|${item.method}|${item.path}|${item.body ?? ''}`
+function signature(item: { userId: string; method: string; path: string; body?: string; match?: string }): string {
+  return `${item.userId}|${item.method}|${item.path}|${item.body ?? ''}|${item.match ?? ''}`
 }
 
 function clientIdOf(item: { body?: string }): string | null {
@@ -123,6 +125,7 @@ function readQueue(): QueuedWrite[] {
         path: record.path,
         method: record.method,
         body: typeof record.body === 'string' ? record.body : undefined,
+        match: typeof record.match === 'string' ? record.match : undefined,
         attempts: typeof record.attempts === 'number' ? record.attempts : 0,
         lastError: typeof record.lastError === 'string' ? record.lastError : undefined,
       })
@@ -152,10 +155,10 @@ export function queueFailure(): string | null {
   return mine().find((item) => item.lastError)?.lastError ?? null
 }
 
-export function enqueueWrite(input: { path: string; method: string; body?: string }): string {
+export function enqueueWrite(input: { path: string; method: string; body?: string; match?: string }): string {
   if (!ownerId) throw new Error('offline-owner')
   const items = readQueue()
-  const next = { userId: ownerId, path: input.path, method: input.method, body: input.body }
+  const next = { userId: ownerId, path: input.path, method: input.method, body: input.body, match: input.match }
   const nextClientId = clientIdOf(next)
   const existing = items.find(
     (item) => signature(item) === signature(next) || (nextClientId !== null && clientIdOf(item) === nextClientId && item.userId === ownerId),
@@ -248,6 +251,7 @@ function queuedTask(item: QueuedWrite): Task | null {
       plannedFor: typeof body.plannedFor === 'string' ? body.plannedFor : null,
       completedOn: null,
       order: -1,
+      version: 0,
       createdAt: new Date(0).toISOString(),
       updatedAt: new Date(0).toISOString(),
     }
@@ -494,6 +498,7 @@ async function runFlush(signal: AbortSignal): Promise<FlushResult> {
           headers: {
             Accept: 'application/json',
             ...(item.body ? { 'Content-Type': 'application/json' } : {}),
+            ...(item.match ? { 'If-Match': item.match } : {}),
           },
           body: item.body,
         }).finally(() => {
@@ -561,22 +566,6 @@ function emitFlush(detail: { phase: 'start' | 'end'; result?: FlushResult }) {
   window.dispatchEvent(new CustomEvent(FLUSH_EVENT, { detail }))
 }
 
-async function confirmReachable(): Promise<void> {
-  if (!unreachable && queuedCount() === 0) return
-  try {
-    const response = await fetch(`/api/auth/session?reach=${Date.now()}`, {
-      method: 'GET',
-      credentials: 'include',
-      cache: 'no-store',
-      headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(FLUSH_TIMEOUT_MS),
-    })
-    if (response.ok) noteNetworkSuccess({ trusted: true })
-  } catch {
-    // Still offline. The banner stays until a later attempt succeeds.
-  }
-}
-
 let flushTail: Promise<void> = Promise.resolve()
 let flushAbort: AbortController | null = null
 
@@ -589,6 +578,7 @@ export function noteNetworkSuccess(options?: { trusted?: boolean }): void {
     if (unreachable) abortInFlightFlush()
     onlineManager.setOnline(true)
     markReachable()
+    probeStep = 0
   }
   if (queuedCount() > 0) void flushOfflineQueue()
 }
@@ -628,32 +618,82 @@ export function flushOfflineQueue(): Promise<FlushResult> {
 }
 
 let syncStarted = false
+let probeStep = 0
+let probeTimer: number | undefined
+let probeInFlight = false
 
-function kickOfflineSync() {
-  if (queuedCount() > 0) void flushOfflineQueue()
-  void confirmReachable()
+function healthUp(body: unknown, ok: boolean): boolean {
+  if (!ok || !body || typeof body !== 'object') return false
+  return (body as { db?: unknown }).db === 'up'
 }
 
-/** Flush queued writes independently of the banner's React lifecycle. */
+function clearProbeTimer() {
+  if (probeTimer !== undefined) {
+    window.clearTimeout(probeTimer)
+    probeTimer = undefined
+  }
+}
+
+function scheduleProbe(delay: number) {
+  clearProbeTimer()
+  probeTimer = window.setTimeout(() => {
+    probeTimer = undefined
+    void runProbe()
+  }, delay)
+}
+
+/** Reachability probe. Failures wait 1s, 2s, 4s, … 30s. The online event starts over. */
+async function runProbe() {
+  if (probeInFlight) return
+  probeInFlight = true
+  clearProbeTimer()
+  let ok = false
+  try {
+    const response = await fetch('/api/health', {
+      cache: 'no-store',
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(4_000),
+    })
+    const body: unknown = await response.json().catch(() => null)
+    ok = healthUp(body, response.ok)
+  } catch {
+    ok = false
+  } finally {
+    probeInFlight = false
+  }
+  if (ok) {
+    if (unreachable) markReachable()
+    probeStep = 0
+    if (queuedCount() > 0) void flushOfflineQueue()
+    scheduleProbe(queuedCount() > 0 ? PROBE_STEPS_MS[0] : HEALTHY_PROBE_MS)
+    return
+  }
+  markUnreachable()
+  const delay = PROBE_STEPS_MS[Math.min(probeStep, PROBE_STEPS_MS.length - 1)]
+  probeStep = Math.min(probeStep + 1, PROBE_STEPS_MS.length - 1)
+  scheduleProbe(delay)
+}
+
+function resetProbe() {
+  probeStep = 0
+  void runProbe()
+}
+
+/** Flush queued writes independently of the status bar's React lifecycle. */
 export function startOfflineSync() {
   if (syncStarted || typeof window === 'undefined') return
   syncStarted = true
   window.addEventListener('online', () => {
     abortInFlightFlush()
-    kickOfflineSync()
+    resetProbe()
   })
   window.addEventListener('offline', () => {
     markUnreachable()
-  })
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') kickOfflineSync()
+    resetProbe()
   })
   onlineManager.subscribe((online) => {
-    if (online) kickOfflineSync()
+    if (online) resetProbe()
   })
-  window.setInterval(() => {
-    if (queuedCount() === 0 && !unreachable) return
-    kickOfflineSync()
-  }, RETRY_MS)
-  kickOfflineSync()
+  void runProbe()
 }

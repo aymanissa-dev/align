@@ -52,11 +52,17 @@ export type VerifyLink = {
   verifyToken?: string
 }
 
+export type WriteOpts = {
+  version?: number
+  overwrite?: boolean
+}
+
 export type Project = {
   id: string
   name: string
   description: string
   status: ProjectStatus
+  version: number
   createdAt: string
   updatedAt: string
 }
@@ -88,6 +94,7 @@ export type Label = {
   id: string
   name: string
   color: string
+  version: number
   createdAt: string
 }
 
@@ -102,6 +109,7 @@ export type Task = {
   plannedFor: string | null
   completedOn: string | null
   order: number
+  version: number
   createdAt: string
   updatedAt: string
 }
@@ -111,6 +119,7 @@ export type Note = {
   projectId: string
   title: string
   body: string
+  version: number
   createdAt: string
   updatedAt: string
 }
@@ -172,6 +181,7 @@ export type DashboardData = {
   projects: DashboardProject[]
   openTasks: OpenTask[]
   openTaskCount: number
+  datedOpenCount: number
 }
 
 export type SearchTask = {
@@ -254,9 +264,9 @@ export interface AlignApi {
   /** GET /api/projects/:id */
   getProject(id: string): Promise<Project>
   /** PATCH /api/projects/:id */
-  updateProject(id: string, input: ProjectPatch): Promise<Project>
+  updateProject(id: string, input: ProjectPatch, opts?: WriteOpts): Promise<Project>
   /** PATCH /api/projects/:id/archive — toggles active and archived */
-  archiveProject(id: string): Promise<Project>
+  archiveProject(id: string, opts?: WriteOpts): Promise<Project>
   /** DELETE /api/projects/:id — also deletes the project's tasks and notes */
   deleteProject(id: string): Promise<void>
 
@@ -265,7 +275,7 @@ export interface AlignApi {
   /** POST /api/projects/:id/tasks */
   createTask(projectId: string, input: TaskInput): Promise<Task>
   /** PATCH /api/tasks/:id */
-  updateTask(id: string, input: TaskPatch): Promise<Task>
+  updateTask(id: string, input: TaskPatch, opts?: WriteOpts): Promise<Task>
   /** DELETE /api/tasks/:id */
   deleteTask(id: string): Promise<void>
 
@@ -274,7 +284,7 @@ export interface AlignApi {
   /** POST /api/labels */
   createLabel(input: LabelInput): Promise<Label>
   /** PATCH /api/labels/:id */
-  updateLabel(id: string, input: LabelPatch): Promise<Label>
+  updateLabel(id: string, input: LabelPatch, opts?: WriteOpts): Promise<Label>
   /** DELETE /api/labels/:id */
   deleteLabel(id: string): Promise<void>
 
@@ -287,7 +297,7 @@ export interface AlignApi {
   /** GET /api/notes/:id */
   getNote(id: string): Promise<Note>
   /** PATCH /api/notes/:id */
-  updateNote(id: string, input: NotePatch): Promise<Note>
+  updateNote(id: string, input: NotePatch, opts?: WriteOpts): Promise<Note>
   /** DELETE /api/notes/:id */
   deleteNote(id: string): Promise<void>
 

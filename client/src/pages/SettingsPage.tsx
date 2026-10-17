@@ -10,7 +10,7 @@ import { AccentPicker, ThemeToggle } from '../components/ThemeControls.tsx'
 import { PasswordMeter } from '../components/PasswordMeter.tsx'
 import { Button, ConfirmDialog, Field, Input, ListSkeleton } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
-import { isMediumPassword, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
+import { isMediumPassword, MEDIUM_PASSWORD_HINT, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
 import { clearSignedOut, markSignedOut } from '../lib/signedOut.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
@@ -215,7 +215,7 @@ export function SettingsPage() {
               aria-invalid={passwordError ? true : undefined}
             />
           </Field>
-          <Field label="New password" htmlFor="new-password" hint="At least 10 characters, or a stronger mix.">
+          <Field label="New password" htmlFor="new-password" hint={MEDIUM_PASSWORD_HINT}>
             <Input
               id="new-password"
               type="password"

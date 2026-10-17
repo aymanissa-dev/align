@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { quoteTitle, recordActivity } from '../activity.ts'
+import { assertVersion, expectedVersion, stampVersion } from '../concurrency.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { Note } from '../models.ts'
 import { publicNote } from '../serialize.ts'
@@ -14,7 +15,7 @@ export function notesRouter(): Router {
     '/',
     asyncHandler(async (req, res) => {
       const notes = await Note.find({ userId: currentUserId(req) })
-        .select('projectId title body createdAt updatedAt')
+        .select('projectId title body createdAt updatedAt __v')
         .sort({ updatedAt: -1 })
         .lean()
       res.json(notes.map(publicNote))
@@ -25,6 +26,7 @@ export function notesRouter(): Router {
     '/:id',
     asyncHandler(async (req, res) => {
       const note = await requireNote(currentUserId(req), req.params.id)
+      stampVersion(res, note.__v)
       res.json(publicNote(note))
     }),
   )
@@ -34,6 +36,7 @@ export function notesRouter(): Router {
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req)
       const note = await requireNote(userId, req.params.id)
+      assertVersion(note.__v, expectedVersion(req))
       const input = parseBody(notePatchSchema, req.body)
       if (input.title !== undefined) note.title = input.title
       if (input.body !== undefined) note.body = input.body
@@ -45,6 +48,7 @@ export function notesRouter(): Router {
         type: 'update',
         summary: `Updated note ${quoteTitle(note.title)}`,
       })
+      stampVersion(res, note.__v)
       res.json(publicNote(note))
     }),
   )

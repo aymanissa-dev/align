@@ -4,7 +4,6 @@ import { useAuth } from '../auth/auth-context.ts'
 import { cn } from '../lib/cn.ts'
 import { useMediaQuery } from '../hooks/useMediaQuery.ts'
 import { Eyebrow } from './chrome.tsx'
-import { OfflineBanner } from './OfflineBanner.tsx'
 import { IconClose, IconDashboard, IconMenu, IconNotes, IconProjects, IconSearch, IconSettings, IconToday } from './icons.tsx'
 import { NotificationBell } from './NotificationBell.tsx'
 import { ThemeToggle } from './ThemeControls.tsx'
@@ -183,7 +182,6 @@ export function Layout({ children }: { children?: ReactNode }) {
       </aside>
 
       <main id="main" className="min-h-screen pt-14 md:pt-0 md:pl-64">
-        <OfflineBanner />
         <div key={location.pathname} className="page-enter mx-auto w-full max-w-5xl px-5 py-8 md:px-8 md:py-10">
           {children ?? <Outlet />}
         </div>

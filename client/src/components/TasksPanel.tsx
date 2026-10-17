@@ -1,9 +1,12 @@
 import { useState, useSyncExternalStore, type FormEvent } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import type { Label, Task, TaskPriority } from '../api/types.ts'
+import type { Label, Task, TaskPatch, TaskPriority } from '../api/types.ts'
 import { api } from '../api/index.ts'
 import { ApiError } from '../api/errors.ts'
+import { ConflictDialog } from './ConflictDialog.tsx'
 import { useToast } from './toast-context.ts'
+import { isConflict } from '../lib/conflict.ts'
+import { taskFieldPatch } from '../lib/patch.ts'
 import { IconPencil, IconTrash } from './icons.tsx'
 import { Button, CheckButton, ConfirmDialog, ErrorState, Input, ListSkeleton, ProgressBar, Select } from './ui.tsx'
 import { DueBadge, PriorityBadge } from './chrome.tsx'
@@ -33,6 +36,8 @@ export function TasksPanel({ projectId }: { projectId: string }) {
   const [draftDue, setDraftDue] = useState('')
   const [draftPriority, setDraftPriority] = useState<TaskPriority>('medium')
   const [draftLabels, setDraftLabels] = useState<string[]>([])
+  const [editBase, setEditBase] = useState<Task | null>(null)
+  const [conflict, setConflict] = useState<{ id: string; patch: TaskPatch; version: number } | null>(null)
   const queueVersion = useSyncExternalStore(subscribeQueue, getQueueVersion, getQueueVersion)
 
   const tasks = useQuery({
@@ -73,18 +78,21 @@ export function TasksPanel({ projectId }: { projectId: string }) {
   })
 
   const update = useMutation({
-    mutationFn: (input: { id: string; title: string; dueDate: string | null; priority: TaskPriority; labelIds: string[] }) =>
-      api.updateTask(input.id, {
-        title: input.title,
-        dueDate: input.dueDate,
-        priority: input.priority,
-        labelIds: input.labelIds,
-      }),
+    mutationFn: (input: { id: string; patch: TaskPatch; version: number; overwrite?: boolean }) =>
+      api.updateTask(input.id, input.patch, { version: input.version, overwrite: input.overwrite }),
     onSuccess: async () => {
       setEditingId(null)
+      setEditBase(null)
+      setConflict(null)
       await invalidateWorkspace()
     },
-    onError: (error) => toast(errorMessage(error)),
+    onError: (error, input) => {
+      if (isConflict(error)) {
+        setConflict({ id: input.id, patch: input.patch, version: input.version })
+        return
+      }
+      toast(errorMessage(error))
+    },
   })
 
   const remove = useMutation({
@@ -126,6 +134,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
 
   function startEdit(task: Task) {
     setEditingId(task.id)
+    setEditBase(task)
     setDraftTitle(task.title)
     setDraftDue(task.dueDate ?? '')
     setDraftPriority(task.priority)
@@ -133,17 +142,23 @@ export function TasksPanel({ projectId }: { projectId: string }) {
   }
 
   function saveEdit(taskId: string) {
+    if (!editBase || editBase.id !== taskId) return
     if (!draftTitle.trim()) {
       toast('Task title is required.')
       return
     }
-    update.mutate({
-      id: taskId,
-      title: draftTitle,
+    const patch = taskFieldPatch(editBase, {
+      title: draftTitle.trim(),
       dueDate: draftDue || null,
       priority: draftPriority,
       labelIds: draftLabels,
     })
+    if (Object.keys(patch).length === 0) {
+      setEditingId(null)
+      setEditBase(null)
+      return
+    }
+    update.mutate({ id: taskId, patch, version: editBase.version })
   }
 
   if (!tasks.data || !labels.data) {
@@ -173,6 +188,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
       labelIds: task.labelIds,
       plannedFor: task.plannedFor,
       completedOn: null,
+      version: 0,
       order: -1,
       createdAt: '',
       updatedAt: '',
@@ -188,6 +204,21 @@ export function TasksPanel({ projectId }: { projectId: string }) {
 
   return (
     <div className="mt-8">
+      <ConflictDialog
+        open={conflict !== null}
+        pending={update.isPending}
+        onClose={() => setConflict(null)}
+        onReload={() => {
+          setConflict(null)
+          setEditingId(null)
+          setEditBase(null)
+          void tasks.refetch()
+        }}
+        onOverwrite={() => {
+          if (!conflict) return
+          update.mutate({ ...conflict, overwrite: true })
+        }}
+      />
       <form onSubmit={onCreateLabel} className="border border-neutral-200">
         <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
           <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Labels</h2>
@@ -387,7 +418,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                       onChange={() => {
                         if (task.id.startsWith('queued:')) return
                         toggle.mutate(
-                          { id: task.id, projectId: task.projectId, completed: task.completed },
+                          { id: task.id, projectId: task.projectId, completed: task.completed, version: task.version },
                           { onError: (error) => toast(errorMessage(error)) },
                         )
                       }}

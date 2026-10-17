@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { wordList } from '../../shared/search.ts'
 import { HttpError } from './errors.ts'
 import { Activity, AuthToken, Label, Note, Notification, Project, RateLimit, Session, Task, User, Whiteboard } from './models.ts'
 
@@ -15,6 +16,46 @@ function cache(): Cache {
 }
 
 let indexesReady: Promise<void> | null = null
+let wordsReady: Promise<void> | null = null
+
+type WordDoc = {
+  _id: mongoose.Types.ObjectId
+  title?: string
+  body?: string
+  name?: string
+  description?: string
+  searchWords?: string[]
+}
+
+async function fillSearchWords(model: mongoose.Model<WordDoc>, words: (doc: WordDoc) => string[]): Promise<void> {
+  for (;;) {
+    const docs = await model.find({ searchWords: { $exists: false } }).limit(200)
+    if (docs.length === 0) return
+    await model.bulkWrite(
+      docs.map((doc) => ({
+        updateOne: {
+          filter: { _id: doc._id },
+          update: { $set: { searchWords: words(doc) } },
+        },
+      })),
+    )
+  }
+}
+
+/** One indexed word list per document so prefix search does not scan the collection. */
+export function ensureSearchWords(): Promise<void> {
+  wordsReady ??= Promise.all([
+    fillSearchWords(Task as unknown as mongoose.Model<WordDoc>, (doc) => wordList(doc.title)),
+    fillSearchWords(Note as unknown as mongoose.Model<WordDoc>, (doc) => wordList(doc.title, doc.body)),
+    fillSearchWords(Project as unknown as mongoose.Model<WordDoc>, (doc) => wordList(doc.name, doc.description)),
+  ])
+    .then(() => undefined)
+    .catch((error: unknown) => {
+      wordsReady = null
+      throw error
+    })
+  return wordsReady
+}
 
 /** A collection can hold one text index. Drop the unscoped copy before creating the user-prefixed one. */
 async function dropUnscopedText(collection: mongoose.Collection, name: string): Promise<void> {
@@ -60,6 +101,7 @@ function ensureIndexes(): Promise<void> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         await syncAllIndexes()
+        await ensureSearchWords()
         return
       } catch (error) {
         last = error
@@ -128,6 +170,7 @@ export async function connectDb(options?: { indexes?: boolean }): Promise<typeof
 
 export async function disconnectDb(): Promise<void> {
   indexesReady = null
+  wordsReady = null
   const state = cache()
   state.conn = null
   state.promise = null

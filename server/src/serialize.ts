@@ -5,6 +5,10 @@ function docId(doc: { id?: string; _id: Types.ObjectId | { toString(): string } 
   return doc.id || doc._id.toString()
 }
 
+function versionOf(doc: { __v?: number | null }): number {
+  return typeof doc.__v === 'number' ? doc.__v : 0
+}
+
 export function publicUser(user: UserDoc) {
   return {
     id: user.id,
@@ -16,27 +20,29 @@ export function publicUser(user: UserDoc) {
   }
 }
 
-export function publicProject(project: ProjectDoc | (Pick<ProjectDoc, 'name' | 'description' | 'status' | 'createdAt' | 'updatedAt'> & { id?: string; _id: Types.ObjectId })) {
+export function publicProject(project: ProjectDoc | (Pick<ProjectDoc, 'name' | 'description' | 'status' | 'createdAt' | 'updatedAt'> & { id?: string; _id: Types.ObjectId; __v?: number | null })) {
   return {
     id: docId(project),
     name: project.name,
     description: project.description,
     status: project.status,
+    version: versionOf(project),
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
   }
 }
 
-export function publicLabel(label: LabelDoc | (Pick<LabelDoc, 'name' | 'color' | 'createdAt'> & { id?: string; _id: Types.ObjectId })) {
+export function publicLabel(label: LabelDoc | (Pick<LabelDoc, 'name' | 'color' | 'createdAt'> & { id?: string; _id: Types.ObjectId; __v?: number | null })) {
   return {
     id: docId(label),
     name: label.name,
     color: label.color,
+    version: versionOf(label),
     createdAt: label.createdAt.toISOString(),
   }
 }
 
-export function publicTask(task: TaskDoc | (Pick<TaskDoc, 'projectId' | 'title' | 'completed' | 'dueDate' | 'priority' | 'labelIds' | 'plannedFor' | 'completedOn' | 'order' | 'createdAt' | 'updatedAt'> & { id?: string; _id: Types.ObjectId })) {
+export function publicTask(task: TaskDoc | (Pick<TaskDoc, 'projectId' | 'title' | 'completed' | 'dueDate' | 'priority' | 'labelIds' | 'plannedFor' | 'completedOn' | 'order' | 'createdAt' | 'updatedAt'> & { id?: string; _id: Types.ObjectId; __v?: number | null })) {
   return {
     id: docId(task),
     projectId: task.projectId.toString(),
@@ -48,6 +54,7 @@ export function publicTask(task: TaskDoc | (Pick<TaskDoc, 'projectId' | 'title' 
     plannedFor: task.plannedFor ?? null,
     completedOn: task.completedOn ?? null,
     order: task.order,
+    version: versionOf(task),
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),
   }
@@ -77,12 +84,13 @@ export function publicNotification(item: NotificationDoc | (Pick<NotificationDoc
   }
 }
 
-export function publicNote(note: NoteDoc | (Pick<NoteDoc, 'projectId' | 'title' | 'body' | 'createdAt' | 'updatedAt'> & { id?: string; _id: Types.ObjectId })) {
+export function publicNote(note: NoteDoc | (Pick<NoteDoc, 'projectId' | 'title' | 'body' | 'createdAt' | 'updatedAt'> & { id?: string; _id: Types.ObjectId; __v?: number | null })) {
   return {
     id: docId(note),
     projectId: note.projectId.toString(),
     title: note.title,
     body: note.body,
+    version: versionOf(note),
     createdAt: note.createdAt.toISOString(),
     updatedAt: note.updatedAt.toISOString(),
   }

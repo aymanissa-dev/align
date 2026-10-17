@@ -4,9 +4,13 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ApiError } from '../api/errors.ts'
 import { api } from '../api/index.ts'
 import type { Note } from '../api/types.ts'
+import { ConflictDialog } from '../components/ConflictDialog.tsx'
 import { useToast } from '../components/toast-context.ts'
+import { isConflict } from '../lib/conflict.ts'
+import { noteFieldPatch } from '../lib/patch.ts'
 import { ConfirmDialog, EmptyState, ErrorState, ListSkeleton, TextButton } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
+import { broadcastWorkspaceChange } from '../lib/dataChannel.ts'
 import { invalidateWorkspace, queryClient } from '../queryClient.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
@@ -34,7 +38,7 @@ export function NoteEditorPage() {
   }
   if (note.isError || !note.data) return <ErrorState onRetry={() => void note.refetch()} />
 
-  return <Editor key={note.data.id} note={note.data} />
+  return <Editor key={`${note.data.id}:${note.data.version}`} note={note.data} />
 }
 
 function Editor({ note }: { note: Note }) {
@@ -44,8 +48,9 @@ function Editor({ note }: { note: Note }) {
   const [body, setBody] = useState(note.body)
   const [status, setStatus] = useState<'saved' | 'saving' | 'error'>('saved')
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const saved = useRef({ title: note.title, body: note.body })
+  const saved = useRef({ title: note.title, body: note.body, version: note.version })
   const latest = useRef({ title: note.title, body: note.body })
+  const [conflict, setConflict] = useState<{ title: string; body: string } | null>(null)
   const generation = useRef(0)
   latest.current = { title, body }
   useDocumentTitle(title.trim() || 'Note')
@@ -59,21 +64,32 @@ function Editor({ note }: { note: Note }) {
     return (nextTitle.trim() || 'Untitled') === saved.current.title && nextBody === saved.current.body
   }
 
-  async function persist(nextTitle: string, nextBody: string) {
+  async function persist(nextTitle: string, nextBody: string, overwrite = false) {
     const id = ++generation.current
     const normalized = nextTitle.trim() || 'Untitled'
+    const patch = noteFieldPatch(saved.current, { title: normalized, body: nextBody })
+    if (!overwrite && Object.keys(patch).length === 0) {
+      setStatus('saved')
+      return
+    }
     try {
-      const updated = await api.updateNote(note.id, { title: normalized, body: nextBody })
+      const updated = await api.updateNote(note.id, patch, {
+        version: saved.current.version,
+        overwrite,
+      })
       if (generation.current !== id) return
-      saved.current = { title: updated.title, body: updated.body }
+      saved.current = { title: updated.title, body: updated.body, version: updated.version }
+      setConflict(null)
       queryClient.setQueryData(['note', note.id], updated)
+      broadcastWorkspaceChange()
       void queryClient.invalidateQueries({ queryKey: ['notes'] })
       const current = latest.current
       if ((current.title.trim() || 'Untitled') === updated.title && current.body === updated.body) {
         setStatus('saved')
       }
-    } catch {
+    } catch (error) {
       if (generation.current !== id) return
+      if (isConflict(error)) setConflict({ title: normalized, body: nextBody })
       setStatus('error')
     }
   }
@@ -99,11 +115,13 @@ function Editor({ note }: { note: Note }) {
       const current = readLatest()
       const stored = readSaved()
       const normalized = current.title.trim() || 'Untitled'
-      if (normalized === stored.title && current.body === stored.body) return
+      const patch = noteFieldPatch(stored, { title: normalized, body: current.body })
+      if (Object.keys(patch).length === 0) return
       const requestId = nextGeneration()
-      void api.updateNote(noteId, { title: normalized, body: current.body }).then((updated) => {
+      void api.updateNote(noteId, patch, { version: stored.version }).then((updated) => {
         if (currentGeneration() !== requestId) return
         queryClient.setQueryData(['note', noteId], updated)
+        broadcastWorkspaceChange()
         void queryClient.invalidateQueries({ queryKey: ['notes'] })
       })
     }
@@ -115,6 +133,7 @@ function Editor({ note }: { note: Note }) {
       saved.current = {
         title: latest.current.title.trim() || 'Untitled',
         body: latest.current.body,
+        version: saved.current.version,
       }
       await invalidateWorkspace()
       toast('Note deleted')
@@ -127,6 +146,18 @@ function Editor({ note }: { note: Note }) {
 
   return (
     <div>
+      <ConflictDialog
+        open={conflict !== null}
+        onClose={() => setConflict(null)}
+        onReload={() => {
+          setConflict(null)
+          void queryClient.invalidateQueries({ queryKey: ['note', note.id] })
+        }}
+        onOverwrite={() => {
+          if (!conflict) return
+          void persist(conflict.title, conflict.body, true)
+        }}
+      />
       <div className="flex items-center justify-between gap-4 border-b border-neutral-200 pb-4 text-sm">
         <Link to="/notes" className="focus-ring inline-flex min-h-11 items-center font-pixel text-[11px] tracking-[0.16em] text-neutral-800 uppercase hover:text-neutral-950">
           Notes

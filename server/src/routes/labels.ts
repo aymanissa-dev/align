@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { quoteTitle, recordActivity } from '../activity.ts'
+import { assertVersion, expectedVersion, stampVersion } from '../concurrency.ts'
 import { HttpError } from '../errors.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { Label, Task } from '../models.ts'
@@ -19,7 +20,7 @@ export function labelsRouter(): Router {
     '/',
     asyncHandler(async (req, res) => {
       const labels = await Label.find({ userId: currentUserId(req) })
-        .select('name color createdAt')
+        .select('name color createdAt __v')
         .sort({ name: 1 })
         .lean()
       res.json(labels.map(publicLabel))
@@ -46,6 +47,7 @@ export function labelsRouter(): Router {
         type: 'create',
         summary: `Created label ${quoteTitle(label.name)}`,
       })
+      stampVersion(res, label.__v)
       res.status(201).json(publicLabel(label))
     }),
   )
@@ -58,6 +60,7 @@ export function labelsRouter(): Router {
       if (!labelId) throw new HttpError(404, 'Label not found.')
       const label = await Label.findOne({ _id: labelId, userId })
       if (!label) throw new HttpError(404, 'Label not found.')
+      assertVersion(label.__v, expectedVersion(req))
       const input = parseBody(labelPatchSchema, req.body)
       if (input.name !== undefined && input.name.toLowerCase() !== label.name.toLowerCase()) {
         const duplicate = await Label.findOne({
@@ -74,6 +77,7 @@ export function labelsRouter(): Router {
         type: 'update',
         summary: `Updated label ${quoteTitle(label.name)}`,
       })
+      stampVersion(res, label.__v)
       res.json(publicLabel(label))
     }),
   )

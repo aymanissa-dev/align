@@ -1,3 +1,5 @@
+import { CONFLICT_MESSAGE } from '../../../shared/contract.ts'
+import { matchesAllTokens, relevanceScore, searchTokens } from '../../../shared/search.ts'
 import { isMediumPassword, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
 import { ApiError } from './errors.ts'
 import type {
@@ -17,6 +19,7 @@ import type {
   TodayData,
   User,
   WhiteboardScene,
+  WriteOpts,
 } from './types.ts'
 
 /**
@@ -29,10 +32,10 @@ const STORAGE_KEY = 'align.db.v1'
 const DELAY_MS = 120
 
 type StoredUser = User & { password: string; resetToken?: string | null; resetExpires?: string | null }
-type StoredProject = Project & { userId: string }
-type StoredTask = Task & { userId: string; clientId?: string }
-type StoredNote = Note & { userId: string }
-type StoredLabel = Label & { userId: string }
+type StoredProject = Omit<Project, 'version'> & { userId: string; version?: number }
+type StoredTask = Omit<Task, 'version'> & { userId: string; clientId?: string; version?: number }
+type StoredNote = Omit<Note, 'version'> & { userId: string; version?: number }
+type StoredLabel = Omit<Label, 'version'> & { userId: string; version?: number }
 type StoredActivity = ActivityEvent & { userId: string }
 type StoredNotification = AppNotification & { userId: string; key: string }
 type StoredBoard = { userId: string; projectId: string; scene: WhiteboardScene }
@@ -259,6 +262,14 @@ function persist(): void {
   }
 }
 
+function bump(item: { version?: number }, opts?: WriteOpts) {
+  const current = item.version ?? 0
+  if (opts && !opts.overwrite && opts.version !== undefined && opts.version !== current) {
+    throw new ApiError(409, CONFLICT_MESSAGE)
+  }
+  item.version = current + 1
+}
+
 function publicUser(user: StoredUser): User {
   return {
     id: user.id,
@@ -276,6 +287,7 @@ function publicProject(project: StoredProject): Project {
     name: project.name,
     description: project.description,
     status: project.status,
+    version: project.version ?? 0,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
   }
@@ -293,13 +305,14 @@ function publicTask(item: StoredTask): Task {
     plannedFor: item.plannedFor ?? null,
     completedOn: item.completedOn ?? null,
     order: item.order,
+    version: item.version ?? 0,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
   }
 }
 
 function publicLabel(item: StoredLabel): Label {
-  return { id: item.id, name: item.name, color: item.color, createdAt: item.createdAt }
+  return { id: item.id, name: item.name, color: item.color, version: item.version ?? 0, createdAt: item.createdAt }
 }
 
 function colorOf(value: string | undefined): string {
@@ -314,6 +327,7 @@ function publicNote(item: StoredNote): Note {
     projectId: item.projectId,
     title: item.title,
     body: item.body,
+    version: item.version ?? 0,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
   }
@@ -673,9 +687,10 @@ export const mockApi = {
     return read((state, user) => publicProject(findProject(state, user.id, id)))
   },
 
-  async updateProject(id, input) {
+  async updateProject(id, input, opts) {
     return write((state, user) => {
       const project = findProject(state, user.id, id)
+      bump(project, opts)
       if (input.name !== undefined) project.name = requireName(input.name, 'Project name', 120)
       if (input.description !== undefined) project.description = input.description.trim().slice(0, 2000)
       project.updatedAt = now()
@@ -684,9 +699,10 @@ export const mockApi = {
     })
   },
 
-  async archiveProject(id) {
+  async archiveProject(id, opts) {
     return write((state, user) => {
       const project = findProject(state, user.id, id)
+      bump(project, opts)
       const next: ProjectStatus = project.status === 'active' ? 'archived' : 'active'
       project.status = next
       project.updatedAt = now()
@@ -758,9 +774,10 @@ export const mockApi = {
     })
   },
 
-  async updateTask(id, input) {
+  async updateTask(id, input, opts) {
     return write((state, user) => {
       const item = findTask(state, user.id, id)
+      bump(item, opts)
       const wasCompleted = item.completed
       if (input.title !== undefined) item.title = requireName(input.title, 'Task title', 200)
       if (input.completed !== undefined) {
@@ -826,10 +843,11 @@ export const mockApi = {
     })
   },
 
-  async updateLabel(id, input) {
+  async updateLabel(id, input, opts) {
     return write((state, user) => {
       const label = state.labels.find((item) => item.id === id && item.userId === user.id)
       if (!label) throw new ApiError(404, 'Label not found.')
+      bump(label, opts)
       if (input.name !== undefined) {
         const name = requireName(input.name, 'Label name', 40)
         if (
@@ -898,9 +916,10 @@ export const mockApi = {
     return read((state, user) => publicNote(findNote(state, user.id, id)))
   },
 
-  async updateNote(id, input) {
+  async updateNote(id, input, opts) {
     return write((state, user) => {
       const item = findNote(state, user.id, id)
+      bump(item, opts)
       if (input.title !== undefined) item.title = requireName(input.title, 'Title', 160)
       if (input.body !== undefined) item.body = input.body.slice(0, 100_000)
       item.updatedAt = now()
@@ -1061,6 +1080,7 @@ export const mockApi = {
         }),
         openTasks,
         openTaskCount: openTasks.length,
+        datedOpenCount: openTasks.filter((task) => task.dueDate).length,
       }
       return data
     })
@@ -1068,39 +1088,62 @@ export const mockApi = {
 
   async search(query) {
     return read((state, user) => {
-      const needle = query.trim().toLowerCase()
+      const tokens = searchTokens(query)
       const empty: SearchResults = { projects: [], tasks: [], notes: [] }
-      if (needle.length < 3) return empty
+      if (!tokens) return empty
 
       const projects = state.projects.filter((project) => project.userId === user.id)
       const projectName = new Map(projects.map((project) => [project.id, project.name]))
-      const includes = (value: string) => value.toLowerCase().includes(needle)
 
       return {
-        projects: sortByUpdated(projects.filter((project) => includes(project.name) || includes(project.description)))
-          .slice(0, 50)
-          .map(publicProject),
+        projects: projects
+          .flatMap((project) => {
+            if (!matchesAllTokens(tokens, project.name, project.description)) return []
+            return [
+              {
+                project,
+                score: relevanceScore(tokens, [
+                  { text: project.name, weight: 5 },
+                  { text: project.description, weight: 1 },
+                ]),
+              },
+            ]
+          })
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 20)
+          .map((item) => publicProject(item.project)),
         tasks: state.tasks
-          .filter((item) => item.userId === user.id && includes(item.title) && projectName.has(item.projectId))
-          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-          .slice(0, 50)
-          .map((item) => ({
+          .flatMap((item) => {
+            if (item.userId !== user.id || !projectName.has(item.projectId) || !matchesAllTokens(tokens, item.title)) return []
+            return [{ item, score: relevanceScore(tokens, [{ text: item.title, weight: 5 }]) }]
+          })
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 20)
+          .map(({ item }) => ({
             id: item.id,
             projectId: item.projectId,
             projectName: projectName.get(item.projectId) ?? '',
             title: item.title,
             completed: item.completed,
           })),
-        notes: sortByUpdated(
-          state.notes.filter(
-            (item) =>
-              item.userId === user.id &&
-              projectName.has(item.projectId) &&
-              (includes(item.title) || includes(item.body)),
-          ),
-        )
-          .slice(0, 50)
-          .map((item) => ({
+        notes: state.notes
+          .flatMap((item) => {
+            if (item.userId !== user.id || !projectName.has(item.projectId) || !matchesAllTokens(tokens, item.title, item.body)) {
+              return []
+            }
+            return [
+              {
+                item,
+                score: relevanceScore(tokens, [
+                  { text: item.title, weight: 5 },
+                  { text: item.body, weight: 1 },
+                ]),
+              },
+            ]
+          })
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 20)
+          .map(({ item }) => ({
             id: item.id,
             projectId: item.projectId,
             projectName: projectName.get(item.projectId) ?? '',

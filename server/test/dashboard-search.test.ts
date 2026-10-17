@@ -75,6 +75,11 @@ describe('dashboard and search', () => {
     const short = await owner.agent.get('/api/search').query({ q: 'wi' })
     expect(short.body).toEqual({ projects: [], tasks: [], notes: [] })
 
+    await owner.agent.post(`/api/projects/${id}/tasks`).send({ title: 'R2 overdue' })
+    await owner.agent.post(`/api/projects/${id}/tasks`).send({ title: 'R2 future' })
+    const prefixed = await owner.agent.get('/api/search').query({ q: 'R2 ov' })
+    expect(prefixed.body.tasks.map((task: { title: string }) => task.title)).toEqual(['R2 overdue'])
+
     const indexes = await Project.collection.indexes()
     const taskIndexes = await Task.collection.indexes()
     expect(indexes.some((index) => index.key?._fts === 'text')).toBe(true)
