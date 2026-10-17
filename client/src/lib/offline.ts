@@ -27,6 +27,12 @@ export const FLUSH_EVENT = 'align-offline-flush'
 
 const PROBE_STEPS_MS = [1000, 2000, 4000, 8000, 16000, 30000]
 const HEALTHY_PROBE_MS = 30_000
+// While the device is offline the health probe still backs off to 30s. Reconnect
+// does not depend on that timer: `online`, a Network Information `change`, and a
+// 1s read of navigator.onLine (no request) each start a probe on the false→true
+// flip. A 5s probe cap would send a health check on every long outage even when
+// nothing came back. DevTools Offline does flip navigator.onLine, so the poll
+// covers a missed `online` event without that extra traffic.
 const FLUSH_TIMEOUT_MS = 8_000
 
 let ownerId: string | null = null
@@ -634,6 +640,24 @@ function healthUp(body: unknown, ok: boolean): boolean {
   return (body as { db?: unknown }).db === 'up'
 }
 
+function debugEnabled(): boolean {
+  try {
+    return localStorage.getItem('align:debug') != null
+  } catch {
+    return false
+  }
+}
+
+function debug(event: string, detail?: Record<string, unknown>): void {
+  if (!debugEnabled()) return
+  console.log('[align]', event, {
+    onLine: typeof navigator === 'undefined' ? undefined : navigator.onLine,
+    unreachable,
+    inFlight: probeInFlight,
+    ...detail,
+  })
+}
+
 function clearProbeTimer() {
   if (probeTimer !== undefined) {
     window.clearTimeout(probeTimer)
@@ -652,8 +676,8 @@ function scheduleProbe(delay: number) {
 }
 
 /** Reachability probe. Failures wait 1s, 2s, 4s, 8s, 16s, then 30s. */
-async function runProbe() {
-  if (probeInFlight) return
+async function runProbe(force = false) {
+  if (probeInFlight && !force) return
   const epoch = probeEpoch
   probeInFlight = true
   clearProbeTimer()
@@ -662,6 +686,7 @@ async function runProbe() {
   const controller = new AbortController()
   probeAbort = controller
   const timeout = window.setTimeout(() => controller.abort(), 4_000)
+  debug('probe-start', { epoch, force })
   let ok = false
   try {
     // The query keeps a cached /api/health from matching. The worker does not
@@ -684,7 +709,11 @@ async function runProbe() {
     if (probeAbort === controller) probeAbort = undefined
     if (epoch === probeEpoch) probeInFlight = false
   }
-  if (epoch !== probeEpoch) return
+  if (epoch !== probeEpoch) {
+    debug('probe-dropped', { epoch, ok })
+    return
+  }
+  debug('probe-result', { epoch, ok })
   if (ok) {
     reconnectLeft = 0
     if (unreachable) markReachable()
@@ -721,16 +750,22 @@ function probeNow() {
   void runProbe()
 }
 
-/** Window 'online' always cancels the backoff and checks, even if a probe is running. */
-function probeOnOnline() {
+/**
+ * Start a health check now. Ignores an in-flight probe, the single-flight lock,
+ * and navigator.onLine — a DevTools reconnect can deliver `online` before that
+ * flag reads true, and dropping the check leaves the bar on the backoff timer.
+ */
+function probeUnconditional(reason: string) {
+  debug('probe-unconditional', { reason })
   reconnectLeft = 2
   probeEpoch += 1
-  probeAbort?.abort()
+  const aborting = probeAbort
   probeAbort = undefined
+  aborting?.abort()
   probeInFlight = false
   clearProbeTimer()
   scheduledDelay = 0
-  void runProbe()
+  void runProbe(true)
 }
 
 /** Flush queued writes independently of the status bar's React lifecycle. */
@@ -738,10 +773,12 @@ export function startOfflineSync() {
   if (syncStarted || typeof window === 'undefined') return
   syncStarted = true
   window.addEventListener('online', () => {
+    debug('online')
     abortInFlightFlush()
-    probeOnOnline()
+    probeUnconditional('online')
   })
   window.addEventListener('offline', () => {
+    debug('offline')
     reconnectLeft = 0
     markUnreachable()
     if (probeInFlight) return
@@ -751,9 +788,39 @@ export function startOfflineSync() {
     clearProbeTimer()
     void runProbe()
   })
-  window.addEventListener('focus', () => probeNow())
+  window.addEventListener('focus', () => {
+    debug('focus')
+    probeNow()
+  })
   document.addEventListener('visibilitychange', () => {
+    debug('visibilitychange', { visibility: document.visibilityState })
     if (document.visibilityState === 'visible') probeNow()
   })
+  const connection = (navigator as Navigator & { connection?: EventTarget }).connection
+  connection?.addEventListener('change', () => {
+    debug('connection')
+    // Coming back: onLine is already true, or the bar is up and this change may
+    // have landed before the flag flipped. Going down (onLine false, bar not up
+    // yet) must not start the 500ms reconnect burst.
+    if (navigator.onLine !== false || unreachable) probeUnconditional('connection')
+    else {
+      reconnectLeft = 0
+      markUnreachable()
+    }
+  })
+  let lastOnLine = navigator.onLine !== false
+  window.setInterval(() => {
+    const onLine = navigator.onLine !== false
+    if (onLine === lastOnLine) return
+    const wasOffline = !lastOnLine
+    lastOnLine = onLine
+    debug('online-poll', { onLine, wasOffline })
+    window.dispatchEvent(new CustomEvent(REACH_EVENT))
+    if (wasOffline && onLine) probeUnconditional('online-poll')
+    else if (!onLine) {
+      reconnectLeft = 0
+      markUnreachable()
+    }
+  }, 1_000)
   void runProbe()
 }

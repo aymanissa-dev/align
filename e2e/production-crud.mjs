@@ -142,20 +142,12 @@ async function holdOfflineBar(browser, signedIn) {
     console.log('offline probes', hits.length, 'gaps', gaps.join(','))
 
     await armLongBackoff(swPage, probes, offlineAt)
+    // DevTools' "No throttling" is this CDP call. Do not dispatch a synthetic
+    // online event — the page has to notice the real transition itself.
     await setTargetsOffline(browser, pageSession, false)
-    const onlineAt = Date.now()
-    await swPage.evaluate(() => window.dispatchEvent(new Event('online')))
+    const restoredAt = Date.now()
     await bar.waitFor({ state: 'hidden', timeout: 2_000 })
-    const clearedIn = Date.now() - onlineAt
-    let reconnect = []
-    for (let attempt = 0; attempt < 20 && reconnect.length === 0; attempt += 1) {
-      reconnect = probes.filter((probe) => probe.t >= onlineAt).sort((a, b) => a.t - b.t)
-      if (reconnect.length === 0) await swPage.waitForTimeout(50)
-    }
-    if (reconnect.length === 0) throw new Error('online did not start a health probe')
-    const lag = reconnect[0].t - onlineAt
-    if (lag > 500) throw new Error(`online probe waited ${lag}ms for the backoff timer`)
-    console.log('bar cleared', clearedIn, 'ms', 'probe lag', lag, 'ms')
+    console.log('cdp bar cleared', Date.now() - restoredAt, 'ms')
   } finally {
     await swContext.close()
   }
@@ -193,6 +185,35 @@ async function setTargetsOffline(browser, pageSession, offline) {
   await offlineServiceWorkers(browser, conditions).catch((error) => {
     console.log('service worker offline', error instanceof Error ? error.message : error)
   })
+}
+
+/** Browser offline (navigator.onLine false) for 20s+, then restore. No synthetic online event. */
+async function reconnectAfterBrowserOffline(browser, signedIn) {
+  const state = await signedIn.storageState()
+  const swContext = await browser.newContext({
+    timezoneId: 'Asia/Riyadh',
+    viewport: { width: 1280, height: 800 },
+    storageState: state,
+  })
+  const swPage = await swContext.newPage()
+  swPage.setDefaultTimeout(25_000)
+  try {
+    await swPage.goto(`${base}/`)
+    await swPage.waitForFunction(() => navigator.serviceWorker?.controller != null, null, { timeout: 30_000 })
+    await swPage.getByRole('heading', { level: 1, name: /E2E/ }).waitFor()
+    await swPage.waitForTimeout(1500)
+    await swContext.setOffline(true)
+    const bar = swPage.locator('[role="status"]').filter({ hasText: /You're offline\.|Can't reach the server\./ })
+    await bar.waitFor({ timeout: 20_000 })
+    await swPage.waitForTimeout(20_000)
+    if (!(await bar.isVisible())) throw new Error('bar cleared during the browser-offline hold')
+    await swContext.setOffline(false)
+    const restoredAt = Date.now()
+    await bar.waitFor({ state: 'hidden', timeout: 2_000 })
+    console.log('browser offline bar cleared', Date.now() - restoredAt, 'ms')
+  } finally {
+    await swContext.close()
+  }
 }
 
 /** Cached project data stays up for 60s offline, and one queued add syncs once. */
@@ -498,6 +519,9 @@ try {
 
   await holdOfflineBar(browser, context)
   pass('offline bar holds')
+
+  await reconnectAfterBrowserOffline(browser, context)
+  pass('browser offline reconnect')
 
   await offlineProjectRoundTrip(browser, context, projectUrl, renamedTask)
   pass('offline project cache')
