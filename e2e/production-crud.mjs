@@ -1,0 +1,217 @@
+import playwright from 'playwright-core'
+
+const { chromium } = playwright
+
+const base = 'https://align-hazel-kappa.vercel.app'
+const stamp = Date.now().toString(36)
+const email = `e2e-${stamp}@align.test`
+const password = 'password12'
+const projectName = `E2E Lamp ${stamp}`
+const taskTitle = `Cut the wick ${stamp}`
+const renamedTask = `Trim the wick ${stamp}`
+const noteTitle = `Materials ${stamp}`
+const todayTitle = `Pack the crate ${stamp}`
+const labelName = `Wick ${stamp}`
+const profileName = `E2E Renamed ${stamp}`
+
+const browser = await chromium.launch({
+  executablePath: process.env.CHROME_PATH ?? '/usr/bin/google-chrome',
+  headless: true,
+  args: ['--no-sandbox', '--disable-dev-shm-usage'],
+})
+
+const context = await browser.newContext({
+  timezoneId: 'Asia/Riyadh',
+  serviceWorkers: 'block',
+  viewport: { width: 1280, height: 800 },
+})
+const page = await context.newPage()
+page.setDefaultTimeout(20_000)
+page.on('dialog', (dialog) => void dialog.accept())
+
+const results = []
+function pass(name) {
+  results.push(name)
+  console.log('PASS', name)
+}
+
+try {
+  await page.goto(`${base}/register`)
+  await page.getByText('At least 10 characters, or a stronger mix.').waitFor()
+  pass('password hint')
+  await page.locator('#name').fill('E2E Owner')
+  await page.locator('#email').fill(email)
+  await page.locator('#password').fill(password)
+  await page.getByRole('button', { name: 'Create account' }).click()
+  await page.getByRole('heading', { name: /E2E/ }).waitFor()
+  pass('register')
+
+  await page.getByLabel('Primary').getByRole('link', { name: 'Projects' }).click()
+  await page.getByRole('button', { name: 'New project' }).click()
+  await page.locator('#project-name').fill(projectName)
+  await page.locator('#project-description').fill('A beeswax shade for the e2e lamp.')
+  await page.getByRole('button', { name: 'Create project' }).click()
+  await page.getByRole('heading', { name: projectName }).waitFor()
+  pass('create project')
+
+  await page.getByLabel('Label name').fill(labelName)
+  await page.getByRole('button', { name: 'Add label' }).click()
+  await page.getByRole('listitem').getByText(labelName, { exact: true }).waitFor()
+  pass('create label')
+
+  await page.getByLabel('Task title').fill(taskTitle)
+  await page.getByLabel('Due date').fill('2026-10-18')
+  await page.getByRole('button', { name: 'Add', exact: true }).click()
+  await page.getByText(taskTitle).waitFor()
+  pass('create task')
+
+  await page.getByRole('button', { name: `Edit “${taskTitle}”` }).click()
+  await page.getByRole('listitem').getByLabel('Task title').fill(renamedTask)
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await page.getByText(renamedTask).waitFor()
+  pass('update task')
+
+  await page.getByRole('tab', { name: 'Notes' }).click()
+  await page.getByRole('button', { name: 'New note' }).click()
+  await page.getByLabel('Title').fill(noteTitle)
+  await page.getByLabel('Note body').fill('Use beeswax, not paraffin.')
+  await page.getByRole('status').filter({ hasText: 'Saved' }).waitFor()
+  pass('create note')
+
+  await page.goBack()
+  await page.getByRole('tab', { name: 'Activity' }).click()
+  await page.getByText(/Created/).first().waitFor()
+  pass('activity')
+
+  await page.getByRole('tab', { name: 'Whiteboard' }).click()
+  const canvas = page.getByLabel('Project whiteboard')
+  await canvas.waitFor()
+  const box = await canvas.boundingBox()
+  if (!box) throw new Error('whiteboard has no box')
+  await page.mouse.move(box.x + 30, box.y + 30)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 140, box.y + 90, { steps: 8 })
+  await page.mouse.up()
+  await page.getByText('Saved', { exact: true }).waitFor()
+  pass('whiteboard save')
+
+  await page.reload()
+  await page.getByRole('heading', { name: projectName }).waitFor()
+  await page.getByRole('tab', { name: 'Tasks' }).click()
+  await page.getByText(renamedTask).waitFor()
+  await page.getByRole('listitem').getByText(labelName, { exact: true }).waitFor()
+  pass('reload project')
+
+  const projectUrl = page.url().split('?')[0]
+  const listed = await context.request.get(`${base}/api/projects?status=active`)
+  const projects = await listed.json()
+  const project = projects.find((item) => item.name === projectName)
+  if (!project) throw new Error('project missing from API after reload')
+  const tasks = await (await context.request.get(`${base}/api/projects/${project.id}/tasks`)).json()
+  if (!tasks.some((task) => task.title === renamedTask && task.dueDate === '2026-10-18')) {
+    throw new Error(`task missing ${JSON.stringify(tasks)}`)
+  }
+  const notes = await (await context.request.get(`${base}/api/projects/${project.id}/notes`)).json()
+  if (!notes.some((note) => note.title === noteTitle && note.body.includes('beeswax'))) {
+    throw new Error(`note missing ${JSON.stringify(notes)}`)
+  }
+  const labels = await (await context.request.get(`${base}/api/labels`)).json()
+  const label = labels.find((item) => item.name === labelName)
+  if (!label) throw new Error('label missing')
+  const patched = await context.request.patch(`${base}/api/labels/${label.id}`, {
+    data: { name: `${labelName} edited` },
+  })
+  if (patched.status() !== 200) throw new Error(`label patch ${patched.status()}`)
+  const board = await (await context.request.get(`${base}/api/projects/${project.id}/whiteboard`)).json()
+  if (!board.scene?.strokes?.length) throw new Error('whiteboard stroke did not persist')
+  pass('api round trip')
+
+  await page.reload()
+  await page.getByRole('listitem').getByText(`${labelName} edited`, { exact: true }).waitFor()
+  pass('label rename visible')
+
+  const page2 = await context.newPage()
+  page2.setDefaultTimeout(20_000)
+  await page2.goto(projectUrl)
+  await page2.getByText(renamedTask).waitFor()
+  await page2.getByRole('listitem').getByText(`${labelName} edited`, { exact: true }).waitFor()
+  await page2.getByRole('tab', { name: 'Notes' }).click()
+  await page2.getByText(noteTitle).waitFor()
+  await page2.getByRole('tab', { name: 'Whiteboard' }).click()
+  const board2 = await (await page2.request.get(`${base}/api/projects/${project.id}/whiteboard`)).json()
+  if (!board2.scene?.strokes?.length) throw new Error('second tab lost the whiteboard')
+  pass('second tab')
+
+  await page.goto(`${base}/today`)
+  await page.getByLabel('Task').fill(todayTitle)
+  await page.getByRole('button', { name: 'Add for today' }).click()
+  await page.getByText(todayTitle).waitFor()
+  await page.reload()
+  await page.getByText(todayTitle).waitFor()
+  const today = await (await context.request.get(`${base}/api/today?date=2026-10-17`)).json()
+  const planned = [...today.planned, ...today.available, ...today.overdue, ...today.carried]
+  if (!planned.some((task) => task.title === todayTitle)) throw new Error('today task missing from API')
+  pass('today')
+
+  await page.locator('#sidebar-search').fill(`wick ${stamp}`)
+  await page.waitForURL(/\/search\?/)
+  await page.getByText(renamedTask).waitFor()
+  pass('search')
+
+  await page.getByRole('button', { name: /Notifications/ }).click()
+  await page.getByRole('button', { name: `Mark “${renamedTask}” read` }).click()
+  pass('notification')
+
+  await page.goto(`${base}/settings`)
+  await page.locator('#profile-name').fill(profileName)
+  await page.getByRole('button', { name: 'Save name' }).click()
+  await page.getByText('Name saved').waitFor()
+  await page.reload()
+  await page.locator('#profile-name').waitFor()
+  const savedName = await page.locator('#profile-name').inputValue()
+  if (savedName !== profileName) throw new Error(`name is ${savedName}`)
+  await page2.goto(`${base}/settings`)
+  if ((await page2.locator('#profile-name').inputValue()) !== profileName) throw new Error('second tab name')
+  pass('settings')
+
+  await page.goto(projectUrl)
+  await page.getByRole('button', { name: `Delete “${renamedTask}”` }).click()
+  await page.getByLabel('Delete task').getByRole('button', { name: 'Delete' }).click()
+  await page.getByRole('listitem').getByText(renamedTask, { exact: true }).waitFor({ state: 'hidden' })
+  await page2.goto(projectUrl)
+  await page2.getByText(renamedTask).waitFor({ state: 'hidden' })
+  pass('delete task')
+
+  await page.getByRole('button', { name: `Delete label ${labelName} edited` }).click()
+  await page.getByRole('listitem').getByText(`${labelName} edited`, { exact: true }).waitFor({ state: 'hidden' })
+  pass('delete label')
+
+  await page.getByRole('button', { name: 'Delete', exact: true }).click()
+  await page.getByLabel('Delete project').getByRole('button', { name: 'Delete' }).click()
+  await page.waitForURL(/\/projects\/?$/)
+  await page.getByRole('link', { name: projectName, exact: true }).waitFor({ state: 'detached' })
+  pass('delete project')
+
+  await page.goto(`${base}/settings`)
+  await page.getByRole('button', { name: 'Delete account' }).click()
+  await page.getByRole('button', { name: 'Delete account' }).last().click()
+  await page.waitForURL(/\/login|\/$/)
+  const session = await context.request.get(`${base}/api/auth/session`)
+  const body = await session.json()
+  if (body.user) throw new Error('account still signed in')
+  pass('delete account')
+
+  const health = await (await context.request.get(`${base}/api/health`)).json()
+  if (health.db !== 'up') throw new Error(`health ${JSON.stringify(health)}`)
+  pass('health')
+  console.log(JSON.stringify({ email, results }, null, 2))
+} catch (error) {
+  await page.screenshot({ path: '/tmp/align-e2e/fail.png', fullPage: true }).catch(() => {})
+  console.error('FAIL', error)
+  console.log('URL', page.url())
+  await context.request.delete(`${base}/api/auth/me`).catch(() => {})
+  process.exitCode = 1
+} finally {
+  await browser.close()
+  process.exit(process.exitCode ?? 0)
+}

@@ -29,32 +29,48 @@ async function dropUnscopedText(collection: mongoose.Collection, name: string): 
   await collection.dropIndex(name)
 }
 
-function ensureIndexes(): Promise<void> {
-  indexesReady ??= Promise.all([
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function syncAllIndexes(): Promise<void> {
+  await Promise.all([
     dropUnscopedText(Project.collection, 'ProjectTextIndex'),
     dropUnscopedText(Task.collection, 'TaskTextIndex'),
     dropUnscopedText(Note.collection, 'NoteTextIndex'),
   ])
-    .then(() =>
-      Promise.all([
-        User.syncIndexes(),
-        Project.syncIndexes(),
-        Label.syncIndexes(),
-        Task.syncIndexes(),
-        Note.syncIndexes(),
-        Activity.syncIndexes(),
-        Notification.syncIndexes(),
-        Whiteboard.syncIndexes(),
-        Session.syncIndexes(),
-        AuthToken.syncIndexes(),
-        RateLimit.syncIndexes(),
-      ]),
-    )
-    .then(() => undefined)
-    .catch((error: unknown) => {
-      indexesReady = null
-      throw error
-    })
+  await Promise.all([
+    User.syncIndexes(),
+    Project.syncIndexes(),
+    Label.syncIndexes(),
+    Task.syncIndexes(),
+    Note.syncIndexes(),
+    Activity.syncIndexes(),
+    Notification.syncIndexes(),
+    Whiteboard.syncIndexes(),
+    Session.syncIndexes(),
+    AuthToken.syncIndexes(),
+    RateLimit.syncIndexes(),
+  ])
+}
+
+function ensureIndexes(): Promise<void> {
+  indexesReady ??= (async () => {
+    let last: unknown
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await syncAllIndexes()
+        return
+      } catch (error) {
+        last = error
+        await wait(400 * (attempt + 1))
+      }
+    }
+    throw last
+  })().catch((error: unknown) => {
+    indexesReady = null
+    throw error
+  })
   return indexesReady
 }
 

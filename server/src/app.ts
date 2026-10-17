@@ -10,7 +10,6 @@ import { errorHandler } from './middleware.ts'
 import { guardOrigin } from './security.ts'
 import { APP_VERSION, MINIMUM_CLIENT_VERSION } from './version.ts'
 import { authRouter } from './routes/auth.ts'
-import { benchRouter } from './routes/bench.ts'
 import { dashboardRouter } from './routes/dashboard.ts'
 import { labelsRouter } from './routes/labels.ts'
 import { notesRouter } from './routes/notes.ts'
@@ -84,7 +83,6 @@ export function createApp(options: AppOptions = {}): Express {
   })
 
   app.use('/api/auth', authRouter(authLimiter))
-  app.use('/api/bench', benchRouter())
   app.use('/api/labels', labelsRouter())
   app.use('/api/projects', projectsRouter())
   app.use('/api/tasks', tasksRouter())
