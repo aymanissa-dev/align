@@ -626,7 +626,7 @@ export function noteNetworkSuccess(options?: { trusted?: boolean }): void {
 function refetchErroredQueries() {
   void queryClient.refetchQueries({
     type: 'active',
-    predicate: (query) => query.state.status === 'error',
+    predicate: (query) => query.state.status === 'error' || query.state.fetchStatus === 'paused',
   })
 }
 

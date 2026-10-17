@@ -21,7 +21,9 @@ export function isOfflineMiss(error: unknown): boolean {
 export function useQueryMiss(query: MissQuery): 'loading' | 'offline' | 'error' | null {
   const restoring = useIsRestoring()
   if (query.data != null) return null
-  if (restoring || query.isLoading || !query.isError) return 'loading'
+  // A paused query has no error yet. onlineManager is offline, so this page
+  // will not load until the probe marks the server reachable.
   if (query.isPaused || isOfflineMiss(query.error)) return 'offline'
+  if (restoring || query.isLoading || !query.isError) return 'loading'
   return 'error'
 }
