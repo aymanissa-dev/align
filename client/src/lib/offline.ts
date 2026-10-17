@@ -693,8 +693,12 @@ export function startOfflineSync() {
     resetProbe(true)
   })
   window.addEventListener('offline', () => {
+    const alreadyDown = unreachable
     markUnreachable()
-    resetProbe()
+    if (probeInFlight) return
+    if (alreadyDown && probeTimer !== undefined && Date.now() - lastProbeAt < 800) return
+    probeStep = 0
+    void runProbe()
   })
   onlineManager.subscribe((online) => {
     if (online) resetProbe()
