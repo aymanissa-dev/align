@@ -93,10 +93,10 @@ async function holdOfflineBar(browser, signedIn) {
   try {
     await swPage.goto(`${base}/`)
     await swPage.waitForFunction(() => navigator.serviceWorker?.controller != null, null, { timeout: 30_000 })
-    await swPage.getByRole('heading', { name: /E2E/ }).waitFor()
+    await swPage.getByRole('heading', { level: 1, name: /E2E/ }).waitFor()
     // Activation reloads the tab once. Let that finish before the network drops.
     await swPage.waitForTimeout(2000)
-    await swPage.getByRole('heading', { name: /E2E/ }).waitFor()
+    await swPage.getByRole('heading', { level: 1, name: /E2E/ }).waitFor()
     const controlled = await swPage.evaluate(() => Boolean(navigator.serviceWorker?.controller))
     if (!controlled) throw new Error('service worker is not controlling the page')
 
