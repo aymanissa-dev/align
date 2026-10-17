@@ -35,6 +35,115 @@ function pass(name) {
   console.log('PASS', name)
 }
 
+async function offlineServiceWorkers(browser, conditions) {
+  const browserSession = await browser.newBrowserCDPSession()
+  try {
+    const { targetInfos } = await browserSession.send('Target.getTargets')
+    for (const info of targetInfos) {
+      if (info.type !== 'service_worker') continue
+      const { sessionId } = await browserSession.send('Target.attachToTarget', {
+        targetId: info.targetId,
+        flatten: false,
+      })
+      await browserSession.send('Target.sendMessageToTarget', {
+        sessionId,
+        message: JSON.stringify({
+          id: 1,
+          method: 'Network.emulateNetworkConditions',
+          params: conditions,
+        }),
+      })
+    }
+  } finally {
+    await browserSession.detach().catch(() => {})
+  }
+}
+
+/** DevTools-style offline: the network is down, navigator.onLine stays true, and the service worker is active. */
+async function holdOfflineBar(browser, signedIn) {
+  const state = await signedIn.storageState()
+  const swContext = await browser.newContext({
+    timezoneId: 'Asia/Riyadh',
+    viewport: { width: 1280, height: 800 },
+    storageState: state,
+  })
+  const swPage = await swContext.newPage()
+  swPage.setDefaultTimeout(25_000)
+  const probes = []
+  const started = new WeakMap()
+  swPage.on('request', (request) => {
+    try {
+      if (new URL(request.url()).pathname === '/api/health') started.set(request, Date.now())
+    } catch {
+      // Ignore malformed URLs.
+    }
+  })
+  swPage.on('requestfailed', (request) => {
+    const at = started.get(request)
+    if (at === undefined) return
+    probes.push({ t: at, failed: true, status: 0, error: request.failure()?.errorText ?? 'failed' })
+  })
+  swPage.on('requestfinished', async (request) => {
+    const at = started.get(request)
+    if (at === undefined) return
+    const response = await request.response()
+    probes.push({ t: at, failed: false, status: response?.status() ?? 0, error: '' })
+  })
+
+  try {
+    await swPage.goto(`${base}/`)
+    await swPage.waitForFunction(() => navigator.serviceWorker?.controller != null, null, { timeout: 30_000 })
+    await swPage.getByRole('heading', { name: /E2E/ }).waitFor()
+    // Activation reloads the tab once. Let that finish before the network drops.
+    await swPage.waitForTimeout(2000)
+    await swPage.getByRole('heading', { name: /E2E/ }).waitFor()
+    const controlled = await swPage.evaluate(() => Boolean(navigator.serviceWorker?.controller))
+    if (!controlled) throw new Error('service worker is not controlling the page')
+
+    const conditions = {
+      offline: true,
+      latency: 0,
+      downloadThroughput: -1,
+      uploadThroughput: -1,
+    }
+    const pageSession = await swContext.newCDPSession(swPage)
+    await pageSession.send('Network.emulateNetworkConditions', conditions)
+    await offlineServiceWorkers(browser, conditions).catch((error) => {
+      console.log('service worker offline', error instanceof Error ? error.message : error)
+    })
+
+    const offlineAt = Date.now()
+    const bar = swPage.locator('[role="status"]').filter({ hasText: /You're offline\.|Can't reach the server\./ })
+    await bar.waitFor({ timeout: 45_000 })
+    const appeared = Date.now()
+    const until = appeared + 60_000
+    while (Date.now() < until) {
+      if (!(await bar.isVisible())) throw new Error(`offline bar cleared after ${Date.now() - appeared}ms`)
+      await swPage.waitForTimeout(2000)
+    }
+    await swPage.waitForTimeout(300)
+
+    const hits = probes.filter((probe) => probe.t >= offlineAt).sort((a, b) => a.t - b.t)
+    const answered = hits.filter((probe) => !probe.failed)
+    if (answered.length) throw new Error(`health was answered while offline ${JSON.stringify(answered)}`)
+    const gaps = hits.slice(1).map((hit, index) => hit.t - hits[index].t)
+    if (hits.length < 4 || hits.length > 12) {
+      throw new Error(`offline probe count ${hits.length} gaps ${gaps.join(',')}`)
+    }
+    if (gaps.some((gap) => gap < 700)) throw new Error(`probes overlapped or did not back off ${gaps.join(',')}`)
+    const floors = [800, 1500, 3000, 6000, 12000]
+    const tail = gaps[0] > 5000 ? gaps.slice(1) : gaps
+    for (let index = 0; index < Math.min(tail.length, floors.length); index += 1) {
+      if (tail[index] + 250 < floors[index]) {
+        throw new Error(`probe backoff ${tail.join(',')} expected at least ${floors[index]} at ${index}`)
+      }
+    }
+    console.log('offline probes', hits.length, 'gaps', gaps.join(','))
+  } finally {
+    await swContext.close()
+  }
+}
+
 try {
   await page.goto(`${base}/register`)
   await page.getByText('Use 10+ characters. Under 10, mix at least two of lowercase, uppercase, numbers, and symbols — three if under 8.').waitFor()
@@ -245,6 +354,32 @@ try {
   if (gaps.some((gap) => gap < 700)) throw new Error(`probe gaps too small ${gaps.join(',')}`)
   if (gaps.length >= 2 && gaps[1] + 200 < gaps[0]) throw new Error(`probe did not back off ${gaps.join(',')}`)
   pass('probe backoff')
+
+  const laterTitle = `Far due ${stamp}`
+  await page.goto(projectUrl)
+  await page.getByRole('tab', { name: 'Tasks' }).click()
+  await page.getByLabel('Task title').fill(laterTitle)
+  await page.getByLabel('Due date').fill('2026-10-25')
+  await page.getByRole('button', { name: 'Add', exact: true }).click()
+  await page.getByText(laterTitle).waitFor()
+  await page.goto(`${base}/`)
+  const upcoming = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Upcoming', exact: true }) })
+  await upcoming.getByText(renamedTask).waitFor()
+  await upcoming.getByText(laterTitle).waitFor({ state: 'hidden' })
+  const viewAll = upcoming.getByRole('button', { name: /View all dated \(\d+\)/ })
+  const viewAllLabel = await viewAll.innerText()
+  const datedCount = Number(viewAllLabel.match(/\((\d+)\)/)?.[1])
+  const badgeCount = Number((await upcoming.locator('div').first().locator('span').innerText()).trim())
+  if (!Number.isFinite(badgeCount) || !Number.isFinite(datedCount) || badgeCount >= datedCount) {
+    throw new Error(`upcoming ${badgeCount} vs ${viewAllLabel}`)
+  }
+  await viewAll.click()
+  await page.getByRole('heading', { name: 'All dated', exact: true }).waitFor()
+  await page.getByText(laterTitle).waitFor()
+  pass('upcoming labels')
+
+  await holdOfflineBar(browser, context)
+  pass('offline bar holds')
 
   await page.goto(projectUrl)
   await page.getByRole('button', { name: `Delete “${renamedTask}”` }).click()

@@ -43,8 +43,26 @@ self.addEventListener('fetch', (event) => {
   // event lets the browser perform the POST itself.
   event.stopImmediatePropagation()
   if (event.request.method !== 'GET' && event.request.method !== 'HEAD') return
+  // Reach probes are the page's job. Intercepting them caches a 200 that
+  // looks like connectivity, and the worker's own fetch doubles every probe.
+  if (isReachProbe(url)) return
   event.respondWith(networkFirstApi(event.request))
 })
+
+function isReachProbe(url) {
+  if (url.pathname === '/api/health') return true
+  return url.pathname === '/api/auth/session' && url.searchParams.has('reach')
+}
+
+function asCacheHit(response) {
+  const headers = new Headers(response.headers)
+  headers.set('X-Align-Cache', 'hit')
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  })
+}
 
 async function networkFirstApi(request) {
   const cache = await caches.open(API_CACHE)
@@ -60,7 +78,7 @@ async function networkFirstApi(request) {
   } catch {
     clearTimeout(timer)
     const cached = await cache.match(request)
-    if (cached) return cached
+    if (cached) return asCacheHit(cached)
     return new Response(JSON.stringify({ error: 'Network error. Check your connection and try again.' }), {
       status: 504,
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },

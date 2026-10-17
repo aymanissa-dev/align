@@ -84,7 +84,9 @@ export function DashboardPage() {
         <>
         <section className="mt-8 border border-neutral-200">
           <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
-            <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Upcoming</h2>
+            <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">
+              {showAllDated ? 'All dated' : 'Upcoming'}
+            </h2>
             <Badge>{showAllDated ? datedOpenCount : upcoming.length}</Badge>
           </div>
           {shown.length === 0 ? (
@@ -121,7 +123,7 @@ export function DashboardPage() {
                 className="focus-ring text-sm text-neutral-950 underline underline-offset-4"
                 onClick={() => setShowAllDated(true)}
               >
-                View all ({datedOpenCount})
+                View all dated ({datedOpenCount})
               </button>
             </div>
           ) : null}

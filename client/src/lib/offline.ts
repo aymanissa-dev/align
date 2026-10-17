@@ -651,14 +651,20 @@ async function runProbe() {
   clearProbeTimer()
   let ok = false
   try {
-    const response = await fetch('/api/health', {
+    // The query keeps a cached /api/health from matching. The worker does not
+    // intercept this URL; a hit header is still not the network.
+    const response = await fetch(`/api/health?t=${Date.now()}`, {
       cache: 'no-store',
       credentials: 'include',
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(4_000),
     })
-    const body: unknown = await response.json().catch(() => null)
-    ok = healthUp(body, response.ok)
+    if (response.headers.get('X-Align-Cache') === 'hit') {
+      ok = false
+    } else {
+      const body: unknown = await response.json().catch(() => null)
+      ok = healthUp(body, response.ok)
+    }
   } catch {
     ok = false
   } finally {

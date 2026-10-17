@@ -119,9 +119,10 @@ async function fetchResponse(path: string, init: RequestInit = {}, refreshed = f
     void purgeStaleClient()
     throw new ApiError(0, 'This page is out of date. Reloading.')
   }
-  // Any real response means this fetch reached something. Mutations prove the network;
-  // GETs can still be a service-worker cache hit, so they only wake the flush.
-  if (response.status === 401 && !refreshed && canRefresh(path)) {
+  // Any real response means this fetch reached something. Mutations prove the network.
+  // A service-worker cache hit is not the network, even when the status is 200.
+  const fromWorkerCache = response.headers.get('X-Align-Cache') === 'hit'
+  if (response.status === 401 && !refreshed && canRefresh(path) && !fromWorkerCache) {
     const ok = await refreshSession()
     if (ok) return fetchResponse(path, init, true)
     forceSignOut()
@@ -132,7 +133,7 @@ async function fetchResponse(path: string, init: RequestInit = {}, refreshed = f
     const body = await response.clone().text()
     rememberGet(path, response, body)
   }
-  if (response.ok) noteNetworkSuccess({ trusted: method !== 'GET' && method !== 'HEAD' })
+  if (response.ok && !fromWorkerCache) noteNetworkSuccess({ trusted: method !== 'GET' && method !== 'HEAD' })
   if (!response.ok) {
     let message = 'Request failed.'
     try {
