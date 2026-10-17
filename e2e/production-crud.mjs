@@ -234,12 +234,10 @@ try {
   }
   page.on('request', onProbe)
   await context.setOffline(true)
-  await page.evaluate(() => window.dispatchEvent(new Event('offline')))
   await page.getByText("You're offline.").waitFor()
   await page.waitForTimeout(7500)
   page.off('request', onProbe)
   await context.setOffline(false)
-  await page.evaluate(() => window.dispatchEvent(new Event('online')))
   const gaps = probeHits.map((hit, index) => (index === 0 ? 0 : hit - probeHits[index - 1])).slice(1)
   if (probeHits.length < 3 || probeHits.length > 7) {
     throw new Error(`probe count ${probeHits.length} in ${Date.now() - probeStart}ms gaps ${gaps.join(',')}`)

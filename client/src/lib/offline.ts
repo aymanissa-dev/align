@@ -621,6 +621,7 @@ let syncStarted = false
 let probeStep = 0
 let probeTimer: number | undefined
 let probeInFlight = false
+let lastProbeAt = 0
 
 function healthUp(body: unknown, ok: boolean): boolean {
   if (!ok || !body || typeof body !== 'object') return false
@@ -646,6 +647,7 @@ function scheduleProbe(delay: number) {
 async function runProbe() {
   if (probeInFlight) return
   probeInFlight = true
+  lastProbeAt = Date.now()
   clearProbeTimer()
   let ok = false
   try {
@@ -675,8 +677,10 @@ async function runProbe() {
   scheduleProbe(delay)
 }
 
-function resetProbe() {
+function resetProbe(force = false) {
   probeStep = 0
+  if (probeInFlight) return
+  if (!force && probeTimer !== undefined && Date.now() - lastProbeAt < 800) return
   void runProbe()
 }
 
@@ -686,7 +690,7 @@ export function startOfflineSync() {
   syncStarted = true
   window.addEventListener('online', () => {
     abortInFlightFlush()
-    resetProbe()
+    resetProbe(true)
   })
   window.addEventListener('offline', () => {
     markUnreachable()
