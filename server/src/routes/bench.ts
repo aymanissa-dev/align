@@ -145,14 +145,7 @@ export function benchRouter(): Router {
         summarize('tasks', Task.find({ userId, projectId }).sort({ order: 1, createdAt: 1, _id: 1 })),
         summarize(
           'tasks-due',
-          Task.find({
-            userId,
-            completed: false,
-            $or: [
-              { dueDate: { $gte: '0000-01-01', $lt: '2026-10-16' } },
-              { dueDate: { $gt: '2026-10-16', $lte: '2026-10-17' } },
-            ],
-          }),
+          Task.find({ userId, completed: false, dueDate: { $gte: '0000-01-01', $lte: '2026-10-17' } }),
           1000,
         ),
         summarize('tasks-open', Task.find({ userId, completed: false })),

@@ -1540,14 +1540,7 @@ function benchRouter() {
         summarize("tasks", Task.find({ userId, projectId }).sort({ order: 1, createdAt: 1, _id: 1 })),
         summarize(
           "tasks-due",
-          Task.find({
-            userId,
-            completed: false,
-            $or: [
-              { dueDate: { $gte: "0000-01-01", $lt: "2026-10-16" } },
-              { dueDate: { $gt: "2026-10-16", $lte: "2026-10-17" } }
-            ]
-          }),
+          Task.find({ userId, completed: false, dueDate: { $gte: "0000-01-01", $lte: "2026-10-17" } }),
           1e3
         ),
         summarize("tasks-open", Task.find({ userId, completed: false })),
@@ -1942,7 +1935,7 @@ async function dueRows(userId, today) {
   const tasks = await Task.find({
     userId,
     completed: false,
-    $or: [{ dueDate: { $gte: "0000-01-01", $lt: today } }, { dueDate: { $gt: today, $lte: tomorrow } }]
+    dueDate: { $gte: "0000-01-01", $lte: tomorrow }
   }).select("title dueDate projectId").lean();
   const projectIds = [...new Set(tasks.map((task) => task.projectId.toString()))];
   const keys = tasks.flatMap((task) => {

@@ -35,7 +35,7 @@ async function dueRows(userId: string, today: string): Promise<DueRow[]> {
   const tasks = await Task.find({
     userId,
     completed: false,
-    $or: [{ dueDate: { $gte: '0000-01-01', $lt: today } }, { dueDate: { $gt: today, $lte: tomorrow } }],
+    dueDate: { $gte: '0000-01-01', $lte: tomorrow },
   })
     .select('title dueDate projectId')
     .lean()
