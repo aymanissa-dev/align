@@ -161,7 +161,22 @@ export function benchRouter(): Router {
       } catch (error) {
         text = { name: 'tasks-text', error: error instanceof Error ? error.message : 'text search failed' }
       }
-      res.json({ plans: [...plans, text] })
+      let taskIndexes: string[] = []
+      let syncError: string | null = null
+      try {
+        taskIndexes = (await Task.collection.indexes()).map((index) => index.name ?? '')
+      } catch (error) {
+        syncError = error instanceof Error ? error.message : 'indexes failed'
+      }
+      if (!taskIndexes.includes('TaskTextIndex')) {
+        try {
+          await Task.syncIndexes()
+          taskIndexes = (await Task.collection.indexes()).map((index) => index.name ?? '')
+        } catch (error) {
+          syncError = error instanceof Error ? error.message : 'sync failed'
+        }
+      }
+      res.json({ plans: [...plans, text], taskIndexes, syncError })
     }),
   )
 
