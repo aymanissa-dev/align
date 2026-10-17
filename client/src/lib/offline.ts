@@ -210,6 +210,9 @@ export function enqueueWrite(input: { path: string; method: string; body?: strin
     throw new Error('offline-full')
   }
   seedQueuedTask(queued)
+  // The write already failed, so try again on our own. A later probe or the
+  // 2s timer retries if this attempt still cannot reach the server.
+  void flushOfflineQueue()
   return id
 }
 
@@ -862,10 +865,11 @@ export function startOfflineSync() {
     if (wasOffline && onLine) accelerate('online-poll')
     else if (!onLine) noteBrowserOffline()
   }, 1_000)
-  // While the queue has something and the last probe reached the server, retry
-  // the flush on a short timer. A missed online event must not leave it sitting.
+  // Retry while anything is queued. `unreachable` stays set until a probe
+  // lands, and that probe may be on the 30s healthy timer, so the flag is
+  // stale the moment the network returns. navigator.onLine is not consulted.
   window.setInterval(() => {
-    if (unreachable || queuedCount() === 0) return
+    if (queuedCount() === 0) return
     void flushOfflineQueue()
   }, FLUSH_INTERVAL_MS)
   void runProbe()
