@@ -1416,8 +1416,8 @@ function scans(plan, found = []) {
   if (plan.shards) Object.values(plan.shards).forEach((shard) => scans(shard.winningPlan, found));
   return found;
 }
-async function summarize(name, query) {
-  const explained = await query.limit(50).explain("executionStats");
+async function summarize(name, query, limit = 50) {
+  const explained = await query.limit(limit).explain("executionStats");
   const plan = explained;
   const found = scans(plan.queryPlanner?.winningPlan);
   const stats = plan.executionStats;
@@ -1547,7 +1547,8 @@ function benchRouter() {
               { dueDate: { $gte: "0000-01-01", $lt: "2026-10-16" } },
               { dueDate: { $gt: "2026-10-16", $lte: "2026-10-17" } }
             ]
-          })
+          }),
+          1e3
         ),
         summarize("tasks-open", Task.find({ userId, completed: false })),
         summarize("tasks-planned", Task.find({ userId, plannedFor: "2026-10-16" })),
@@ -1589,17 +1590,16 @@ function dashboardRouter() {
     "/",
     asyncHandler(async (req, res) => {
       const userId = new Types2.ObjectId(currentUserId(req));
-      const projects = await Project.find({ userId, status: "active" }).select("name description").sort({ updatedAt: -1 }).lean();
-      const ids = projects.map((project) => project._id);
-      const names = new Map(projects.map((project) => [project._id.toString(), project.name]));
-      const [counts2, dated, undated] = await Promise.all([
-        ids.length === 0 ? Promise.resolve([]) : Task.aggregate([
-          { $match: { userId, projectId: { $in: ids } } },
+      const [projects, counts2, dated, undated] = await Promise.all([
+        Project.find({ userId, status: "active" }).select("name description").sort({ updatedAt: -1 }).lean(),
+        Task.aggregate([
+          { $match: { userId } },
           { $group: { _id: { projectId: "$projectId", completed: "$completed" }, n: { $sum: 1 } } }
         ]),
-        ids.length === 0 ? Promise.resolve([]) : Task.find({ userId, projectId: { $in: ids }, completed: false, dueDate: { $gte: "0000-01-01" } }).select("title dueDate priority projectId").sort({ dueDate: 1, title: 1 }).limit(OPEN_LIMIT).lean(),
-        ids.length === 0 ? Promise.resolve([]) : Task.find({ userId, projectId: { $in: ids }, completed: false, dueDate: null }).select("title dueDate priority projectId").sort({ title: 1 }).limit(OPEN_LIMIT).lean()
+        Task.find({ userId, completed: false, dueDate: { $gte: "0000-01-01" } }).select("title dueDate priority projectId").sort({ dueDate: 1, title: 1 }).limit(OPEN_LIMIT).lean(),
+        Task.find({ userId, completed: false, dueDate: null }).select("title dueDate priority projectId").sort({ title: 1 }).limit(OPEN_LIMIT).lean()
       ]);
+      const names = new Map(projects.map((project) => [project._id.toString(), project.name]));
       const tally = /* @__PURE__ */ new Map();
       for (const row of counts2) {
         const id = row._id.projectId.toString();
@@ -1609,7 +1609,10 @@ function dashboardRouter() {
         tally.set(id, bucket);
       }
       let openTaskCount = 0;
-      for (const bucket of tally.values()) openTaskCount += bucket.total - bucket.done;
+      for (const [id, bucket] of tally) {
+        if (!names.has(id)) continue;
+        openTaskCount += bucket.total - bucket.done;
+      }
       const open = [...dated, ...undated].slice(0, OPEN_LIMIT).flatMap((task) => {
         const projectName = names.get(task.projectId.toString());
         if (!projectName) return [];

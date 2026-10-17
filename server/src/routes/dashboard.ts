@@ -26,34 +26,24 @@ export function dashboardRouter(): Router {
     '/',
     asyncHandler(async (req, res) => {
       const userId = new Types.ObjectId(currentUserId(req))
-      const projects = await Project.find({ userId, status: 'active' })
-        .select('name description')
-        .sort({ updatedAt: -1 })
-        .lean()
-      const ids = projects.map((project) => project._id)
-      const names = new Map(projects.map((project) => [project._id.toString(), project.name]))
-      const [counts, dated, undated] = await Promise.all([
-        ids.length === 0
-          ? Promise.resolve([] as CountRow[])
-          : Task.aggregate<CountRow>([
-              { $match: { userId, projectId: { $in: ids } } },
-              { $group: { _id: { projectId: '$projectId', completed: '$completed' }, n: { $sum: 1 } } },
-            ]),
-        ids.length === 0
-          ? Promise.resolve([] as OpenRow[])
-          : Task.find({ userId, projectId: { $in: ids }, completed: false, dueDate: { $gte: '0000-01-01' } })
-              .select('title dueDate priority projectId')
-              .sort({ dueDate: 1, title: 1 })
-              .limit(OPEN_LIMIT)
-              .lean<OpenRow[]>(),
-        ids.length === 0
-          ? Promise.resolve([] as OpenRow[])
-          : Task.find({ userId, projectId: { $in: ids }, completed: false, dueDate: null })
-              .select('title dueDate priority projectId')
-              .sort({ title: 1 })
-              .limit(OPEN_LIMIT)
-              .lean<OpenRow[]>(),
+      const [projects, counts, dated, undated] = await Promise.all([
+        Project.find({ userId, status: 'active' }).select('name description').sort({ updatedAt: -1 }).lean(),
+        Task.aggregate<CountRow>([
+          { $match: { userId } },
+          { $group: { _id: { projectId: '$projectId', completed: '$completed' }, n: { $sum: 1 } } },
+        ]),
+        Task.find({ userId, completed: false, dueDate: { $gte: '0000-01-01' } })
+          .select('title dueDate priority projectId')
+          .sort({ dueDate: 1, title: 1 })
+          .limit(OPEN_LIMIT)
+          .lean<OpenRow[]>(),
+        Task.find({ userId, completed: false, dueDate: null })
+          .select('title dueDate priority projectId')
+          .sort({ title: 1 })
+          .limit(OPEN_LIMIT)
+          .lean<OpenRow[]>(),
       ])
+      const names = new Map(projects.map((project) => [project._id.toString(), project.name]))
 
       const tally = new Map<string, { total: number; done: number }>()
       for (const row of counts) {
@@ -64,7 +54,10 @@ export function dashboardRouter(): Router {
         tally.set(id, bucket)
       }
       let openTaskCount = 0
-      for (const bucket of tally.values()) openTaskCount += bucket.total - bucket.done
+      for (const [id, bucket] of tally) {
+        if (!names.has(id)) continue
+        openTaskCount += bucket.total - bucket.done
+      }
 
       const open = [...dated, ...undated].slice(0, OPEN_LIMIT).flatMap((task) => {
         const projectName = names.get(task.projectId.toString())

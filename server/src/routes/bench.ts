@@ -17,8 +17,8 @@ function scans(plan: Scan | undefined, found: Scan[] = []): Scan[] {
   return found
 }
 
-async function summarize(name: string, query: Query<unknown[], unknown>) {
-  const explained = await query.limit(50).explain('executionStats')
+async function summarize(name: string, query: Query<unknown[], unknown>, limit = 50) {
+  const explained = await query.limit(limit).explain('executionStats')
   const plan = (explained as { queryPlanner?: { winningPlan?: Scan }; executionStats?: { totalKeysExamined?: number; totalDocsExamined?: number; nReturned?: number } })
   const found = scans(plan.queryPlanner?.winningPlan)
   const stats = plan.executionStats
@@ -153,6 +153,7 @@ export function benchRouter(): Router {
               { dueDate: { $gt: '2026-10-16', $lte: '2026-10-17' } },
             ],
           }),
+          1000,
         ),
         summarize('tasks-open', Task.find({ userId, completed: false })),
         summarize('tasks-planned', Task.find({ userId, plannedFor: '2026-10-16' })),
