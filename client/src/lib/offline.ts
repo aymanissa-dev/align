@@ -38,10 +38,12 @@ const HEALTHY_PROBE_MS = 30_000
 const ACCEL_MIN_MS = 500
 const FLUSH_TIMEOUT_MS = 8_000
 const FLUSH_INTERVAL_MS = 2_000
+const FLUSH_UNREACHABLE_MS = 15_000
 const OWNER_KEY = 'align-queue-owner'
 
 let ownerId: string | null = null
 let unreachable = false
+let lastUnreachableFlushAt = 0
 let unreachableSince = 0
 let probeStep = 0
 let queueVersion = 0
@@ -90,6 +92,7 @@ export function markUnreachable() {
   if (unreachable) return
   unreachable = true
   unreachableSince = Date.now()
+  lastUnreachableFlushAt = Date.now()
   onlineManager.setOnline(false)
   window.dispatchEvent(new CustomEvent(REACH_EVENT))
 }
@@ -210,9 +213,9 @@ export function enqueueWrite(input: { path: string; method: string; body?: strin
     throw new Error('offline-full')
   }
   seedQueuedTask(queued)
-  // The write already failed, so try again on our own. A later probe or the
-  // 2s timer retries if this attempt still cannot reach the server.
-  void flushOfflineQueue()
+  // The save already failed. A probe on the short ladder notices the network
+  // coming back and flushes; don't POST again on the way into the outage.
+  armProbeForQueuedWrite()
   return id
 }
 
@@ -813,6 +816,18 @@ function accelerate(reason: string) {
   void runProbe(true)
 }
 
+/**
+ * A queued write must not sit behind the 30s healthy probe. A short ladder
+ * that is already running stays on its current step.
+ */
+function armProbeForQueuedWrite() {
+  markUnreachable()
+  if (probeInFlight) return
+  if (probeTimer !== undefined && scheduledDelay !== 0 && scheduledDelay !== HEALTHY_PROBE_MS) return
+  clearProbeTimer()
+  void runProbe()
+}
+
 /** The browser says the network went down. Leave a short timer that is already armed. */
 function noteBrowserOffline() {
   markUnreachable()
@@ -865,11 +880,17 @@ export function startOfflineSync() {
     if (wasOffline && onLine) accelerate('online-poll')
     else if (!onLine) noteBrowserOffline()
   }, 1_000)
-  // Retry while anything is queued. `unreachable` stays set until a probe
-  // lands, and that probe may be on the 30s healthy timer, so the flag is
-  // stale the moment the network returns. navigator.onLine is not consulted.
+  // While the probe says the server is down, don't POST every 2s. The probe
+  // success path flushes immediately. A 15s retry covers a stale unreachable
+  // flag. The 2s timer runs only after a probe has seen the server.
   window.setInterval(() => {
     if (queuedCount() === 0) return
+    if (!unreachable) {
+      void flushOfflineQueue()
+      return
+    }
+    if (Date.now() - lastUnreachableFlushAt < FLUSH_UNREACHABLE_MS) return
+    lastUnreachableFlushAt = Date.now()
     void flushOfflineQueue()
   }, FLUSH_INTERVAL_MS)
   void runProbe()

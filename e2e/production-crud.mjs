@@ -351,14 +351,19 @@ async function queuedAddFlushesWithoutEvents(browser, signedIn, projectUrl) {
   swPage.setDefaultTimeout(25_000)
   const title = `Queued wick ${Date.now().toString(36)}`
   const posts = []
-  swPage.on('requestfinished', (request) => {
+  const taskPostAt = []
+  const noteTaskPost = (request, finished) => {
     try {
       const url = new URL(request.url())
-      if (request.method() === 'POST' && url.pathname === `/api/projects/${projectId}/tasks`) posts.push(request.url())
+      if (request.method() !== 'POST' || url.pathname !== `/api/projects/${projectId}/tasks`) return
+      if (finished) posts.push(request.url())
+      else taskPostAt.push(Date.now())
     } catch {
       // Ignore malformed URLs.
     }
-  })
+  }
+  swPage.on('request', (request) => noteTaskPost(request, false))
+  swPage.on('requestfinished', (request) => noteTaskPost(request, true))
   const abortApi = (route) => route.abort('failed')
   try {
     await swPage.goto(projectUrl)
@@ -379,11 +384,25 @@ async function queuedAddFlushesWithoutEvents(browser, signedIn, projectUrl) {
     const during = await (await ctx.request.get(`${base}/api/projects/${projectId}/tasks`)).json()
     if (during.some((task) => task.title === title)) throw new Error('queued add reached the server while requests were aborted')
 
+    const queuedAt = Date.now()
+    await swPage.waitForTimeout(20_000)
+    if (!(await swPage.getByText('Queued', { exact: true }).isVisible())) throw new Error('queued add flushed during the outage')
+
     const eventsBefore = await swPage.evaluate(() => window.__alignNet.length)
     await swPage.unroute('**/api/**', abortApi)
     const restoredAt = Date.now()
-    await swPage.getByText('Queued', { exact: true }).waitFor({ state: 'hidden', timeout: 8_000 })
+    const retries = taskPostAt.filter((at) => at >= queuedAt && at < restoredAt)
+    const span = Math.max(restoredAt - queuedAt, 1)
+    const allowed = Math.floor(span / 15_000) + 1
+    if (retries.length > allowed) throw new Error(`queue posted ${retries.length} times in ${span}ms, cap is one attempt per 15s (${allowed})`)
+    const toast = swPage.getByText('Synced 1 saved change.')
+    await Promise.all([
+      toast.waitFor({ timeout: 8_000 }),
+      swPage.getByText('Queued', { exact: true }).waitFor({ state: 'hidden', timeout: 8_000 }),
+    ])
     const elapsed = Date.now() - restoredAt
+    await swPage.waitForTimeout(4_000)
+    if (!(await toast.isVisible())) throw new Error('synced toast hid before 4s')
     const events = await swPage.evaluate(() => window.__alignNet)
     const duringRestore = events.slice(eventsBefore)
     if (duringRestore.length) throw new Error(`browser events during queued flush: ${duringRestore.join(',')}`)

@@ -12,7 +12,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setToasts((current) => [...current, { id, message }])
     window.setTimeout(() => {
       setToasts((current) => current.filter((toast) => toast.id !== id))
-    }, 3200)
+    }, 5_000)
   }, [])
 
   return (
