@@ -25,18 +25,23 @@ export const QUEUE_EVENT = 'align-offline-queue'
 export const REACH_EVENT = 'align-reachability'
 export const FLUSH_EVENT = 'align-offline-flush'
 
-const PROBE_STEPS_MS = [1000, 2000, 4000, 8000, 16000, 30000]
+// While the server is unreachable, recovery is a timer. Chrome DevTools Offline
+// flips navigator.onLine back to true within a couple of seconds and can fire
+// `online` / connection `change` while requests still fail, then stays "online"
+// for the whole outage — so the real reconnect produces no browser signal.
+// Failed probes wait 1s, then 2s, then 3s until 60s after the outage started,
+// then 5s for as long as the bar is showing. The healthy interval stays 30s.
+const UNREACHABLE_STEPS_MS = [1000, 2000, 3000]
+const UNREACHABLE_CAP_MS = 5_000
+const UNREACHABLE_WINDOW_MS = 60_000
 const HEALTHY_PROBE_MS = 30_000
-// While the device is offline the health probe still backs off to 30s. Reconnect
-// does not depend on that timer: `online`, a Network Information `change`, and a
-// 1s read of navigator.onLine (no request) each start a probe on the false→true
-// flip. A 5s probe cap would send a health check on every long outage even when
-// nothing came back. DevTools Offline does flip navigator.onLine, so the poll
-// covers a missed `online` event without that extra traffic.
+const ACCEL_MIN_MS = 500
 const FLUSH_TIMEOUT_MS = 8_000
 
 let ownerId: string | null = null
 let unreachable = false
+let unreachableSince = 0
+let probeStep = 0
 let queueVersion = 0
 const queueListeners = new Set<() => void>()
 
@@ -65,12 +70,15 @@ export function isUnreachable(): boolean {
 export function markUnreachable() {
   if (unreachable) return
   unreachable = true
+  unreachableSince = Date.now()
   window.dispatchEvent(new CustomEvent(REACH_EVENT))
 }
 
 export function markReachable() {
   if (!unreachable) return
   unreachable = false
+  unreachableSince = 0
+  probeStep = 0
   window.dispatchEvent(new CustomEvent(REACH_EVENT))
 }
 
@@ -585,7 +593,7 @@ export function noteNetworkSuccess(options?: { trusted?: boolean }): void {
     onlineManager.setOnline(true)
     markReachable()
     probeStep = 0
-    if (!probeInFlight) scheduleProbe(queuedCount() > 0 ? PROBE_STEPS_MS[0] : HEALTHY_PROBE_MS)
+    if (!probeInFlight) scheduleProbe(queuedCount() > 0 ? UNREACHABLE_STEPS_MS[0] : HEALTHY_PROBE_MS)
   }
   if (queuedCount() > 0) void flushOfflineQueue()
 }
@@ -625,15 +633,12 @@ export function flushOfflineQueue(): Promise<FlushResult> {
 }
 
 let syncStarted = false
-let probeStep = 0
 let probeTimer: number | undefined
 let probeInFlight = false
 let scheduledDelay = 0
 let lastProbeAt = 0
 let probeEpoch = 0
 let probeAbort: AbortController | undefined
-/** After an online event: two quick failures (500ms, then 1s) before the normal backoff. */
-let reconnectLeft = 0
 
 function healthUp(body: unknown, ok: boolean): boolean {
   if (!ok || !body || typeof body !== 'object') return false
@@ -675,7 +680,22 @@ function scheduleProbe(delay: number) {
   }, delay)
 }
 
-/** Reachability probe. Failures wait 1s, 2s, 4s, 8s, 16s, then 30s. */
+/** Next wait after a failed probe. Never the 30s healthy interval. */
+function unreachableDelay(): number {
+  const elapsed = unreachableSince === 0 ? 0 : Date.now() - unreachableSince
+  if (elapsed >= UNREACHABLE_WINDOW_MS) return UNREACHABLE_CAP_MS
+  return UNREACHABLE_STEPS_MS[Math.min(probeStep, UNREACHABLE_STEPS_MS.length - 1)]
+}
+
+function armUnreachableProbe() {
+  markUnreachable()
+  const delay = unreachableDelay()
+  probeStep = Math.min(probeStep + 1, UNREACHABLE_STEPS_MS.length - 1)
+  debug('probe-arm', { delay, step: probeStep, unreachableFor: Date.now() - unreachableSince })
+  scheduleProbe(delay)
+}
+
+/** Reachability probe. While unreachable, failures wait 1s, 2s, then 3s for the first minute, then 5s. */
 async function runProbe(force = false) {
   if (probeInFlight && !force) return
   const epoch = probeEpoch
@@ -713,59 +733,49 @@ async function runProbe(force = false) {
     debug('probe-dropped', { epoch, ok })
     return
   }
-  debug('probe-result', { epoch, ok })
+  debug('probe-result', { epoch, ok, step: probeStep })
   if (ok) {
-    reconnectLeft = 0
     if (unreachable) markReachable()
     probeStep = 0
     if (queuedCount() > 0) void flushOfflineQueue()
-    scheduleProbe(queuedCount() > 0 ? PROBE_STEPS_MS[0] : HEALTHY_PROBE_MS)
+    scheduleProbe(queuedCount() > 0 ? UNREACHABLE_STEPS_MS[0] : HEALTHY_PROBE_MS)
     return
   }
-  if (reconnectLeft > 0) {
-    const delay = reconnectLeft === 2 ? 500 : 1_000
-    reconnectLeft -= 1
-    scheduleProbe(delay)
-    return
-  }
-  markUnreachable()
-  const delay = PROBE_STEPS_MS[Math.min(probeStep, PROBE_STEPS_MS.length - 1)]
-  probeStep = Math.min(probeStep + 1, PROBE_STEPS_MS.length - 1)
-  scheduleProbe(delay)
+  armUnreachableProbe()
 }
 
 /**
- * Check now and start the backoff over.
- * A probe already in flight is the check. One that just failed, with the 1s or 2s
- * step already armed, is left alone so startup does not insert a third request.
+ * Online, connection, focus, and visibility can probe immediately, but a burst
+ * shares one check. A failed accelerator keeps the current 1s/2s/3s/5s step —
+ * it does not start the ladder over, or a short reconnect burst would loop
+ * every time DevTools emits a spurious signal.
  */
-function probeNow() {
-  if (probeInFlight) return
+function accelerate(reason: string) {
   const since = lastProbeAt === 0 ? Number.POSITIVE_INFINITY : Date.now() - lastProbeAt
-  const shortBackoffArmed = probeTimer !== undefined && scheduledDelay <= PROBE_STEPS_MS[1]
-  if (shortBackoffArmed && since < PROBE_STEPS_MS[0]) return
-  probeStep = 0
-  clearProbeTimer()
-  scheduledDelay = 0
-  void runProbe()
-}
-
-/**
- * Start a health check now. Ignores an in-flight probe, the single-flight lock,
- * and navigator.onLine — a DevTools reconnect can deliver `online` before that
- * flag reads true, and dropping the check leaves the bar on the backoff timer.
- */
-function probeUnconditional(reason: string) {
-  debug('probe-unconditional', { reason })
-  reconnectLeft = 2
-  probeEpoch += 1
-  const aborting = probeAbort
-  probeAbort = undefined
-  aborting?.abort()
-  probeInFlight = false
+  if (since < ACCEL_MIN_MS) {
+    debug('probe-skipped', { reason, since })
+    return
+  }
+  debug('probe-accelerate', { reason, since, step: probeStep })
+  if (probeInFlight) {
+    probeEpoch += 1
+    const aborting = probeAbort
+    probeAbort = undefined
+    aborting?.abort()
+    probeInFlight = false
+  }
   clearProbeTimer()
   scheduledDelay = 0
   void runProbe(true)
+}
+
+/** The browser says the network went down. Leave a short timer that is already armed. */
+function noteBrowserOffline() {
+  markUnreachable()
+  if (probeInFlight) return
+  if (probeTimer !== undefined && scheduledDelay !== HEALTHY_PROBE_MS) return
+  clearProbeTimer()
+  void runProbe()
 }
 
 /** Flush queued writes independently of the status bar's React lifecycle. */
@@ -775,38 +785,28 @@ export function startOfflineSync() {
   window.addEventListener('online', () => {
     debug('online')
     abortInFlightFlush()
-    probeUnconditional('online')
+    accelerate('online')
   })
   window.addEventListener('offline', () => {
     debug('offline')
-    reconnectLeft = 0
-    markUnreachable()
-    if (probeInFlight) return
-    // A short backoff is already armed. A second offline signal must not insert a probe.
-    if (probeTimer !== undefined && scheduledDelay !== HEALTHY_PROBE_MS) return
-    probeStep = 0
-    clearProbeTimer()
-    void runProbe()
+    noteBrowserOffline()
   })
   window.addEventListener('focus', () => {
     debug('focus')
-    probeNow()
+    accelerate('focus')
   })
   document.addEventListener('visibilitychange', () => {
     debug('visibilitychange', { visibility: document.visibilityState })
-    if (document.visibilityState === 'visible') probeNow()
+    if (document.visibilityState === 'visible') accelerate('visibility')
   })
   const connection = (navigator as Navigator & { connection?: EventTarget }).connection
   connection?.addEventListener('change', () => {
     debug('connection')
-    // Coming back: onLine is already true, or the bar is up and this change may
-    // have landed before the flag flipped. Going down (onLine false, bar not up
-    // yet) must not start the 500ms reconnect burst.
-    if (navigator.onLine !== false || unreachable) probeUnconditional('connection')
-    else {
-      reconnectLeft = 0
-      markUnreachable()
-    }
+    // A change while the bar is up, or while the browser still says online, is
+    // only an accelerator. A downward change before the bar is up arms nothing
+    // extra: the offline listener starts the single timer.
+    if (navigator.onLine !== false || unreachable) accelerate('connection')
+    else noteBrowserOffline()
   })
   let lastOnLine = navigator.onLine !== false
   window.setInterval(() => {
@@ -816,11 +816,8 @@ export function startOfflineSync() {
     lastOnLine = onLine
     debug('online-poll', { onLine, wasOffline })
     window.dispatchEvent(new CustomEvent(REACH_EVENT))
-    if (wasOffline && onLine) probeUnconditional('online-poll')
-    else if (!onLine) {
-      reconnectLeft = 0
-      markUnreachable()
-    }
+    if (wasOffline && onLine) accelerate('online-poll')
+    else if (!onLine) noteBrowserOffline()
   }, 1_000)
   void runProbe()
 }

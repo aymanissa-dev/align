@@ -59,7 +59,30 @@ async function offlineServiceWorkers(browser, conditions) {
   }
 }
 
-/** DevTools-style offline: the network is down, navigator.onLine stays true, and the service worker is active. */
+/** Gaps while the server is unreachable: 1s, 2s, then 3s, and 5s only after the first minute. */
+function assertUnreachableCadence(times, label) {
+  const gaps = times.slice(1).map((time, index) => time - times[index])
+  if (times.length < 8 || times.length > 40) {
+    throw new Error(`${label} probe count ${times.length} gaps ${gaps.join(',')}`)
+  }
+  const steps = [1000, 2000, 3000]
+  let step = steps.findIndex((candidate) => Math.abs(gaps[0] - candidate) <= candidate * 0.35)
+  if (step < 0) throw new Error(`${label} backoff ${gaps.join(',')} is not 1s, 2s, then 3s`)
+  for (let index = 0; index < gaps.length; index += 1) {
+    const started = times[index] - times[0]
+    const steady = steps[Math.min(step, steps.length - 1)]
+    const expected = started >= 60_000 ? 5000 : steady
+    const nearCap = started >= 55_000
+    const matches = (value) => Math.abs(gaps[index] - value) <= value * 0.35
+    if (!matches(expected) && !(nearCap && (matches(3000) || matches(5000)))) {
+      throw new Error(`${label} backoff ${gaps.join(',')} expected ${expected} at ${index}`)
+    }
+    if (step < steps.length - 1) step += 1
+  }
+  return gaps
+}
+
+/** CDP offline, same shape as DevTools Offline. The service worker is active. */
 async function holdOfflineBar(browser, signedIn) {
   const state = await signedIn.storageState()
   const swContext = await browser.newContext({
@@ -126,22 +149,9 @@ async function holdOfflineBar(browser, signedIn) {
     const hits = probes.filter((probe) => probe.t >= offlineAt).sort((a, b) => a.t - b.t)
     const answered = hits.filter((probe) => !probe.failed)
     if (answered.length) throw new Error(`health was answered while offline ${JSON.stringify(answered)}`)
-    const gaps = hits.slice(1).map((hit, index) => hit.t - hits[index].t)
-    if (hits.length < 4 || hits.length > 10) {
-      throw new Error(`offline probe count ${hits.length} gaps ${gaps.join(',')}`)
-    }
-    const steps = [1000, 2000, 4000, 8000, 16000, 30000]
-    let stepIndex = steps.findIndex((step) => Math.abs(gaps[0] - step) <= step * 0.35)
-    if (stepIndex < 0) throw new Error(`probe backoff ${gaps.join(',')} is not 1s,2s,4s,8s,16s,30s`)
-    for (let index = 0; index < gaps.length && stepIndex + index < steps.length; index += 1) {
-      const step = steps[stepIndex + index]
-      if (Math.abs(gaps[index] - step) > step * 0.35) {
-        throw new Error(`probe backoff ${gaps.join(',')} expected ${step} at ${index}`)
-      }
-    }
+    const gaps = assertUnreachableCadence(hits.map((hit) => hit.t), 'cdp offline')
     console.log('offline probes', hits.length, 'gaps', gaps.join(','))
 
-    await armLongBackoff(swPage, probes, offlineAt)
     // DevTools' "No throttling" is this CDP call. Do not dispatch a synthetic
     // online event — the page has to notice the real transition itself.
     await setTargetsOffline(browser, pageSession, false)
@@ -151,27 +161,6 @@ async function holdOfflineBar(browser, signedIn) {
   } finally {
     await swContext.close()
   }
-}
-
-/** The next health check is at least 8s away, so a fast clear cannot be the scheduled probe. */
-async function armLongBackoff(swPage, probes, offlineAt) {
-  const steps = [1000, 2000, 4000, 8000, 16000, 30000]
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    const hits = probes.filter((probe) => probe.t >= offlineAt).sort((a, b) => a.t - b.t)
-    const last = hits[hits.length - 1]
-    if (!last) throw new Error('no offline probes before reconnect')
-    const gaps = hits.slice(1).map((hit, index) => hit.t - hits[index].t)
-    let start = 0
-    if (gaps.length > 0) {
-      start = steps.findIndex((step) => Math.abs(gaps[0] - step) <= step * 0.35)
-      if (start < 0) start = 0
-    }
-    const armed = steps[Math.min(start + gaps.length, steps.length - 1)]
-    const remaining = armed - (Date.now() - last.t)
-    if (remaining >= 8_000) return
-    await swPage.waitForTimeout(Math.max(200, remaining + 500))
-  }
-  throw new Error('backoff never reached a long wait')
 }
 
 async function setTargetsOffline(browser, pageSession, offline) {
@@ -185,6 +174,70 @@ async function setTargetsOffline(browser, pageSession, offline) {
   await offlineServiceWorkers(browser, conditions).catch((error) => {
     console.log('service worker offline', error instanceof Error ? error.message : error)
   })
+}
+
+/**
+ * Outage where the browser never goes offline: /api/* is aborted, navigator.onLine
+ * stays true, and restoring the route dispatches no online/offline/focus/visibility event.
+ * The bar has to clear on the 3s/5s timer.
+ */
+async function reconnectWhileBrowserStaysOnline(browser, signedIn) {
+  const state = await signedIn.storageState()
+  const ctx = await browser.newContext({
+    timezoneId: 'Asia/Riyadh',
+    serviceWorkers: 'block',
+    viewport: { width: 1280, height: 800 },
+    storageState: state,
+  })
+  const swPage = await ctx.newPage()
+  swPage.setDefaultTimeout(25_000)
+  const probes = []
+  swPage.on('request', (request) => {
+    try {
+      if (new URL(request.url()).pathname === '/api/health') probes.push(Date.now())
+    } catch {
+      // Ignore malformed URLs.
+    }
+  })
+  const abortApi = (route) => route.abort('failed')
+  try {
+    await swPage.goto(`${base}/`)
+    await swPage.getByRole('heading', { level: 1, name: /E2E/ }).waitFor()
+    await swPage.evaluate(() => {
+      window.__alignNet = []
+      for (const type of ['online', 'offline', 'focus', 'visibilitychange']) {
+        window.addEventListener(type, () => {
+          window.__alignNet.push(type)
+        })
+      }
+    })
+    await swPage.route('**/api/**', abortApi)
+    const blockedAt = Date.now()
+    const bar = swPage.locator('[role="status"]').filter({ hasText: "Can't reach the server." })
+    await bar.waitFor({ timeout: 45_000 })
+    const appeared = Date.now()
+    const until = appeared + 60_000
+    while (Date.now() < until) {
+      if (!(await bar.isVisible())) throw new Error(`bar cleared during request outage after ${Date.now() - appeared}ms`)
+      const onLine = await swPage.evaluate(() => navigator.onLine)
+      if (onLine !== true) throw new Error(`navigator.onLine became ${String(onLine)}`)
+      await swPage.waitForTimeout(2000)
+    }
+    const during = probes.filter((time) => time >= blockedAt)
+    const gaps = assertUnreachableCadence(during, 'request outage')
+    console.log('online-flag outage probes', during.length, 'gaps', gaps.join(','))
+
+    const eventsBefore = await swPage.evaluate(() => window.__alignNet.length)
+    await swPage.unroute('**/api/**', abortApi)
+    const restoredAt = Date.now()
+    await bar.waitFor({ state: 'hidden', timeout: 6_000 })
+    const events = await swPage.evaluate(() => window.__alignNet)
+    const duringRestore = events.slice(eventsBefore)
+    if (duringRestore.length) throw new Error(`browser events during restore: ${duringRestore.join(',')}`)
+    console.log('online-flag bar cleared', Date.now() - restoredAt, 'ms')
+  } finally {
+    await ctx.close()
+  }
 }
 
 /** Browser offline (navigator.onLine false) for 20s+, then restore. No synthetic online event. */
@@ -487,11 +540,12 @@ try {
   page.off('request', onProbe)
   await context.setOffline(false)
   const gaps = probeHits.map((hit, index) => (index === 0 ? 0 : hit - probeHits[index - 1])).slice(1)
-  if (probeHits.length < 3 || probeHits.length > 7) {
+  if (probeHits.length < 3 || probeHits.length > 8) {
     throw new Error(`probe count ${probeHits.length} in ${Date.now() - probeStart}ms gaps ${gaps.join(',')}`)
   }
-  if (gaps.some((gap) => gap < 700)) throw new Error(`probe gaps too small ${gaps.join(',')}`)
-  if (gaps.length >= 2 && gaps[1] + 200 < gaps[0]) throw new Error(`probe did not back off ${gaps.join(',')}`)
+  if (gaps.some((gap) => gap < 450)) throw new Error(`probe gaps too small ${gaps.join(',')}`)
+  if (gaps.some((gap) => gap > 4500)) throw new Error(`probe backed off too far ${gaps.join(',')}`)
+  if (!gaps.some((gap) => gap >= 1800)) throw new Error(`probe did not reach 2s ${gaps.join(',')}`)
   pass('probe backoff')
 
   const laterTitle = `Far due ${stamp}`
@@ -519,6 +573,9 @@ try {
 
   await holdOfflineBar(browser, context)
   pass('offline bar holds')
+
+  await reconnectWhileBrowserStaysOnline(browser, context)
+  pass('online-flag reconnect')
 
   await reconnectAfterBrowserOffline(browser, context)
   pass('browser offline reconnect')
