@@ -215,7 +215,7 @@ export function SettingsPage() {
               aria-invalid={passwordError ? true : undefined}
             />
           </Field>
-          <Field label="New password" htmlFor="new-password" hint="At least 8 characters.">
+          <Field label="New password" htmlFor="new-password" hint="At least 10 characters, or a stronger mix.">
             <Input
               id="new-password"
               type="password"

@@ -49,7 +49,7 @@ export function ResetPasswordPage() {
   return (
     <AuthFrame title="Choose a new password" lede="This replaces the password on your account.">
       <form onSubmit={onSubmit} className="space-y-4" noValidate>
-        <Field label="New password" htmlFor="password" error={error}>
+        <Field label="New password" htmlFor="password" hint="At least 10 characters, or a stronger mix." error={error}>
           <Input
             id="password"
             type="password"

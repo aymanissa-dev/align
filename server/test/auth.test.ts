@@ -90,6 +90,12 @@ describe('auth', () => {
     expect(wrong.body).toEqual({ error: 'Email or password is incorrect.' })
   })
 
+  it('hides the bench probe from a normal account', async () => {
+    const { agent } = await registerUser()
+    expect((await agent.post('/api/bench/seed')).status).toBe(404)
+    expect((await agent.get('/api/bench/explain')).status).toBe(404)
+  })
+
   it('requires a session for the rest of the API', async () => {
     const response = await request(app).get('/api/projects')
     expect(response.status).toBe(401)

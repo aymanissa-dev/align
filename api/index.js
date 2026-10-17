@@ -1381,11 +1381,172 @@ ${link}`
   return router;
 }
 
-// src/routes/dashboard.ts
+// src/routes/bench.ts
 import { Router as Router2 } from "express";
+var BENCH_EMAIL = "bench-depth@align.test";
+function scans(plan, found = []) {
+  if (!plan) return found;
+  if (plan.stage === "IXSCAN" || plan.stage === "COLLSCAN") found.push(plan);
+  if (plan.inputStage) scans(plan.inputStage, found);
+  if (plan.inputStages) plan.inputStages.forEach((stage) => scans(stage, found));
+  if (plan.shards) Object.values(plan.shards).forEach((shard) => scans(shard.winningPlan, found));
+  return found;
+}
+async function summarize(name, query) {
+  const explained = await query.limit(50).explain("executionStats");
+  const plan = explained;
+  const found = scans(plan.queryPlanner?.winningPlan);
+  const stats = plan.executionStats;
+  return {
+    name,
+    stages: found.map((scan) => scan.stage),
+    indexes: found.map((scan) => scan.indexName).filter(Boolean),
+    keysExamined: stats?.totalKeysExamined ?? null,
+    docsExamined: stats?.totalDocsExamined ?? null,
+    returned: stats?.nReturned ?? null
+  };
+}
+async function requireBench(userId) {
+  const user = await User.findById(userId).select("email");
+  if (!user || user.email !== BENCH_EMAIL) throw new HttpError(404, "Not found.");
+  return user;
+}
+function benchRouter() {
+  const router = Router2();
+  router.use(requireAuth);
+  router.post(
+    "/seed",
+    asyncHandler(async (req, res) => {
+      const userId = currentUserId(req);
+      await requireBench(userId);
+      const existing = await Task.countDocuments({ userId });
+      if (existing >= 1e3) {
+        res.json(await counts(userId));
+        return;
+      }
+      await Promise.all([
+        Project.deleteMany({ userId }),
+        Task.deleteMany({ userId }),
+        Note.deleteMany({ userId }),
+        Activity.deleteMany({ userId }),
+        Notification.deleteMany({ userId })
+      ]);
+      const now = Date.now();
+      const projects = await Project.insertMany(
+        Array.from({ length: 20 }, (_, index) => ({
+          userId,
+          name: index === 0 ? "Launch checklist" : `Project ${String(index + 1).padStart(2, "0")}`,
+          description: index % 5 === 0 ? "Notes about the launch and beeswax samples." : "A realistic project used for query measurement.",
+          status: index === 19 ? "archived" : "active",
+          createdAt: new Date(now - index * 864e5),
+          updatedAt: new Date(now - index * 36e5)
+        }))
+      );
+      const active = projects.filter((project) => project.status === "active");
+      const tasks = await Task.insertMany(
+        Array.from({ length: 1e3 }, (_, index) => {
+          const due = index < 250 ? "2026-10-14" : index < 300 ? "2026-10-17" : index < 400 ? "2026-10-16" : index < 500 ? "2026-11-02" : null;
+          return {
+            userId,
+            projectId: active[index % active.length]?._id,
+            title: index % 17 === 0 ? `Cut the wick ${index}` : `Task ${String(index + 1).padStart(4, "0")}`,
+            completed: index >= 700,
+            dueDate: due,
+            priority: ["low", "medium", "high", "urgent"][index % 4],
+            labelIds: [],
+            plannedFor: index < 80 ? "2026-10-15" : index < 120 ? "2026-10-16" : null,
+            completedOn: index >= 700 ? "2026-10-16" : null,
+            order: index,
+            createdAt: new Date(now - index * 6e4),
+            updatedAt: new Date(now - index * 3e4)
+          };
+        })
+      );
+      await Note.insertMany(
+        Array.from({ length: 200 }, (_, index) => ({
+          userId,
+          projectId: active[index % active.length]?._id,
+          title: index % 11 === 0 ? "Materials" : `Note ${index + 1}`,
+          body: index % 11 === 0 ? "Use beeswax, not paraffin." : `Body for note ${index + 1} about the launch.`,
+          createdAt: new Date(now - index * 12e4),
+          updatedAt: new Date(now - index * 6e4)
+        }))
+      );
+      await Activity.insertMany(
+        Array.from({ length: 500 }, (_, index) => ({
+          userId,
+          projectId: active[index % active.length]?._id,
+          type: ["create", "update", "complete"][index % 3],
+          summary: `Activity ${index + 1}`,
+          createdAt: new Date(now - index * 2e4)
+        }))
+      );
+      await Notification.insertMany(
+        tasks.slice(0, 300).map((task, index) => {
+          const dueDate2 = task.dueDate ?? "2026-10-14";
+          const kind = dueDate2 < "2026-10-16" ? "overdue" : "due-soon";
+          return {
+            userId,
+            projectId: task.projectId,
+            taskId: task._id,
+            kind,
+            title: task.title,
+            projectName: "Launch checklist",
+            dueDate: dueDate2,
+            read: index % 4 === 0,
+            key: `${task._id.toString()}:${kind}:${dueDate2}`,
+            expireAt: new Date(now + 90 * 864e5),
+            createdAt: new Date(now - index * 1e4)
+          };
+        })
+      );
+      res.status(201).json(await counts(userId));
+    })
+  );
+  router.get(
+    "/explain",
+    asyncHandler(async (req, res) => {
+      const userId = currentUserId(req);
+      await requireBench(userId);
+      const project = await Project.findOne({ userId, status: "active" }).select("_id");
+      if (!project) throw new HttpError(404, "Not found.");
+      const projectId = project._id;
+      const plans = await Promise.all([
+        summarize("projects", Project.find({ userId, status: "active" }).sort({ updatedAt: -1 })),
+        summarize("tasks", Task.find({ userId, projectId }).sort({ order: 1, createdAt: 1, _id: 1 })),
+        summarize("tasks-due", Task.find({ userId, completed: false, dueDate: { $ne: null } })),
+        summarize("notes", Note.find({ userId }).sort({ updatedAt: -1 })),
+        summarize("notes-project", Note.find({ userId, projectId }).sort({ updatedAt: -1 })),
+        summarize("activity", Activity.find({ projectId }).sort({ createdAt: -1, _id: -1 })),
+        summarize("notifications", Notification.find({ userId }).sort({ createdAt: -1, _id: -1 }))
+      ]);
+      let text2 = null;
+      try {
+        text2 = await summarize("tasks-text", Task.find({ userId, $text: { $search: "wick" } }));
+      } catch (error) {
+        text2 = { name: "tasks-text", error: error instanceof Error ? error.message : "text search failed" };
+      }
+      res.json({ plans: [...plans, text2] });
+    })
+  );
+  return router;
+}
+async function counts(userId) {
+  const [projects, tasks, notes, activity, notifications] = await Promise.all([
+    Project.countDocuments({ userId }),
+    Task.countDocuments({ userId }),
+    Note.countDocuments({ userId }),
+    Activity.countDocuments({ userId }),
+    Notification.countDocuments({ userId })
+  ]);
+  return { projects, tasks, notes, activity, notifications };
+}
+
+// src/routes/dashboard.ts
+import { Router as Router3 } from "express";
 import { Types as Types2 } from "mongoose";
 function dashboardRouter() {
-  const router = Router2();
+  const router = Router3();
   router.use(requireAuth);
   router.get(
     "/",
@@ -1467,7 +1628,7 @@ function dashboardRouter() {
 }
 
 // src/routes/labels.ts
-import { Router as Router3 } from "express";
+import { Router as Router4 } from "express";
 
 // src/activity.ts
 function quoteTitle(title) {
@@ -1526,7 +1687,7 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function labelsRouter() {
-  const router = Router3();
+  const router = Router4();
   router.use(requireAuth);
   router.get(
     "/",
@@ -1608,9 +1769,9 @@ function labelsRouter() {
 }
 
 // src/routes/notes.ts
-import { Router as Router4 } from "express";
+import { Router as Router5 } from "express";
 function notesRouter() {
-  const router = Router4();
+  const router = Router5();
   router.use(requireAuth);
   router.get(
     "/",
@@ -1667,7 +1828,7 @@ function notesRouter() {
 }
 
 // src/routes/notifications.ts
-import { Router as Router5 } from "express";
+import { Router as Router6 } from "express";
 import { Types as Types5 } from "mongoose";
 
 // src/page.ts
@@ -1750,7 +1911,7 @@ function shiftISODate(iso, days) {
 // src/routes/notifications.ts
 var NINETY_DAYS_MS2 = 90 * 24 * 60 * 60 * 1e3;
 function notificationsRouter() {
-  const router = Router5();
+  const router = Router6();
   router.use(requireAuth);
   router.get(
     "/",
@@ -1835,12 +1996,12 @@ function notificationsRouter() {
 }
 
 // src/routes/projects.ts
-import { Router as Router6 } from "express";
+import { Router as Router7 } from "express";
 function isDuplicateKey(error) {
   return typeof error === "object" && error !== null && "code" in error && error.code === 11e3;
 }
 function projectsRouter() {
-  const router = Router6();
+  const router = Router7();
   router.use(requireAuth);
   router.get(
     "/",
@@ -2067,7 +2228,7 @@ function projectsRouter() {
 }
 
 // src/routes/search.ts
-import { Router as Router7 } from "express";
+import { Router as Router8 } from "express";
 var RESULT_LIMIT = 20;
 var TIME_MS = 800;
 function queryText(value) {
@@ -2109,7 +2270,7 @@ async function whenText(text2, query) {
   return settle(query());
 }
 function searchRouter() {
-  const router = Router7();
+  const router = Router8();
   router.use(requireAuth);
   router.get(
     "/",
@@ -2186,9 +2347,9 @@ function searchRouter() {
 }
 
 // src/routes/tasks.ts
-import { Router as Router8 } from "express";
+import { Router as Router9 } from "express";
 function tasksRouter() {
-  const router = Router8();
+  const router = Router9();
   router.use(requireAuth);
   router.patch(
     "/:id",
@@ -2248,7 +2409,7 @@ function tasksRouter() {
 }
 
 // src/routes/today.ts
-import { Router as Router9 } from "express";
+import { Router as Router10 } from "express";
 import { Types as Types6 } from "mongoose";
 function present(task) {
   return {
@@ -2268,7 +2429,7 @@ function present(task) {
   };
 }
 function todayRouter() {
-  const router = Router9();
+  const router = Router10();
   router.use(requireAuth);
   router.get(
     "/",
@@ -2381,6 +2542,7 @@ function createApp(options = {}) {
     message: { error: "Too many attempts. Try again later." }
   });
   app2.use("/api/auth", authRouter(authLimiter));
+  app2.use("/api/bench", benchRouter());
   app2.use("/api/labels", labelsRouter());
   app2.use("/api/projects", projectsRouter());
   app2.use("/api/tasks", tasksRouter());

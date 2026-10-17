@@ -64,7 +64,7 @@ export function RegisterPage() {
               required
             />
           </Field>
-          <Field label="Password" htmlFor="password" hint="At least 8 characters.">
+          <Field label="Password" htmlFor="password" hint="At least 10 characters, or a stronger mix.">
             <Input
               id="password"
               type="password"
