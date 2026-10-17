@@ -452,6 +452,112 @@ async function unvisitedRouteRecovers(browser, signedIn, projectName) {
   }
 }
 
+/**
+ * A second account visits the workspace, opens one project, and leaves another
+ * unopened. Logout must not leave the name, email, or a service-worker session.
+ */
+async function signedOutOfflineAndUnvisited(browser) {
+  const stamp = Date.now().toString(36)
+  const name = `E2E Priv ${stamp}`
+  const email = `e2e-priv-${stamp}@align.test`
+  const password = 'password12'
+  const openedName = `Opened shade ${stamp}`
+  const hiddenName = `Unvisited shade ${stamp}`
+  const label = `Wax ${stamp}`
+  const ctx = await browser.newContext({
+    timezoneId: 'Asia/Riyadh',
+    viewport: { width: 1280, height: 800 },
+  })
+  const swPage = await ctx.newPage()
+  swPage.setDefaultTimeout(25_000)
+  const sessionFromWorker = []
+  let watchSession = false
+  swPage.on('response', (response) => {
+    if (!watchSession) return
+    try {
+      const url = new URL(response.url())
+      if (url.pathname !== '/api/auth/session' && url.pathname !== '/api/auth/me') return
+      if (response.fromServiceWorker() || response.status() === 200) {
+        sessionFromWorker.push(`${response.status()} ${url.pathname} sw=${response.fromServiceWorker()}`)
+      }
+    } catch {
+      // Ignore malformed URLs.
+    }
+  })
+  try {
+    await swPage.goto(`${base}/register`)
+    await swPage.locator('#name').fill(name)
+    await swPage.locator('#email').fill(email)
+    await swPage.locator('#password').fill(password)
+    await swPage.getByRole('button', { name: 'Create account' }).click()
+    await swPage.waitForFunction(() => navigator.serviceWorker?.controller != null, null, { timeout: 30_000 })
+    await swPage.getByRole('heading', { level: 1, name: /E2E/ }).waitFor()
+    await swPage.getByLabel('Primary').getByRole('link', { name: 'Projects' }).click()
+    await swPage.getByRole('button', { name: 'New project' }).click()
+    await swPage.locator('#project-name').fill(openedName)
+    await swPage.getByRole('button', { name: 'Create project' }).click()
+    await swPage.getByRole('heading', { name: openedName }).waitFor()
+    await swPage.getByLabel('Label name').fill(label)
+    await swPage.getByRole('button', { name: 'Add label' }).click()
+    await swPage.getByRole('listitem').getByText(label, { exact: true }).waitFor()
+    await swPage.getByLabel('Primary').getByRole('link', { name: 'Today' }).click()
+    await swPage.getByRole('heading', { name: 'Today', exact: true }).waitFor()
+    await swPage.goBack()
+    await swPage.getByRole('heading', { name: openedName }).waitFor()
+    await swPage.waitForTimeout(1500)
+
+    await ctx.setOffline(true)
+    await swPage.reload()
+    await swPage.getByRole('heading', { name: openedName }).waitFor()
+    await swPage.getByRole('listitem').getByText(label, { exact: true }).waitFor()
+    if (!(await swPage.getByText(name, { exact: true }).count())) throw new Error('signed-in offline reload hid the account name')
+    await ctx.setOffline(false)
+    await swPage.getByRole('heading', { name: openedName }).waitFor()
+
+    const created = await ctx.request.post(`${base}/api/projects`, { data: { name: hiddenName } })
+    if (!created.ok()) throw new Error(`second project ${created.status()}`)
+    const hidden = await created.json()
+    if (!hidden.id) throw new Error('second project has no id')
+    await ctx.setOffline(true)
+    await swPage.goto(`${base}/projects/${hidden.id}`)
+    await swPage.getByRole('heading', { name: "You're offline. This page will load when you reconnect." }).waitFor()
+    if (await swPage.getByRole('heading', { name: 'Something went wrong' }).count()) {
+      throw new Error('unvisited project showed the error state')
+    }
+    if (await swPage.getByRole('heading', { name: hiddenName }).count()) {
+      throw new Error('unvisited project rendered cached data')
+    }
+    await ctx.setOffline(false)
+    await swPage.getByRole('heading', { level: 1, name: hiddenName }).waitFor({ timeout: 8_000 })
+    if (await swPage.getByRole('button', { name: 'Try again' }).count()) {
+      throw new Error('unvisited project still offered Try again after reconnect')
+    }
+    pass('unvisited project offline')
+
+    await swPage.goto(`${base}/settings`)
+    await swPage.getByRole('button', { name: 'Sign out', exact: true }).click()
+    await swPage.getByRole('heading', { name: 'Keep your work in alignment.' }).waitFor()
+    sessionFromWorker.length = 0
+    watchSession = true
+    await ctx.setOffline(true)
+    await swPage.goto(`${base}/projects`)
+    await swPage.getByRole('heading', { name: 'Sign in' }).waitFor({ timeout: 15_000 })
+    const html = await swPage.content()
+    if (html.includes(name) || html.includes(email)) throw new Error('signed-out offline page still contains the account')
+    if (await swPage.getByRole('button', { name: 'New project' }).count()) {
+      throw new Error('signed-out offline page still showed the workspace')
+    }
+    if (sessionFromWorker.length) throw new Error(`session served after logout: ${sessionFromWorker.join('; ')}`)
+    console.log('signed-out offline projects hid the account')
+    pass('logged-out offline hides identity')
+  } finally {
+    await ctx.setOffline(false).catch(() => {})
+    const login = await ctx.request.post(`${base}/api/auth/login`, { data: { email, password } }).catch(() => null)
+    if (login?.ok()) await ctx.request.delete(`${base}/api/auth/me`).catch(() => {})
+    await ctx.close()
+  }
+}
+
 try {
   await page.goto(`${base}/register`)
   await page.getByText('Use 10+ characters. Under 10, mix at least two of lowercase, uppercase, numbers, and symbols — three if under 8.').waitFor()
@@ -704,6 +810,8 @@ try {
 
   await unvisitedRouteRecovers(browser, context, projectName)
   pass('unvisited route recovers')
+
+  await signedOutOfflineAndUnvisited(browser)
 
   await page.goto(projectUrl)
   await page.getByRole('button', { name: `Delete “${renamedTask}”` }).click()

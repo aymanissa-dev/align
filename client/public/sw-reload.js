@@ -6,7 +6,6 @@
 
 const API_CACHE = 'align-api'
 const PAGE_CACHE = 'align-pages'
-const API_TIMEOUT_MS = 3000
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
@@ -48,50 +47,23 @@ self.addEventListener('fetch', (event) => {
     return
   }
   if (!url.pathname.startsWith('/api/')) return
-  // Workbox must not see mutations. respondWith would race it; stopping the
-  // event lets the browser perform the POST itself.
+  // The page performs every API call itself, including /api/auth/* and
+  // /api/auth/me. Nothing here is written to Cache Storage. A cached session
+  // would keep the signed-in shell after logout, and workspace data belongs
+  // in the per-user query cache instead.
   event.stopImmediatePropagation()
-  if (event.request.method !== 'GET' && event.request.method !== 'HEAD') return
-  // Reach probes are the page's job. Intercepting them caches a 200 that
-  // looks like connectivity, and the worker's own fetch doubles every probe.
-  if (isReachProbe(url)) return
-  event.respondWith(networkFirstApi(event.request))
 })
 
-function isReachProbe(url) {
-  if (url.pathname === '/api/health') return true
-  return url.pathname === '/api/auth/session' && url.searchParams.has('reach')
-}
+self.addEventListener('message', (event) => {
+  if (!event.data || event.data.type !== 'align-purge-api') return
+  event.waitUntil(purgeApiCaches())
+})
 
-function asCacheHit(response) {
-  const headers = new Headers(response.headers)
-  headers.set('X-Align-Cache', 'hit')
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  })
-}
-
-async function networkFirstApi(request) {
-  const cache = await caches.open(API_CACHE)
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS)
-  try {
-    const response = await fetch(request, { signal: controller.signal, cache: 'no-store' })
-    clearTimeout(timer)
-    // A 304 has an empty body. Hand it back so the page can reuse its copy.
-    if (response.status === 304) return response
-    if (response.ok) cache.put(request, response.clone()).catch(() => {})
-    return response
-  } catch {
-    clearTimeout(timer)
-    const cached = await cache.match(request)
-    if (cached) return asCacheHit(cached)
-    // A synthesized 504 looks like the server failed. Reject instead, so the
-    // page treats a dead network as a network error.
-    throw new Error('offline')
-  }
+async function purgeApiCaches() {
+  const keys = await caches.keys()
+  await Promise.all(
+    keys.filter((key) => key === API_CACHE || key.startsWith(`${API_CACHE}-`)).map((key) => caches.delete(key)),
+  )
 }
 
 async function networkFirstDocument(request) {

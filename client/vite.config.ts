@@ -49,9 +49,9 @@ export default defineConfig({
         skipWaiting: true,
         clientsClaim: true,
         importScripts: ['sw-reload.js'],
-        // index.html is not precached. Navigations are network-only so a slow
-        // response cannot fall back to HTML that points at an old bundle.
-        // API GETs are handled in sw-reload.js with a real timeout.
+        // Navigations try the network first. sw-reload.js serves the precached
+        // shell only after that fetch rejects, so a slow response is not
+        // replaced early. API requests are not cached at all.
         // JS, CSS, and index.html are precached so an unvisited route still has
         // a shell offline. sw-reload.js serves that shell only after a navigation
         // fetch rejects; it does not race a slow network.

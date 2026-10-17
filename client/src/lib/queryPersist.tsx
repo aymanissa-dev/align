@@ -8,6 +8,12 @@ const MAX_AGE_MS = 24 * 60 * 60 * 1000
 const RECENT_LIMIT = 8
 
 let clearUserId: string | null = null
+const sealed = new Set<string>()
+
+/** A new sign-in may persist again. A delayed logout wipe no-ops after this. */
+export function allowPersistedCache(userId: string): void {
+  sealed.delete(userId)
+}
 
 function recentKey(userId: string) {
   return `align-recent-projects:${userId}`
@@ -40,18 +46,17 @@ export function rememberProject(userId: string, projectId: string) {
 }
 
 function shouldPersistQuery(query: Query, userId: string): boolean {
+  if (sealed.has(userId)) return false
   if (query.state.status !== 'success') return false
   const [head, id] = query.queryKey
-  if (head === 'projects' || head === 'today') return true
+  if (head === 'projects' || head === 'today' || head === 'labels') return true
   if ((head === 'tasks' || head === 'project') && typeof id === 'string') {
     return readRecent(userId).includes(id)
   }
   return false
 }
 
-/** Drop this user's saved lists. Call before the persist provider unmounts on logout. */
-export function clearPersistedCache(userId: string) {
-  clearUserId = userId
+function removePersisted(userId: string) {
   try {
     localStorage.removeItem(cacheKey(userId))
     localStorage.removeItem(recentKey(userId))
@@ -60,11 +65,31 @@ export function clearPersistedCache(userId: string) {
   }
 }
 
+/** Drop this user's saved lists. Call before the persist provider unmounts on logout. */
+export function clearPersistedCache(userId: string) {
+  sealed.add(userId)
+  clearUserId = userId
+  removePersisted(userId)
+  // The persister throttles writes for a second. Seal rejects them, and this
+  // removes anything that landed in the same moment as sign-out.
+  window.setTimeout(() => {
+    if (!sealed.has(userId)) return
+    removePersisted(userId)
+  }, 1500)
+}
+
 export function QueryCache({ userId, children }: { userId: string; children: ReactNode }) {
   const persister = useMemo(
     () =>
       createSyncStoragePersister({
-        storage: window.localStorage,
+        storage: {
+          getItem: (key) => window.localStorage.getItem(key),
+          setItem: (key, value) => {
+            if (sealed.has(userId)) return
+            window.localStorage.setItem(key, value)
+          },
+          removeItem: (key) => window.localStorage.removeItem(key),
+        },
         key: cacheKey(userId),
         throttleTime: 1000,
       }),
@@ -86,12 +111,7 @@ export function QueryCache({ userId, children }: { userId: string; children: Rea
     return () => {
       if (clearUserId !== userId) return
       clearUserId = null
-      try {
-        localStorage.removeItem(cacheKey(userId))
-        localStorage.removeItem(recentKey(userId))
-      } catch {
-        // Already gone.
-      }
+      removePersisted(userId)
     }
   }, [userId])
 

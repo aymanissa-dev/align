@@ -1,4 +1,5 @@
 import { ApiError } from './errors.ts'
+import { broadcastSignedOut } from '../lib/authChannel.ts'
 import { forceSignOut } from '../lib/forceSignOut.ts'
 import { enqueueWrite, markUnreachable, noteNetworkSuccess } from '../lib/offline.ts'
 import { refreshSession } from '../lib/refresh.ts'
@@ -125,6 +126,7 @@ async function fetchResponse(path: string, init: RequestInit = {}, refreshed = f
   if (response.status === 401 && !refreshed && canRefresh(path) && !fromWorkerCache) {
     const ok = await refreshSession()
     if (ok) return fetchResponse(path, init, true)
+    broadcastSignedOut()
     forceSignOut()
   }
   if (response.status === 304 && cached) {

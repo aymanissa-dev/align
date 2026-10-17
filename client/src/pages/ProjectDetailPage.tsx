@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError } from '../api/errors.ts'
@@ -37,9 +37,9 @@ export function ProjectDetailPage() {
     enabled: Boolean(id),
   })
   const miss = useQueryMiss(project)
-  useEffect(() => {
-    if (user && id) rememberProject(user.id, id)
-  }, [user, id])
+  // Record the id before the query result is persisted, so this project's
+  // tasks are in the offline cache after the first successful load.
+  if (user && id) rememberProject(user.id, id)
   useDocumentTitle(project.data?.name ?? 'Project')
 
   const archive = useMutation({

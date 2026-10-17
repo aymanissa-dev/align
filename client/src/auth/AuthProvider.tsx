@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { ApiError } from '../api/errors.ts'
 import { api } from '../api/index.ts'
 import type { LoginInput, RegisterInput, User } from '../api/types.ts'
 import { broadcastSignedOut } from '../lib/authChannel.ts'
 import { setForceSignOutHandler } from '../lib/forceSignOut.ts'
+import { clearLocalUser, readLocalUser, writeLocalUser } from '../lib/localUser.ts'
 import { clearQueueForUser, setQueueOwner } from '../lib/offline.ts'
-import { clearPersistedCache, QueryCache } from '../lib/queryPersist.tsx'
+import { allowPersistedCache, clearPersistedCache, QueryCache } from '../lib/queryPersist.tsx'
+import { purgeApiCaches } from '../lib/swCache.ts'
 import { queryClient } from '../queryClient.ts'
 import { AuthContext, type AuthContextValue } from './auth-context.ts'
 
@@ -24,21 +27,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (ready) document.documentElement.dataset.booted = '1'
   }, [ready])
 
+  const dropLocalSession = useCallback((id: string | null) => {
+    epoch.current += 1
+    const storedId = id ?? readLocalUser()?.id ?? null
+    if (storedId) {
+      clearQueueForUser(storedId)
+      clearPersistedCache(storedId)
+    }
+    clearLocalUser()
+    setQueueOwner(null)
+    ownerRef.current = null
+    purgeApiCaches()
+    setUser(null)
+    queryClient.clear()
+  }, [])
+
   useEffect(() => {
     setForceSignOutHandler(() => {
-      epoch.current += 1
-      const id = ownerRef.current
-      if (id) {
-        clearQueueForUser(id)
-        clearPersistedCache(id)
-      }
-      setQueueOwner(null)
-      ownerRef.current = null
-      setUser(null)
-      queryClient.clear()
+      dropLocalSession(ownerRef.current)
     })
     return () => setForceSignOutHandler(null)
-  }, [])
+  }, [dropLocalSession])
 
   useEffect(() => {
     let cancelled = false
@@ -46,10 +55,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     api
       .session()
       .then((next) => {
-        if (!cancelled && epoch.current === mine) setUser(next)
+        if (cancelled || epoch.current !== mine) return
+        if (next) writeLocalUser(next)
+        else clearLocalUser()
+        setUser(next)
       })
-      .catch(() => {
-        if (!cancelled) setUser(null)
+      .catch((error: unknown) => {
+        if (cancelled || epoch.current !== mine) return
+        // A dead network keeps the signed-in shell. A 401 or any real response does not.
+        const offline = error instanceof ApiError && error.status === 0
+        setUser(offline ? readLocalUser() : null)
       })
       .finally(() => {
         if (!cancelled) setReady(true)
@@ -62,6 +77,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (input: LoginInput) => {
     const next = await api.login(input)
     epoch.current += 1
+    allowPersistedCache(next.id)
+    writeLocalUser(next)
     queryClient.clear()
     setUser(next)
   }, [])
@@ -69,49 +86,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const register = useCallback(async (input: RegisterInput) => {
     const next = await api.register(input)
     epoch.current += 1
+    allowPersistedCache(next.id)
+    writeLocalUser(next)
     queryClient.clear()
     setUser(next)
   }, [])
 
   const acceptSession = useCallback((next: User) => {
     epoch.current += 1
+    allowPersistedCache(next.id)
+    writeLocalUser(next)
     queryClient.clear()
     setUser(next)
   }, [])
 
   const logout = useCallback(async () => {
-    const id = user?.id
+    const id = ownerRef.current ?? user?.id ?? null
     await api.logout()
     broadcastSignedOut()
-    if (id) {
-      clearQueueForUser(id)
-      clearPersistedCache(id)
-    }
-    setQueueOwner(null)
-    ownerRef.current = null
-    setUser(null)
-    queryClient.clear()
-  }, [user?.id])
+    dropLocalSession(id)
+  }, [dropLocalSession, user?.id])
 
   const updateProfile = useCallback(async (input: { name?: string; accent?: string }) => {
     const next = await api.updateProfile(input)
+    writeLocalUser(next)
     setUser(next)
     return next
   }, [])
 
   const deleteAccount = useCallback(async () => {
-    const id = user?.id
+    const id = ownerRef.current ?? user?.id ?? null
     await api.deleteAccount()
     broadcastSignedOut()
-    if (id) {
-      clearQueueForUser(id)
-      clearPersistedCache(id)
-    }
-    setQueueOwner(null)
-    ownerRef.current = null
-    setUser(null)
-    queryClient.clear()
-  }, [user?.id])
+    dropLocalSession(id)
+  }, [dropLocalSession, user?.id])
 
   const value = useMemo<AuthContextValue>(
     () => ({ user, ready, login, register, acceptSession, logout, updateProfile, deleteAccount }),
