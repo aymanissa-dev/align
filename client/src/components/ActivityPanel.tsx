@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/index.ts'
 import { Badge } from './chrome.tsx'
-import { ErrorState, ListSkeleton } from './ui.tsx'
+import { ErrorState, ListSkeleton, OfflineState } from './ui.tsx'
+import { useQueryMiss } from '../lib/queryMiss.ts'
 import { formatDateTime } from '../lib/format.ts'
 
 const LABELS = {
@@ -16,9 +17,11 @@ export function ActivityPanel({ projectId }: { projectId: string }) {
     queryKey: ['activity', projectId],
     queryFn: () => api.listActivity(projectId),
   })
+  const miss = useQueryMiss(activity)
 
   if (!activity.data) {
-    if (activity.isLoading) return <ListSkeleton rows={4} />
+    if (miss === 'loading') return <ListSkeleton rows={4} />
+    if (miss === 'offline') return <div className="mt-8"><OfflineState /></div>
     return (
       <div className="mt-8">
         <ErrorState onRetry={() => void activity.refetch()} />

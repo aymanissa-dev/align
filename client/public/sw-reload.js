@@ -38,7 +38,16 @@ self.addEventListener('fetch', (event) => {
   } catch {
     return
   }
-  if (url.origin !== self.location.origin || !url.pathname.startsWith('/api/')) return
+  if (url.origin !== self.location.origin) return
+  // The app shell is precached. A navigation tries the network, and only if
+  // that fetch rejects do we serve the cached document. A slow response is
+  // still the network's response, so an old bundle is not swapped in early.
+  if (event.request.mode === 'navigate') {
+    event.stopImmediatePropagation()
+    event.respondWith(networkFirstDocument(event.request))
+    return
+  }
+  if (!url.pathname.startsWith('/api/')) return
   // Workbox must not see mutations. respondWith would race it; stopping the
   // event lets the browser perform the POST itself.
   event.stopImmediatePropagation()
@@ -79,9 +88,46 @@ async function networkFirstApi(request) {
     clearTimeout(timer)
     const cached = await cache.match(request)
     if (cached) return asCacheHit(cached)
-    return new Response(JSON.stringify({ error: 'Network error. Check your connection and try again.' }), {
-      status: 504,
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-    })
+    // A synthesized 504 looks like the server failed. Reject instead, so the
+    // page treats a dead network as a network error.
+    throw new Error('offline')
   }
+}
+
+async function networkFirstDocument(request) {
+  try {
+    const response = await fetch(request)
+    if (response.ok) {
+      const cache = await caches.open(PAGE_CACHE)
+      cache.put(request, response.clone()).catch(() => {})
+    }
+    return response
+  } catch {
+    const cached = await caches.open(PAGE_CACHE).then((cache) => cache.match(request)).catch(() => undefined)
+    if (cached) return cached
+    const shell = await precachedShell()
+    if (shell) return shell
+    throw new Error('offline')
+  }
+}
+
+async function precachedShell() {
+  const names = await caches.keys()
+  for (const name of names) {
+    if (!name.includes('precache')) continue
+    const cache = await caches.open(name)
+    const requests = await cache.keys()
+    for (const request of requests) {
+      let path = ''
+      try {
+        path = new URL(request.url).pathname
+      } catch {
+        continue
+      }
+      if (path !== '/' && path !== '/index.html') continue
+      const hit = await cache.match(request)
+      if (hit) return hit
+    }
+  }
+  return undefined
 }

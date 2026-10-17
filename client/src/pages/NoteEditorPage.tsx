@@ -8,10 +8,11 @@ import { ConflictDialog } from '../components/ConflictDialog.tsx'
 import { useToast } from '../components/toast-context.ts'
 import { isConflict } from '../lib/conflict.ts'
 import { noteFieldPatch } from '../lib/patch.ts'
-import { ConfirmDialog, EmptyState, ErrorState, ListSkeleton, TextButton } from '../components/ui.tsx'
+import { ConfirmDialog, EmptyState, ErrorState, ListSkeleton, OfflineState, TextButton } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { broadcastWorkspaceChange } from '../lib/dataChannel.ts'
 import { invalidateWorkspace, queryClient } from '../queryClient.ts'
+import { useQueryMiss } from '../lib/queryMiss.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
 export function NoteEditorPage() {
@@ -21,6 +22,7 @@ export function NoteEditorPage() {
     queryFn: () => api.getNote(id),
     enabled: Boolean(id),
   })
+  const miss = useQueryMiss(note)
 
   if (note.error instanceof ApiError && note.error.status === 404) {
     return (
@@ -36,7 +38,8 @@ export function NoteEditorPage() {
     )
   }
   if (!note.data) {
-    if (note.isLoading) return <ListSkeleton />
+    if (miss === 'loading') return <ListSkeleton />
+    if (miss === 'offline') return <OfflineState />
     return <ErrorState onRetry={() => void note.refetch()} />
   }
 

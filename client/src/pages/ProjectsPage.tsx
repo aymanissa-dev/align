@@ -6,10 +6,11 @@ import type { Project, ProjectStatus } from '../api/types.ts'
 import { ProjectFormDialog } from '../components/ProjectFormDialog.tsx'
 import { useToast } from '../components/toast-context.ts'
 import { Badge, PageHeader } from '../components/chrome.tsx'
-import { Button, ConfirmDialog, EmptyState, ErrorState, ListSkeleton, TextButton } from '../components/ui.tsx'
+import { Button, ConfirmDialog, EmptyState, ErrorState, ListSkeleton, OfflineState, TextButton } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { cn } from '../lib/cn.ts'
 import { invalidateWorkspace } from '../queryClient.ts'
+import { useQueryMiss } from '../lib/queryMiss.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
 export function ProjectsPage() {
@@ -25,6 +26,7 @@ export function ProjectsPage() {
     queryKey: ['projects', status],
     queryFn: () => api.listProjects({ status }),
   })
+  const miss = useQueryMiss(projects)
 
   const archive = useMutation({
     mutationFn: (input: { id: string; version?: number }) => api.archiveProject(input.id, { version: input.version }),
@@ -79,8 +81,9 @@ export function ProjectsPage() {
       </div>
 
       <div className="mt-2">
-        {projects.isLoading && !projects.data ? <ListSkeleton rows={3} header={false} /> : null}
-        {projects.isError && !projects.data ? <div className="mt-8"><ErrorState onRetry={() => void projects.refetch()} /></div> : null}
+        {miss === 'loading' ? <ListSkeleton rows={3} header={false} /> : null}
+        {miss === 'offline' ? <div className="mt-8"><OfflineState /></div> : null}
+        {miss === 'error' ? <div className="mt-8"><ErrorState onRetry={() => void projects.refetch()} /></div> : null}
         {projects.data && projects.data.length === 0 ? (
           <div className="mt-8">
             {status === 'active' ? (

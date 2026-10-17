@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError } from '../api/errors.ts'
@@ -9,16 +9,20 @@ import { ActivityPanel } from '../components/ActivityPanel.tsx'
 import { Whiteboard } from '../components/Whiteboard.tsx'
 import { TasksPanel } from '../components/TasksPanel.tsx'
 import { useToast } from '../components/toast-context.ts'
-import { Button, ConfirmDialog, EmptyState, ErrorState, ListSkeleton, TextButton } from '../components/ui.tsx'
+import { Button, ConfirmDialog, EmptyState, ErrorState, ListSkeleton, OfflineState, TextButton } from '../components/ui.tsx'
 import { Badge } from '../components/chrome.tsx'
 import { cn } from '../lib/cn.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { excerpt, formatDate } from '../lib/format.ts'
 import { invalidateWorkspace } from '../queryClient.ts'
+import { useQueryMiss } from '../lib/queryMiss.ts'
+import { rememberProject } from '../lib/queryPersist.tsx'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
+import { useAuth } from '../auth/auth-context.ts'
 
 export function ProjectDetailPage() {
   const { id = '' } = useParams()
+  const { user } = useAuth()
   const navigate = useNavigate()
   const toast = useToast()
   const [params, setParams] = useSearchParams()
@@ -32,6 +36,10 @@ export function ProjectDetailPage() {
     queryFn: () => api.getProject(id),
     enabled: Boolean(id),
   })
+  const miss = useQueryMiss(project)
+  useEffect(() => {
+    if (user && id) rememberProject(user.id, id)
+  }, [user, id])
   useDocumentTitle(project.data?.name ?? 'Project')
 
   const archive = useMutation({
@@ -67,7 +75,8 @@ export function ProjectDetailPage() {
     )
   }
   if (!project.data) {
-    if (project.isLoading) return <ListSkeleton />
+    if (miss === 'loading') return <ListSkeleton />
+    if (miss === 'offline') return <OfflineState />
     return <ErrorState onRetry={() => void project.refetch()} />
   }
 
@@ -158,8 +167,10 @@ function NotesPanel({ projectId }: { projectId: string }) {
     onError: (error) => toast(errorMessage(error)),
   })
 
+  const miss = useQueryMiss(notes)
   if (!notes.data) {
-    if (notes.isLoading) return <ListSkeleton rows={3} />
+    if (miss === 'loading') return <ListSkeleton rows={3} />
+    if (miss === 'offline') return <div className="mt-8"><OfflineState /></div>
     return <div className="mt-8"><ErrorState onRetry={() => void notes.refetch()} /></div>
   }
 

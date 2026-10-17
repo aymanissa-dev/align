@@ -52,7 +52,10 @@ export default defineConfig({
         // index.html is not precached. Navigations are network-only so a slow
         // response cannot fall back to HTML that points at an old bundle.
         // API GETs are handled in sw-reload.js with a real timeout.
-        globPatterns: ['**/*.{js,css,ico,png,svg,webp,webmanifest,woff2}'],
+        // JS, CSS, and index.html are precached so an unvisited route still has
+        // a shell offline. sw-reload.js serves that shell only after a navigation
+        // fetch rejects; it does not race a slow network.
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,webp,webmanifest,woff2}'],
         navigateFallback: undefined,
         runtimeCaching: [
           {

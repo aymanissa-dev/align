@@ -4,6 +4,7 @@ import type { LoginInput, RegisterInput, User } from '../api/types.ts'
 import { broadcastSignedOut } from '../lib/authChannel.ts'
 import { setForceSignOutHandler } from '../lib/forceSignOut.ts'
 import { clearQueueForUser, setQueueOwner } from '../lib/offline.ts'
+import { clearPersistedCache, QueryCache } from '../lib/queryPersist.tsx'
 import { queryClient } from '../queryClient.ts'
 import { AuthContext, type AuthContextValue } from './auth-context.ts'
 
@@ -13,7 +14,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const ownerRef = useRef<string | null>(null)
   const epoch = useRef(0)
   const nextOwner = user?.id ?? null
-  if (ownerRef.current !== nextOwner) {
+  // A render with no user yet must not wipe the owner. Logout clears it explicitly.
+  if (nextOwner && ownerRef.current !== nextOwner) {
     ownerRef.current = nextOwner
     setQueueOwner(nextOwner)
   }
@@ -26,7 +28,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setForceSignOutHandler(() => {
       epoch.current += 1
       const id = ownerRef.current
-      if (id) clearQueueForUser(id)
+      if (id) {
+        clearQueueForUser(id)
+        clearPersistedCache(id)
+      }
       setQueueOwner(null)
       ownerRef.current = null
       setUser(null)
@@ -78,7 +83,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const id = user?.id
     await api.logout()
     broadcastSignedOut()
-    if (id) clearQueueForUser(id)
+    if (id) {
+      clearQueueForUser(id)
+      clearPersistedCache(id)
+    }
     setQueueOwner(null)
     ownerRef.current = null
     setUser(null)
@@ -95,7 +103,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const id = user?.id
     await api.deleteAccount()
     broadcastSignedOut()
-    if (id) clearQueueForUser(id)
+    if (id) {
+      clearQueueForUser(id)
+      clearPersistedCache(id)
+    }
     setQueueOwner(null)
     ownerRef.current = null
     setUser(null)
@@ -107,5 +118,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [user, ready, login, register, acceptSession, logout, updateProfile, deleteAccount],
   )
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+  return (
+    <AuthContext.Provider value={value}>
+      {user ? <QueryCache userId={user.id}>{children}</QueryCache> : children}
+    </AuthContext.Provider>
+  )
 }

@@ -5,10 +5,11 @@ import { api } from '../api/index.ts'
 import type { Note, Project } from '../api/types.ts'
 import { useToast } from '../components/toast-context.ts'
 import { PageHeader } from '../components/chrome.tsx'
-import { Button, EmptyState, ErrorState, Field, Input, ListSkeleton, Modal, Select } from '../components/ui.tsx'
+import { Button, EmptyState, ErrorState, Field, Input, ListSkeleton, Modal, OfflineState, Select } from '../components/ui.tsx'
 import { buttonClass } from '../lib/buttonClass.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { excerpt, formatDate } from '../lib/format.ts'
+import { useQueryMiss } from '../lib/queryMiss.ts'
 import { invalidateWorkspace } from '../queryClient.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
@@ -19,6 +20,8 @@ export function NotesPage() {
 
   const notes = useQuery({ queryKey: ['notes'], queryFn: () => api.listNotes() })
   const projects = useQuery({ queryKey: ['projects', 'all'], queryFn: () => api.listProjects() })
+  const notesMiss = useQueryMiss(notes)
+  const projectsMiss = useQueryMiss(projects)
 
   const loading = (notes.isLoading && !notes.data) || (projects.isLoading && !projects.data)
   const failed = (!notes.data && notes.isError) || (!projects.data && projects.isError)
@@ -41,8 +44,13 @@ export function NotesPage() {
         action={<Button onClick={onNew}>New note</Button>}
       />
 
-      {loading ? <ListSkeleton /> : null}
-      {failed ? (
+      {loading || notesMiss === 'loading' || projectsMiss === 'loading' ? <ListSkeleton /> : null}
+      {failed && (notesMiss === 'offline' || projectsMiss === 'offline') ? (
+        <div className="mt-8">
+          <OfflineState />
+        </div>
+      ) : null}
+      {failed && notesMiss !== 'offline' && projectsMiss !== 'offline' && notesMiss !== 'loading' && projectsMiss !== 'loading' ? (
         <div className="mt-8">
           <ErrorState
             onRetry={() => {

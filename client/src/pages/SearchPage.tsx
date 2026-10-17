@@ -3,8 +3,9 @@ import type { ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api/index.ts'
 import { PageHeader } from '../components/chrome.tsx'
-import { EmptyState, ErrorState, ListSkeleton } from '../components/ui.tsx'
+import { EmptyState, ErrorState, ListSkeleton, OfflineState } from '../components/ui.tsx'
 import { excerpt } from '../lib/format.ts'
+import { useQueryMiss } from '../lib/queryMiss.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
 export function SearchPage() {
@@ -17,6 +18,7 @@ export function SearchPage() {
     queryFn: () => api.search(query),
     enabled: query.length >= 3,
   })
+  const miss = useQueryMiss(results)
 
   const total =
     (results.data?.projects.length ?? 0) + (results.data?.tasks.length ?? 0) + (results.data?.notes.length ?? 0)
@@ -37,8 +39,13 @@ export function SearchPage() {
         }
       />
 
-      {query && results.isLoading ? <ListSkeleton rows={4} /> : null}
-      {query && results.isError && !results.data ? (
+      {query.length >= 3 && miss === 'loading' ? <ListSkeleton rows={4} /> : null}
+      {query.length >= 3 && miss === 'offline' ? (
+        <div className="mt-8">
+          <OfflineState />
+        </div>
+      ) : null}
+      {query.length >= 3 && miss === 'error' ? (
         <div className="mt-8">
           <ErrorState onRetry={() => void results.refetch()} />
         </div>

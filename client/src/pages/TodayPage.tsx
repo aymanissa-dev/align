@@ -6,7 +6,7 @@ import { ApiError } from '../api/errors.ts'
 import type { TodayData, TodayTask } from '../api/types.ts'
 import { useToast } from '../components/toast-context.ts'
 import { DueBadge, PageHeader, PriorityBadge } from '../components/chrome.tsx'
-import { Button, CheckButton, ErrorState, Field, Input, ListSkeleton, Select } from '../components/ui.tsx'
+import { Button, CheckButton, ErrorState, Field, Input, ListSkeleton, OfflineState, Select } from '../components/ui.tsx'
 import { buttonClass } from '../lib/buttonClass.ts'
 import { localISODate, shiftISODate } from '../lib/due.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
@@ -14,6 +14,7 @@ import { getQueueVersion, pendingTaskCreates, subscribeQueue } from '../lib/offl
 import { groupToday } from '../lib/todayGroups.ts'
 import { useToggleTask } from '../hooks/useToggleTask.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
+import { useQueryMiss } from '../lib/queryMiss.ts'
 import { invalidateWorkspace } from '../queryClient.ts'
 import { cn } from '../lib/cn.ts'
 
@@ -30,6 +31,7 @@ export function TodayPage() {
     queryKey: ['today', date],
     queryFn: ({ signal }) => api.getToday(date, { signal }),
   })
+  const miss = useQueryMiss(today)
   const projects = useQuery({
     queryKey: ['projects', 'active'],
     queryFn: () => api.listProjects({ status: 'active' }),
@@ -82,7 +84,8 @@ export function TodayPage() {
   })
 
   if (!today.data) {
-    if (today.isLoading) return <ListSkeleton />
+    if (miss === 'loading') return <ListSkeleton />
+    if (miss === 'offline') return <OfflineState />
     return <ErrorState onRetry={() => void today.refetch()} />
   }
 

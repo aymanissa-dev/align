@@ -3,7 +3,8 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '../api/index.ts'
 import type { WhiteboardPoint, WhiteboardScene } from '../api/types.ts'
 import { useToast } from './toast-context.ts'
-import { ErrorState } from './ui.tsx'
+import { ErrorState, OfflineState } from './ui.tsx'
+import { useQueryMiss } from '../lib/queryMiss.ts'
 import { cn } from '../lib/cn.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 
@@ -101,6 +102,7 @@ export function Whiteboard({ projectId }: { projectId: string }) {
     queryKey: ['whiteboard', projectId],
     queryFn: () => api.getWhiteboard(projectId),
   })
+  const boardMiss = useQueryMiss(board)
 
   const save = useMutation({
     mutationFn: (next: WhiteboardScene) => api.saveWhiteboard(projectId, next),
@@ -320,6 +322,13 @@ export function Whiteboard({ projectId }: { projectId: string }) {
     setDraft(null)
   }
 
+  if (boardMiss === 'offline') {
+    return (
+      <div className="mt-8">
+        <OfflineState />
+      </div>
+    )
+  }
   if (board.isError && !board.data) {
     return (
       <div className="mt-8">

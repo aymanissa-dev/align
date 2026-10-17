@@ -336,6 +336,122 @@ async function offlineProjectRoundTrip(browser, signedIn, projectUrl, existingTi
   }
 }
 
+/** Queue an add while /api/* fails and onLine stays true. The probe flush must POST once. */
+async function queuedAddFlushesWithoutEvents(browser, signedIn, projectUrl) {
+  const projectId = projectUrl.split('/projects/')[1]?.split(/[?#]/)[0]
+  if (!projectId) throw new Error(`project url ${projectUrl}`)
+  const state = await signedIn.storageState()
+  const ctx = await browser.newContext({
+    timezoneId: 'Asia/Riyadh',
+    serviceWorkers: 'block',
+    viewport: { width: 1280, height: 800 },
+    storageState: state,
+  })
+  const swPage = await ctx.newPage()
+  swPage.setDefaultTimeout(25_000)
+  const title = `Queued wick ${Date.now().toString(36)}`
+  const posts = []
+  swPage.on('requestfinished', (request) => {
+    try {
+      const url = new URL(request.url())
+      if (request.method() === 'POST' && url.pathname === `/api/projects/${projectId}/tasks`) posts.push(request.url())
+    } catch {
+      // Ignore malformed URLs.
+    }
+  })
+  const abortApi = (route) => route.abort('failed')
+  try {
+    await swPage.goto(projectUrl)
+    await swPage.getByRole('heading', { level: 1, name: /E2E Lamp/ }).waitFor()
+    await swPage.getByLabel('Task title').waitFor()
+    await swPage.evaluate(() => {
+      window.__alignNet = []
+      for (const type of ['online', 'offline', 'focus', 'visibilitychange']) {
+        window.addEventListener(type, () => {
+          window.__alignNet.push(type)
+        })
+      }
+    })
+    await swPage.route('**/api/**', abortApi)
+    await swPage.getByLabel('Task title').fill(title)
+    await swPage.getByRole('button', { name: 'Add', exact: true }).click()
+    await swPage.getByText('Queued', { exact: true }).waitFor()
+    const during = await (await ctx.request.get(`${base}/api/projects/${projectId}/tasks`)).json()
+    if (during.some((task) => task.title === title)) throw new Error('queued add reached the server while requests were aborted')
+
+    const eventsBefore = await swPage.evaluate(() => window.__alignNet.length)
+    await swPage.unroute('**/api/**', abortApi)
+    const restoredAt = Date.now()
+    await swPage.getByText('Queued', { exact: true }).waitFor({ state: 'hidden', timeout: 8_000 })
+    const elapsed = Date.now() - restoredAt
+    const events = await swPage.evaluate(() => window.__alignNet)
+    const duringRestore = events.slice(eventsBefore)
+    if (duringRestore.length) throw new Error(`browser events during queued flush: ${duringRestore.join(',')}`)
+    if (posts.length !== 1) throw new Error(`queued add posted ${posts.length} times`)
+    const after = await (await ctx.request.get(`${base}/api/projects/${projectId}/tasks`)).json()
+    const count = after.filter((task) => task.title === title).length
+    if (count !== 1) throw new Error(`queued add synced ${count} times`)
+    console.log('queued add flushed', elapsed, 'ms')
+  } finally {
+    await ctx.close()
+  }
+}
+
+/** An unvisited route with no cache shows the offline empty state, then loads on its own. */
+async function unvisitedRouteRecovers(browser, signedIn, projectName) {
+  const state = await signedIn.storageState()
+  const ctx = await browser.newContext({
+    timezoneId: 'Asia/Riyadh',
+    viewport: { width: 1280, height: 800 },
+    storageState: state,
+  })
+  const swPage = await ctx.newPage()
+  swPage.setDefaultTimeout(25_000)
+  let gateway = 0
+  swPage.on('response', (response) => {
+    try {
+      if (response.status() === 504 && new URL(response.url()).pathname.startsWith('/api/')) gateway += 1
+    } catch {
+      // Ignore malformed URLs.
+    }
+  })
+  try {
+    await swPage.goto(`${base}/`)
+    await swPage.waitForFunction(() => navigator.serviceWorker?.controller != null, null, { timeout: 30_000 })
+    await swPage.getByRole('heading', { level: 1, name: /E2E/ }).waitFor()
+    await swPage.evaluate(() => {
+      for (const key of Object.keys(localStorage)) {
+        if (key.startsWith('align-rq') || key.startsWith('align-recent-projects')) localStorage.removeItem(key)
+      }
+    })
+    await swPage.reload()
+    await swPage.waitForFunction(() => navigator.serviceWorker?.controller != null, null, { timeout: 30_000 })
+    await swPage.getByRole('heading', { level: 1, name: /E2E/ }).waitFor()
+    await swPage.waitForTimeout(1000)
+    await swPage.evaluate(async () => {
+      const keys = await caches.keys()
+      await Promise.all(keys.filter((key) => key === 'align-api').map((key) => caches.delete(key)))
+    })
+    gateway = 0
+    await ctx.setOffline(true)
+    await swPage.getByLabel('Primary').getByRole('link', { name: 'Projects' }).click()
+    await swPage.getByRole('heading', { name: "You're offline. This page will load when you reconnect." }).waitFor()
+    if (await swPage.getByRole('heading', { name: 'Something went wrong' }).count()) {
+      throw new Error('unvisited projects page showed the error state')
+    }
+    if (gateway) throw new Error(`service worker synthesized ${gateway} 504s`)
+    await ctx.setOffline(false)
+    await swPage.getByRole('link', { name: projectName, exact: true }).waitFor({ timeout: 8_000 })
+    if (await swPage.getByRole('button', { name: 'Try again' }).count()) {
+      throw new Error('projects page still offered Try again after reconnect')
+    }
+    console.log('unvisited projects recovered without a click')
+  } finally {
+    await ctx.setOffline(false).catch(() => {})
+    await ctx.close()
+  }
+}
+
 try {
   await page.goto(`${base}/register`)
   await page.getByText('Use 10+ characters. Under 10, mix at least two of lowercase, uppercase, numbers, and symbols — three if under 8.').waitFor()
@@ -582,6 +698,12 @@ try {
 
   await offlineProjectRoundTrip(browser, context, projectUrl, renamedTask)
   pass('offline project cache')
+
+  await queuedAddFlushesWithoutEvents(browser, context, projectUrl)
+  pass('queued add flushes')
+
+  await unvisitedRouteRecovers(browser, context, projectName)
+  pass('unvisited route recovers')
 
   await page.goto(projectUrl)
   await page.getByRole('button', { name: `Delete “${renamedTask}”` }).click()

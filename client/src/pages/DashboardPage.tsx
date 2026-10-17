@@ -5,13 +5,14 @@ import { useAuth } from '../auth/auth-context.ts'
 import { api } from '../api/index.ts'
 import type { OpenTask } from '../api/types.ts'
 import { Badge, DueBadge, PageHeader, PriorityBadge, Stat } from '../components/chrome.tsx'
-import { CheckButton, EmptyState, ErrorState, ListSkeleton, ProgressBar } from '../components/ui.tsx'
+import { CheckButton, EmptyState, ErrorState, ListSkeleton, OfflineState, ProgressBar } from '../components/ui.tsx'
 import { buttonClass } from '../lib/buttonClass.ts'
 import { useToast } from '../components/toast-context.ts'
 import { useToggleTask } from '../hooks/useToggleTask.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { isUpcoming } from '../lib/due.ts'
 import { firstName, greeting } from '../lib/format.ts'
+import { useQueryMiss } from '../lib/queryMiss.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
 export function DashboardPage() {
@@ -24,11 +25,13 @@ export function DashboardPage() {
     queryKey: ['dashboard'],
     queryFn: ({ signal }) => api.getDashboard({ signal }),
   })
+  const miss = useQueryMiss(dashboard)
   const [showAllDated, setShowAllDated] = useState(false)
 
   if (!user) return null
   if (!dashboard.data) {
-    if (dashboard.isLoading) return <ListSkeleton />
+    if (miss === 'loading') return <ListSkeleton />
+    if (miss === 'offline') return <OfflineState />
     return <ErrorState onRetry={() => void dashboard.refetch()} />
   }
 

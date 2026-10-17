@@ -37,6 +37,8 @@ const UNREACHABLE_WINDOW_MS = 60_000
 const HEALTHY_PROBE_MS = 30_000
 const ACCEL_MIN_MS = 500
 const FLUSH_TIMEOUT_MS = 8_000
+const FLUSH_INTERVAL_MS = 2_000
+const OWNER_KEY = 'align-queue-owner'
 
 let ownerId: string | null = null
 let unreachable = false
@@ -61,6 +63,23 @@ export function getQueueVersion(): number {
 
 export function setQueueOwner(userId: string | null) {
   ownerId = userId
+  try {
+    if (userId) sessionStorage.setItem(OWNER_KEY, userId)
+    else sessionStorage.removeItem(OWNER_KEY)
+  } catch {
+    // Private mode can reject storage. The in-memory id still covers this tab.
+  }
+}
+
+function currentOwner(): string | null {
+  if (ownerId) return ownerId
+  try {
+    const stored = sessionStorage.getItem(OWNER_KEY)
+    if (stored) ownerId = stored
+  } catch {
+    // Ignore storage failures and keep the queue until an owner is set.
+  }
+  return ownerId
 }
 
 export function isUnreachable(): boolean {
@@ -71,6 +90,7 @@ export function markUnreachable() {
   if (unreachable) return
   unreachable = true
   unreachableSince = Date.now()
+  onlineManager.setOnline(false)
   window.dispatchEvent(new CustomEvent(REACH_EVENT))
 }
 
@@ -79,6 +99,7 @@ export function markReachable() {
   unreachable = false
   unreachableSince = 0
   probeStep = 0
+  onlineManager.setOnline(true)
   window.dispatchEvent(new CustomEvent(REACH_EVENT))
 }
 
@@ -157,8 +178,9 @@ function writeQueue(items: QueuedWrite[]) {
 }
 
 function mine(items = readQueue()): QueuedWrite[] {
-  if (!ownerId) return []
-  return items.filter((item) => item.userId === ownerId)
+  const owner = currentOwner()
+  if (!owner) return []
+  return items.filter((item) => item.userId === owner)
 }
 
 export function queuedCount(): number {
@@ -170,12 +192,13 @@ export function queueFailure(): string | null {
 }
 
 export function enqueueWrite(input: { path: string; method: string; body?: string; match?: string }): string {
-  if (!ownerId) throw new Error('offline-owner')
+  const owner = currentOwner()
+  if (!owner) throw new Error('offline-owner')
   const items = readQueue()
-  const next = { userId: ownerId, path: input.path, method: input.method, body: input.body, match: input.match }
+  const next = { userId: owner, path: input.path, method: input.method, body: input.body, match: input.match }
   const nextClientId = clientIdOf(next)
   const existing = items.find(
-    (item) => signature(item) === signature(next) || (nextClientId !== null && clientIdOf(item) === nextClientId && item.userId === ownerId),
+    (item) => signature(item) === signature(next) || (nextClientId !== null && clientIdOf(item) === nextClientId && item.userId === owner),
   )
   if (existing) return existing.id
   const id = crypto.randomUUID()
@@ -588,14 +611,34 @@ function abortInFlightFlush() {
 }
 
 export function noteNetworkSuccess(options?: { trusted?: boolean }): void {
-  if (options?.trusted) {
+  // Any real response, including a GET, means the server is reachable. The
+  // health probe uses a raw fetch and does not come through here; it calls
+  // onServerReachable itself. navigator.onLine is not consulted.
+  if (unreachable || options?.trusted) {
     if (unreachable) abortInFlightFlush()
-    onlineManager.setOnline(true)
-    markReachable()
-    probeStep = 0
+    onServerReachable()
     if (!probeInFlight) scheduleProbe(queuedCount() > 0 ? UNREACHABLE_STEPS_MS[0] : HEALTHY_PROBE_MS)
+    return
   }
   if (queuedCount() > 0) void flushOfflineQueue()
+}
+
+function refetchErroredQueries() {
+  void queryClient.refetchQueries({
+    type: 'active',
+    predicate: (query) => query.state.status === 'error',
+  })
+}
+
+/** Probe or request succeeded. Flush the queue and recover pages that failed offline. */
+function onServerReachable() {
+  const wasUnreachable = unreachable
+  onlineManager.setOnline(true)
+  if (wasUnreachable) markReachable()
+  probeStep = 0
+  debug('reachable', { queued: queuedCount(), wasUnreachable })
+  void flushOfflineQueue()
+  if (wasUnreachable) refetchErroredQueries()
 }
 
 /** One flush at a time. Interval, online, and load kicks share this lock. */
@@ -733,11 +776,9 @@ async function runProbe(force = false) {
     debug('probe-dropped', { epoch, ok })
     return
   }
-  debug('probe-result', { epoch, ok, step: probeStep })
+  debug('probe-result', { epoch, ok, step: probeStep, queued: queuedCount() })
   if (ok) {
-    if (unreachable) markReachable()
-    probeStep = 0
-    if (queuedCount() > 0) void flushOfflineQueue()
+    onServerReachable()
     scheduleProbe(queuedCount() > 0 ? UNREACHABLE_STEPS_MS[0] : HEALTHY_PROBE_MS)
     return
   }
@@ -782,9 +823,11 @@ function noteBrowserOffline() {
 export function startOfflineSync() {
   if (syncStarted || typeof window === 'undefined') return
   syncStarted = true
+  // The browser's online/offline events lie during DevTools Offline. The probe
+  // is what tells React Query it can refetch.
+  onlineManager.setEventListener(() => () => {})
   window.addEventListener('online', () => {
     debug('online')
-    abortInFlightFlush()
     accelerate('online')
   })
   window.addEventListener('offline', () => {
@@ -819,5 +862,11 @@ export function startOfflineSync() {
     if (wasOffline && onLine) accelerate('online-poll')
     else if (!onLine) noteBrowserOffline()
   }, 1_000)
+  // While the queue has something and the last probe reached the server, retry
+  // the flush on a short timer. A missed online event must not leave it sitting.
+  window.setInterval(() => {
+    if (unreachable || queuedCount() === 0) return
+    void flushOfflineQueue()
+  }, FLUSH_INTERVAL_MS)
   void runProbe()
 }

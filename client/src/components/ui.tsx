@@ -202,6 +202,14 @@ export function EmptyState({
   )
 }
 
+export function OfflineState() {
+  return (
+    <div className="border border-dashed border-neutral-300 px-6 py-14 text-center">
+      <h2 className="text-base font-medium text-neutral-950">You're offline. This page will load when you reconnect.</h2>
+    </div>
+  )
+}
+
 export function ErrorState({ onRetry }: { onRetry?: () => void }) {
   return (
     <EmptyState

@@ -8,7 +8,7 @@ import { useToast } from './toast-context.ts'
 import { isConflict } from '../lib/conflict.ts'
 import { taskFieldPatch } from '../lib/patch.ts'
 import { IconPencil, IconTrash } from './icons.tsx'
-import { Button, CheckButton, ConfirmDialog, ErrorState, Input, ListSkeleton, ProgressBar, Select } from './ui.tsx'
+import { Button, CheckButton, ConfirmDialog, ErrorState, Input, ListSkeleton, OfflineState, ProgressBar, Select } from './ui.tsx'
 import { DueBadge, PriorityBadge } from './chrome.tsx'
 import { useToggleTask } from '../hooks/useToggleTask.ts'
 import { cn } from '../lib/cn.ts'
@@ -16,6 +16,7 @@ import { errorMessage } from '../lib/errorMessage.ts'
 import { LABEL_COLORS, PRIORITIES, sortTasks, type TaskSort } from '../lib/priority.ts'
 import { taskProgress } from '../lib/tasks.ts'
 import { dropQueuedWrite, getQueueVersion, pendingTaskCreates, subscribeQueue } from '../lib/offline.ts'
+import { useQueryMiss } from '../lib/queryMiss.ts'
 import { invalidateWorkspace } from '../queryClient.ts'
 
 export function TasksPanel({ projectId }: { projectId: string }) {
@@ -48,6 +49,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
     queryKey: ['labels'],
     queryFn: () => api.listLabels(),
   })
+  const miss = useQueryMiss(tasks)
 
   const create = useMutation({
     mutationFn: () =>
@@ -161,8 +163,15 @@ export function TasksPanel({ projectId }: { projectId: string }) {
     update.mutate({ id: taskId, patch, version: editBase.version })
   }
 
-  if (!tasks.data || !labels.data) {
-    if (tasks.isLoading || labels.isLoading) return <ListSkeleton rows={4} />
+  if (!tasks.data) {
+    if (miss === 'loading') return <ListSkeleton rows={4} />
+    if (miss === 'offline') {
+      return (
+        <div className="mt-8">
+          <OfflineState />
+        </div>
+      )
+    }
     return (
       <div className="mt-8">
         <ErrorState onRetry={() => void Promise.all([tasks.refetch(), labels.refetch()])} />
@@ -170,7 +179,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
     )
   }
 
-  const catalog = labels.data
+  const catalog = labels.data ?? []
   const byId = new Map(catalog.map((label) => [label.id, label]))
   void queueVersion
   const pending = pendingTaskCreates()
