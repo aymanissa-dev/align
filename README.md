@@ -75,11 +75,11 @@ Do not set `VITE_API`. Do not set `SEED_DEMO` in production. Do not set `NODE_EN
 
 In Atlas, allow the Vercel functions to connect. The practical setting is Network Access `0.0.0.0/0`, because the functions do not have fixed IP addresses.
 
-Auth routes that accept a password are limited per IP and per account (login 10 per 15 minutes in production). Extra attempts inside the window are delayed, then rejected with `Retry-After`. The counters live in MongoDB. Optional `JWT_SECRET_PREVIOUS` (and `JWT_KID_PREVIOUS`) keeps the previous signing key valid during rotation. `RESEND_API_KEY` and Google OAuth (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) stay unused until they are set. `WEBAUTHN_RP_ID` and `APP_ORIGIN` override the passkey relying party when the request host is not enough.
+Auth routes that accept a password are limited per IP and per account (login 10 per 15 minutes in production). Failed attempts inside the window are delayed, then rejected with `Retry-After`. Signup and password changes reject breached passwords (HIBP, 1.5s timeout, fail open). Login answers first and records a change-your-password notice in the background when the password is breached. The counters live in MongoDB. Optional `JWT_SECRET_PREVIOUS` (and `JWT_KID_PREVIOUS`) keeps the previous signing key valid during rotation. `RESEND_API_KEY` and Google OAuth (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) stay unused until they are set. `WEBAUTHN_RP_ID` and `APP_ORIGIN` override the passkey relying party when the request host is not enough.
 
 ## API
 
-JSON bodies, no envelope. Errors are `{ "error": "..." }`. Deletes return 204. The access session is a JWT in an httpOnly `Secure` (in production) `SameSite=Lax` cookie named `token` (15 minutes). A refresh cookie lasts 60 days, goes idle after 14 days, and rotates as a family. State-changing requests echo the readable `csrf` cookie in `X-CSRF-Token`. A database outage returns 503 with `Retry-After`.
+JSON bodies, no envelope. Errors are `{ "error": "..." }`. Deletes return 204. The access session is a JWT in an httpOnly `Secure` (in production) `SameSite=Lax` cookie named `token` (15 minutes) and carries the workspace id, role, and membership version. A role change or removal bumps that version so the next refresh drops the old grant. A refresh cookie lasts 60 days, goes idle after 14 days, and rotates as a family. State-changing requests echo the readable `csrf` cookie in `X-CSRF-Token`. A database outage returns 503 with `Retry-After`.
 
 - `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`
 - `PATCH /api/auth/me`, `POST /api/auth/password`, `DELETE /api/auth/me`

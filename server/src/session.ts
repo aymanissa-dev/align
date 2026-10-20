@@ -1,9 +1,11 @@
 import { createHash, randomBytes } from 'node:crypto'
 import type { CookieOptions, Request, Response } from 'express'
 import { Types } from 'mongoose'
+import { isRole, type Role } from './authz.ts'
 import { recordSecurity } from './data/securityLog.ts'
+import { ensurePersonalWorkspace, ownerClaims, type AccessClaims } from './data/workspaces.ts'
 import { signJwt, verifyJwt } from './keys.ts'
-import { Session } from './models.ts'
+import { Session, User } from './models.ts'
 
 const ACCESS_COOKIE = 'token'
 const REFRESH_COOKIE = 'refresh'
@@ -49,8 +51,11 @@ export function clearSession(res: Response): void {
   res.clearCookie(REFRESH_COOKIE, cookieBase())
 }
 
-function writeCookies(res: Response, userId: string, sessionId: string, refresh: string): void {
-  const access = signJwt({ sub: userId, sid: sessionId, typ: 'access' }, '15m')
+function writeCookies(res: Response, userId: string, sessionId: string, refresh: string, claims: AccessClaims): void {
+  const access = signJwt(
+    { sub: userId, sid: sessionId, typ: 'access', wid: claims.workspaceId, role: claims.role, mv: claims.membershipVersion },
+    '15m',
+  )
   res.cookie(ACCESS_COOKIE, access, { ...cookieBase(), maxAge: ACCESS_MS })
   res.cookie(REFRESH_COOKIE, refresh, { ...cookieBase(), maxAge: REFRESH_MS })
 }
@@ -73,23 +78,52 @@ export function coarseLocation(req: Request): string {
   return country.slice(0, 8)
 }
 
-export async function startSession(req: Request, res: Response, userId: string): Promise<{ newDevice: boolean }> {
+async function claimsFor(userId: string, known?: AccessClaims | null): Promise<AccessClaims> {
+  if (known) return known
+  const user = await User.findById(userId).select('personalWorkspaceId membershipVersion')
+  const claims = user ? ownerClaims(user) : null
+  if (claims) return claims
+  const tenant = await ensurePersonalWorkspace(userId)
+  return { workspaceId: tenant.workspaceId, role: tenant.role, membershipVersion: user?.membershipVersion ?? 0 }
+}
+
+function noticeNewDevice(req: Request, userId: string, before: Date): Promise<boolean> {
   const userAgent = (req.get('user-agent') ?? '').slice(0, 300)
   const deviceName = deviceLabel(userAgent)
   const ip = coarseIp(req.ip)
-  const seen = await Session.exists({ userId, deviceName, ipCoarse: ip })
-  const any = await Session.exists({ userId })
-  const newDevice = Boolean(any && !seen)
-  await issueSession(req, res, userId, randomBytes(16).toString('hex'))
+  return Promise.all([
+    Session.exists({ userId, deviceName, ipCoarse: ip, createdAt: { $lt: before } }),
+    Session.exists({ userId, createdAt: { $lt: before } }),
+  ]).then(([seen, any]) => Boolean(any && !seen))
+}
+
+export async function startSession(
+  req: Request,
+  res: Response,
+  userId: string,
+  knownClaims?: AccessClaims | null,
+): Promise<{ newDevice: boolean }> {
+  const before = new Date()
+  const noticed = noticeNewDevice(req, userId, before)
+  const claims = await claimsFor(userId, knownClaims)
+  await issueSession(req, res, userId, randomBytes(16).toString('hex'), claims)
+  const newDevice = await noticed
   if (newDevice) {
+    const ip = coarseIp(req.ip)
     await recordSecurity({
       userId,
       type: 'new-device',
-      summary: `New sign-in from ${deviceName}${ip ? ` (${ip})` : ''}.`,
+      summary: `New sign-in from ${deviceLabel(req.get('user-agent') ?? '')}${ip ? ` (${ip})` : ''}.`,
       ipCoarse: ip,
     })
   }
   return { newDevice }
+}
+
+type PreviousSession = {
+  _id: Types.ObjectId
+  userAgent?: string | null
+  stepUpAt?: Date | null
 }
 
 async function issueSession(
@@ -97,10 +131,10 @@ async function issueSession(
   res: Response,
   userId: string,
   familyId: string,
-  previousId?: Types.ObjectId,
+  claims: AccessClaims,
+  previous?: PreviousSession,
 ): Promise<void> {
   const refresh = randomBytes(32).toString('hex')
-  const previous = previousId ? await Session.findById(previousId).select('userAgent stepUpAt') : null
   const userAgent = previous ? (previous.userAgent ?? '') : (req.get('user-agent') ?? '')
   const now = new Date()
   const session = await Session.create({
@@ -115,13 +149,19 @@ async function issueSession(
     lastSeenAt: now,
     stepUpAt: previous?.stepUpAt ?? now,
   })
-  if (previousId) {
-    await Session.updateOne({ _id: previousId }, { replacedBy: session._id, rotatedAt: now })
+  if (previous) {
+    await Session.updateOne({ _id: previous._id }, { replacedBy: session._id, rotatedAt: now })
   }
-  writeCookies(res, userId, session.id, refresh)
+  writeCookies(res, userId, session.id, refresh, claims)
 }
 
-export type Access = { userId: string; sid: string }
+export type Access = {
+  userId: string
+  sid: string
+  workspaceId?: string
+  role?: Role
+  membershipVersion?: number
+}
 
 export function accessFromRequest(req: Request): Access | null {
   const token = readCookie(req.headers.cookie)
@@ -129,7 +169,14 @@ export function accessFromRequest(req: Request): Access | null {
   const payload = verifyJwt(token)
   if (!payload || payload.typ !== 'access') return null
   if (typeof payload.sub !== 'string' || typeof payload.sid !== 'string') return null
-  return { userId: payload.sub, sid: payload.sid }
+  const role = typeof payload.role === 'string' && isRole(payload.role) ? payload.role : undefined
+  return {
+    userId: payload.sub,
+    sid: payload.sid,
+    workspaceId: typeof payload.wid === 'string' ? payload.wid : undefined,
+    role,
+    membershipVersion: typeof payload.mv === 'number' ? payload.mv : undefined,
+  }
 }
 
 export function sessionExpired(session: { expiresAt: Date; lastSeenAt: Date }): boolean {
@@ -142,8 +189,8 @@ export function stepUpFresh(stepUpAt: Date | null | undefined, now = Date.now())
   return now - stepUpAt.getTime() <= STEP_UP_MS
 }
 
-/** Presents a refresh cookie, rotates it, and returns the user id. Reuse revokes the family. */
-export async function rotateRefresh(req: Request, res: Response): Promise<string | null> {
+/** Presents a refresh cookie, rotates it, and returns the user. Reuse revokes the family. */
+export async function rotateRefresh(req: Request, res: Response) {
   const raw = readCookie(req.headers.cookie, REFRESH_COOKIE)
   if (!raw) return null
   const current = await Session.findOne({ tokenHash: hashToken(raw) })
@@ -170,8 +217,14 @@ export async function rotateRefresh(req: Request, res: Response): Promise<string
     clearSession(res)
     return null
   }
-  await issueSession(req, res, current.userId.toString(), current.familyId, current._id)
-  return current.userId.toString()
+  const user = await User.findById(current.userId)
+  if (!user) {
+    clearSession(res)
+    return null
+  }
+  const claims = await claimsFor(user.id, ownerClaims(user))
+  await issueSession(req, res, user.id, current.familyId, claims, current)
+  return user
 }
 
 export async function loadSession(id: string) {

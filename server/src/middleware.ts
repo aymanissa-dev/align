@@ -7,6 +7,23 @@ import { HttpError } from './errors.ts'
 import { Session, User } from './models.ts'
 import { accessFromRequest, sessionExpired } from './session.ts'
 
+const LAST_SEEN_MS = 5 * 60 * 1000
+const recentSeen = new Map<string, number>()
+
+function touchLastSeen(session: { _id: { toString(): string }; lastSeenAt: Date }): void {
+  const now = Date.now()
+  if (now - session.lastSeenAt.getTime() < LAST_SEEN_MS) return
+  const id = session._id.toString()
+  const stamped = recentSeen.get(id)
+  if (stamped !== undefined && now - stamped < LAST_SEEN_MS) return
+  recentSeen.set(id, now)
+  if (recentSeen.size > 2_000) {
+    const oldest = recentSeen.keys().next().value
+    if (oldest) recentSeen.delete(oldest)
+  }
+  void Session.updateOne({ _id: session._id }, { lastSeenAt: new Date() }).catch(() => undefined)
+}
+
 export function asyncHandler(
   fn: (req: Request, res: Response, next: NextFunction) => Promise<unknown>,
 ): RequestHandler {
@@ -32,17 +49,30 @@ export const requireAuth: RequestHandler = (req, _res, next) => {
         next(new HttpError(401, 'Sign in to continue.'))
         return
       }
-      resolveTenant(user.id, req.get('x-workspace-id') || undefined)
-        .then((tenant) => {
-          req.userId = user.id
-          req.sessionId = session.id
-          req.tenant = tenant
-          if (Date.now() - session.lastSeenAt.getTime() > 60_000) {
-            void Session.updateOne({ _id: session._id }, { lastSeenAt: new Date() }).catch(() => undefined)
-          }
-          next()
-        })
-        .catch(next)
+      req.userId = user.id
+      req.sessionId = session.id
+      touchLastSeen(session)
+      const version = user.membershipVersion ?? 0
+      const requested = req.get('x-workspace-id') || undefined
+      const claimed =
+        access.workspaceId && access.role && access.membershipVersion === version
+          ? { userId: user.id, workspaceId: access.workspaceId, role: access.role }
+          : null
+      if (requested && requested !== claimed?.workspaceId) {
+        resolveTenant(user.id, requested, version)
+          .then((tenant) => {
+            req.tenant = tenant
+            next()
+          })
+          .catch(next)
+        return
+      }
+      if (!claimed) {
+        next(new HttpError(401, 'Sign in to continue.'))
+        return
+      }
+      req.tenant = claimed
+      next()
     })
     .catch(next)
 }

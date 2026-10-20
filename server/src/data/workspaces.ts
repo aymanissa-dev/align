@@ -5,6 +5,62 @@ import { isRole, type Role } from '../authz.ts'
 import type { Tenant } from './tenant.ts'
 import { withTransaction } from './txn.ts'
 
+export type AccessClaims = {
+  workspaceId: string
+  role: Role
+  membershipVersion: number
+}
+
+const CACHE_MS = 60_000
+const cache = new Map<string, { tenant: Tenant; expires: number }>()
+
+function cacheKey(userId: string, workspaceId: string, version: number): string {
+  return `${userId}:${workspaceId}:${version}`
+}
+
+export function ownerClaims(user: {
+  personalWorkspaceId?: { toString(): string } | null
+  membershipVersion?: number | null
+}): AccessClaims | null {
+  if (!user.personalWorkspaceId) return null
+  return {
+    workspaceId: user.personalWorkspaceId.toString(),
+    role: 'owner',
+    membershipVersion: user.membershipVersion ?? 0,
+  }
+}
+
+function cachedTenant(userId: string, workspaceId: string, version: number): Tenant | null {
+  const hit = cache.get(cacheKey(userId, workspaceId, version))
+  if (!hit) return null
+  if (hit.expires <= Date.now()) {
+    cache.delete(cacheKey(userId, workspaceId, version))
+    return null
+  }
+  return hit.tenant
+}
+
+function rememberTenant(userId: string, version: number, tenant: Tenant): void {
+  cache.set(cacheKey(userId, tenant.workspaceId, version), { tenant, expires: Date.now() + CACHE_MS })
+  if (cache.size <= 500) return
+  const oldest = cache.keys().next().value
+  if (oldest) cache.delete(oldest)
+}
+
+function dropTenantCache(userId: string): void {
+  for (const key of cache.keys()) {
+    if (key.startsWith(`${userId}:`)) cache.delete(key)
+  }
+}
+
+async function bumpMembership(userId: string, workspaceId: string): Promise<void> {
+  dropTenantCache(userId)
+  await Promise.all([
+    User.updateOne({ _id: userId }, { $inc: { membershipVersion: 1 } }),
+    Workspace.updateOne({ _id: workspaceId }, { $inc: { membershipVersion: 1 } }),
+  ])
+}
+
 export function personalWorkspaceName(name: string): string {
   const trimmed = name.trim() || 'Personal'
   return `${trimmed}'s workspace`.slice(0, 80)
@@ -46,13 +102,15 @@ export async function ensurePersonalWorkspace(userId: string): Promise<Tenant> {
   })
 }
 
-export async function resolveTenant(userId: string, requested: string | undefined): Promise<Tenant> {
+export async function resolveTenant(userId: string, requested: string | undefined, version = 0): Promise<Tenant> {
   if (requested && Types.ObjectId.isValid(requested)) {
-    const member = await Membership.findOne({ userId, workspaceId: requested })
+    const hit = cachedTenant(userId, requested, version)
+    if (hit) return hit
+    const member = await Membership.findOne({ userId, workspaceId: requested }).select('workspaceId role')
     if (!member) throw new HttpError(403, 'You are not a member of that workspace.')
-    const workspace = await Workspace.findById(member.workspaceId).select('_id')
-    if (!workspace) throw new HttpError(403, 'You are not a member of that workspace.')
-    return { userId, workspaceId: workspace.id, role: member.role as Role }
+    const tenant: Tenant = { userId, workspaceId: member.workspaceId.toString(), role: member.role as Role }
+    rememberTenant(userId, version, tenant)
+    return tenant
   }
   return ensurePersonalWorkspace(userId)
 }
@@ -103,6 +161,7 @@ export async function changeMemberRole(actor: Tenant, memberId: string, role: Ro
   if (member.role === 'owner') throw new HttpError(403, 'The owner role cannot be changed here.')
   member.role = role
   await member.save()
+  await bumpMembership(member.userId.toString(), actor.workspaceId)
   return { userId: member.userId.toString(), role }
 }
 
@@ -111,4 +170,5 @@ export async function removeMember(actor: Tenant, memberId: string) {
   if (!member) throw new HttpError(404, 'Member not found.')
   if (member.role === 'owner') throw new HttpError(403, 'The owner cannot be removed.')
   await member.deleteOne()
+  await bumpMembership(member.userId.toString(), actor.workspaceId)
 }

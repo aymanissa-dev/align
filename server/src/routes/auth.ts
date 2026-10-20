@@ -1,16 +1,16 @@
 import { randomBytes } from 'node:crypto'
 import { Router, type Request, type RequestHandler } from 'express'
 import { deleteAccount } from '../data/content.ts'
-import { ensurePersonalWorkspace } from '../data/workspaces.ts'
+import { ensurePersonalWorkspace, ownerClaims } from '../data/workspaces.ts'
 import { users } from '../data/users.ts'
 import { recordSecurity } from '../data/securityLog.ts'
 import { HttpError } from '../errors.ts'
-import { assertPasswordNotBreached } from '../hibp.ts'
+import { assertPasswordNotBreached, watchBreachedPassword } from '../hibp.ts'
 import { signJwt, verifyJwt } from '../keys.ts'
 import { deliverMail } from '../mail.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { checkPassword, dummyPasswordHash, hashPassword } from '../password.ts'
-import { enforceAuthLimit } from '../rateLimit.ts'
+import { delayFailedAttempt, enforceAuthLimit } from '../rateLimit.ts'
 import { publicUser } from '../serialize.ts'
 import {
   IDLE_MS,
@@ -128,7 +128,7 @@ export function authRouter(limiter: RequestHandler): Router {
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(loginSchema, req.body)
-      const [, user] = await Promise.all([
+      const [attempts, user] = await Promise.all([
         enforceAuthLimit('login', clientIp(req), input.email),
         users.byEmailSecret(input.email),
       ])
@@ -149,6 +149,7 @@ export function authRouter(limiter: RequestHandler): Router {
             ipCoarse: coarseIp(req.ip),
           }).catch(() => undefined)
         }
+        await delayFailedAttempt(attempts)
         throw new HttpError(401, 'Email or password is incorrect.')
       }
       if (user.totpEnabledAt) {
@@ -161,6 +162,7 @@ export function authRouter(limiter: RequestHandler): Router {
           maxAge: 5 * 60 * 1000,
         })
         res.json({ mfaRequired: true, methods: ['totp', 'recovery', 'passkey'] })
+        void watchBreachedPassword(user.id, input.password)
         return
       }
       if (user.failedLogins || user.lockUntil) {
@@ -168,15 +170,15 @@ export function authRouter(limiter: RequestHandler): Router {
         user.lockUntil = null
         await user.save()
       }
-      await ensurePersonalWorkspace(user.id)
-      const started = await startSession(req, res, user.id)
-      await recordSecurity({
+      const started = await startSession(req, res, user.id, ownerClaims(user))
+      res.json({ ...publicUser(user), newDevice: started.newDevice })
+      void recordSecurity({
         userId: user.id,
         type: 'sign-in',
         summary: 'Signed in with a password.',
         ipCoarse: coarseIp(req.ip),
       })
-      res.json({ ...publicUser(user), newDevice: started.newDevice })
+      void watchBreachedPassword(user.id, input.password)
     }),
   )
 
@@ -198,12 +200,7 @@ export function authRouter(limiter: RequestHandler): Router {
           return
         }
       }
-      const userId = await rotateRefresh(req, res)
-      if (!userId) {
-        res.json({ user: null })
-        return
-      }
-      const user = await users.byId(userId)
+      const user = await rotateRefresh(req, res)
       res.json({ user: user ? publicUser(user) : null })
     }),
   )
@@ -211,9 +208,7 @@ export function authRouter(limiter: RequestHandler): Router {
   router.post(
     '/refresh',
     asyncHandler(async (req, res) => {
-      const userId = await rotateRefresh(req, res)
-      if (!userId) throw new HttpError(401, 'Sign in to continue.')
-      const user = await users.byId(userId)
+      const user = await rotateRefresh(req, res)
       if (!user) throw new HttpError(401, 'Sign in to continue.')
       res.json(publicUser(user))
     }),

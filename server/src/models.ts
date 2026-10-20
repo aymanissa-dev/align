@@ -17,6 +17,7 @@ const userSchema = new Schema(
     lockUntil: { type: Date, default: null },
     googleId: { type: String },
     personalWorkspaceId: { type: Schema.Types.ObjectId, ref: 'Workspace', default: null },
+    membershipVersion: { type: Number, default: 0 },
     totpSecret: { type: String, select: false, default: null },
     totpEnabledAt: { type: Date, default: null },
     recoveryCodes: {
@@ -242,6 +243,7 @@ const workspaceSchema = new Schema(
     name: { type: String, required: true },
     personal: { type: Boolean, default: false, required: true },
     ownerId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    membershipVersion: { type: Number, default: 0 },
   },
   { timestamps: true },
 )

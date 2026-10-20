@@ -3,12 +3,12 @@ import jwt from 'jsonwebtoken'
 import { describe, expect, it } from 'vitest'
 import { isRole, roleAtLeast } from '../src/authz.ts'
 import { csrfProtection } from '../src/csrf.ts'
-import { assertPasswordNotBreached } from '../src/hibp.ts'
+import { assertPasswordNotBreached, HIBP_TIMEOUT_MS, noteBreachedPassword, passwordIsBreached } from '../src/hibp.ts'
 import { signJwt, verifyJwt } from '../src/keys.ts'
 import { isMediumPassword } from '../src/passwordPolicy.ts'
 import { enforceAuthLimit } from '../src/rateLimit.ts'
-import { RateLimit } from '../src/models.ts'
-import { coarseIp, deviceLabel, sessionExpired, stepUpFresh } from '../src/session.ts'
+import { RateLimit, SecurityEvent } from '../src/models.ts'
+import { accessFromRequest, coarseIp, deviceLabel, sessionExpired, stepUpFresh } from '../src/session.ts'
 import { generateRecoveryCodes, generateTotpSecret, totpAt, verifyTotp } from '../src/totp.ts'
 
 describe('auth units', () => {
@@ -28,6 +28,15 @@ describe('auth units', () => {
     expect(verifyJwt(`${token}x`)).toBeNull()
     delete process.env.JWT_SECRET_PREVIOUS
     delete process.env.JWT_KID_PREVIOUS
+
+    const claimed = signJwt({ sub: 'user-1', sid: 'sess-1', typ: 'access', wid: 'ws-1', role: 'member', mv: 4 }, '15m')
+    expect(accessFromRequest({ headers: { cookie: `token=${claimed}` } } as never)).toMatchObject({
+      userId: 'user-1',
+      sid: 'sess-1',
+      workspaceId: 'ws-1',
+      role: 'member',
+      membershipVersion: 4,
+    })
   })
 
   it('verifies TOTP inside the window and issues ten recovery codes', () => {
@@ -55,6 +64,22 @@ describe('auth units', () => {
     await expect(assertPasswordNotBreached(password, (async () => {
       throw new Error('network')
     }) as typeof fetch)).resolves.toBeUndefined()
+    expect(HIBP_TIMEOUT_MS).toBe(1_500)
+    const slow = ((_url: string, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted', 'AbortError')))
+      })) as typeof fetch
+    await expect(passwordIsBreached(password, slow, 40)).resolves.toBe(false)
+
+    const userId = crypto.randomUUID().replace(/-/g, '').slice(0, 24)
+    const again = createHash('sha1').update(password).digest('hex').toUpperCase()
+    const breachedFetch = (async () => new Response(`${again.slice(5)}:4\n`, { status: 200 })) as typeof fetch
+    await noteBreachedPassword(userId, password, breachedFetch)
+    const events = await SecurityEvent.find({ userId, type: 'password-breached' })
+    expect(events).toHaveLength(1)
+    expect(events[0]?.summary).toContain('Change your password')
+    await noteBreachedPassword(userId, password, breachedFetch)
+    expect(await SecurityEvent.countDocuments({ userId, type: 'password-breached' })).toBe(1)
   })
 
   it('ranks workspace roles and keeps the password strength rules', () => {

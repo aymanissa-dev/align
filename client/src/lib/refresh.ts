@@ -1,3 +1,5 @@
+import { csrfHeaders } from './csrf.ts'
+
 let inflight: Promise<boolean> | null = null
 
 /** One silent refresh at a time. Parallel 401s share the same cookie rotation. */
@@ -6,7 +8,7 @@ export function refreshSession(): Promise<boolean> {
     method: 'POST',
     credentials: 'include',
     cache: 'no-store',
-    headers: { Accept: 'application/json' },
+    headers: { Accept: 'application/json', ...csrfHeaders() },
   })
     .then((response) => response.ok)
     .catch(() => false)

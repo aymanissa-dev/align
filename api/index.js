@@ -12,6 +12,16 @@ import { randomBytes as randomBytes2, timingSafeEqual } from "node:crypto";
 import { createHash, randomBytes } from "node:crypto";
 import "mongoose";
 
+// src/authz.ts
+var ROLES = ["owner", "admin", "member", "viewer"];
+var RANK = { viewer: 0, member: 1, admin: 2, owner: 3 };
+function roleAtLeast(role, minimum) {
+  return RANK[role] >= RANK[minimum];
+}
+function isRole(value) {
+  return ROLES.includes(value);
+}
+
 // src/models.ts
 import mongoose, { Schema, model } from "mongoose";
 
@@ -81,6 +91,7 @@ var userSchema = new Schema(
     lockUntil: { type: Date, default: null },
     googleId: { type: String },
     personalWorkspaceId: { type: Schema.Types.ObjectId, ref: "Workspace", default: null },
+    membershipVersion: { type: Number, default: 0 },
     totpSecret: { type: String, select: false, default: null },
     totpEnabledAt: { type: Date, default: null },
     recoveryCodes: {
@@ -293,7 +304,8 @@ var workspaceSchema = new Schema(
   {
     name: { type: String, required: true },
     personal: { type: Boolean, default: false, required: true },
-    ownerId: { type: Schema.Types.ObjectId, ref: "User", required: true }
+    ownerId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    membershipVersion: { type: Number, default: 0 }
   },
   { timestamps: true }
 );
@@ -394,8 +406,8 @@ async function recordSecurity(input) {
   });
 }
 
-// src/keys.ts
-import jwt from "jsonwebtoken";
+// src/data/workspaces.ts
+import { Types } from "mongoose";
 
 // src/errors.ts
 var HttpError = class extends Error {
@@ -414,7 +426,169 @@ function unavailable(message = "The database is unavailable. Try again shortly."
   return new HttpError(503, message, { headers: { "Retry-After": "5" } });
 }
 
+// src/data/txn.ts
+import mongoose2 from "mongoose";
+async function withTransaction(fn) {
+  const session = await mongoose2.startSession();
+  try {
+    let result;
+    await session.withTransaction(async () => {
+      result = await fn(session);
+    });
+    return result;
+  } finally {
+    await session.endSession();
+  }
+}
+
+// src/data/workspaces.ts
+var CACHE_MS = 6e4;
+var cache = /* @__PURE__ */ new Map();
+function cacheKey(userId, workspaceId, version) {
+  return `${userId}:${workspaceId}:${version}`;
+}
+function ownerClaims(user) {
+  if (!user.personalWorkspaceId) return null;
+  return {
+    workspaceId: user.personalWorkspaceId.toString(),
+    role: "owner",
+    membershipVersion: user.membershipVersion ?? 0
+  };
+}
+function cachedTenant(userId, workspaceId, version) {
+  const hit2 = cache.get(cacheKey(userId, workspaceId, version));
+  if (!hit2) return null;
+  if (hit2.expires <= Date.now()) {
+    cache.delete(cacheKey(userId, workspaceId, version));
+    return null;
+  }
+  return hit2.tenant;
+}
+function rememberTenant(userId, version, tenant) {
+  cache.set(cacheKey(userId, tenant.workspaceId, version), { tenant, expires: Date.now() + CACHE_MS });
+  if (cache.size <= 500) return;
+  const oldest = cache.keys().next().value;
+  if (oldest) cache.delete(oldest);
+}
+function dropTenantCache(userId) {
+  for (const key of cache.keys()) {
+    if (key.startsWith(`${userId}:`)) cache.delete(key);
+  }
+}
+async function bumpMembership(userId, workspaceId) {
+  dropTenantCache(userId);
+  await Promise.all([
+    User.updateOne({ _id: userId }, { $inc: { membershipVersion: 1 } }),
+    Workspace.updateOne({ _id: workspaceId }, { $inc: { membershipVersion: 1 } })
+  ]);
+}
+function personalWorkspaceName(name) {
+  const trimmed = name.trim() || "Personal";
+  return `${trimmed}'s workspace`.slice(0, 80);
+}
+async function ensurePersonalWorkspace(userId) {
+  const user = await User.findById(userId);
+  if (!user) throw new HttpError(401, "Sign in to continue.");
+  if (user.personalWorkspaceId) {
+    const member = await Membership.findOne({ userId: user._id, workspaceId: user.personalWorkspaceId });
+    if (member) {
+      return { userId: user.id, workspaceId: member.workspaceId.toString(), role: member.role };
+    }
+  }
+  const existing = await Workspace.findOne({ ownerId: user._id, personal: true });
+  if (existing) {
+    const member = await Membership.findOneAndUpdate(
+      { workspaceId: existing._id, userId: user._id },
+      { $setOnInsert: { role: "owner" } },
+      { upsert: true, new: true }
+    );
+    if (!user.personalWorkspaceId?.equals(existing._id)) {
+      user.personalWorkspaceId = existing._id;
+      await user.save();
+    }
+    return { userId: user.id, workspaceId: existing.id, role: member?.role ?? "owner" };
+  }
+  return withTransaction(async (session) => {
+    const created = await Workspace.create(
+      [{ name: personalWorkspaceName(user.name), personal: true, ownerId: user._id }],
+      { session }
+    );
+    const workspace = created[0];
+    if (!workspace) throw new HttpError(500, "Could not create a workspace.");
+    await Membership.create([{ workspaceId: workspace._id, userId: user._id, role: "owner" }], { session });
+    user.personalWorkspaceId = workspace._id;
+    await user.save({ session });
+    return { userId: user.id, workspaceId: workspace.id, role: "owner" };
+  });
+}
+async function resolveTenant(userId, requested, version = 0) {
+  if (requested && Types.ObjectId.isValid(requested)) {
+    const hit2 = cachedTenant(userId, requested, version);
+    if (hit2) return hit2;
+    const member = await Membership.findOne({ userId, workspaceId: requested }).select("workspaceId role");
+    if (!member) throw new HttpError(403, "You are not a member of that workspace.");
+    const tenant = { userId, workspaceId: member.workspaceId.toString(), role: member.role };
+    rememberTenant(userId, version, tenant);
+    return tenant;
+  }
+  return ensurePersonalWorkspace(userId);
+}
+async function listWorkspaces(userId) {
+  const memberships = await Membership.find({ userId }).lean();
+  const ids = memberships.map((member) => member.workspaceId);
+  const workspaces = await Workspace.find({ _id: { $in: ids } }).lean();
+  const byId = new Map(workspaces.map((workspace) => [workspace._id.toString(), workspace]));
+  return memberships.flatMap((member) => {
+    const workspace = byId.get(member.workspaceId.toString());
+    if (!workspace) return [];
+    return [
+      {
+        id: workspace._id.toString(),
+        name: workspace.name,
+        personal: workspace.personal,
+        role: member.role
+      }
+    ];
+  });
+}
+async function createSharedWorkspace(userId, name) {
+  return withTransaction(async (session) => {
+    const created = await Workspace.create([{ name, personal: false, ownerId: userId }], { session });
+    const workspace = created[0];
+    if (!workspace) throw new HttpError(500, "Could not create a workspace.");
+    await Membership.create([{ workspaceId: workspace._id, userId, role: "owner" }], { session });
+    return { id: workspace.id, name: workspace.name, personal: false, role: "owner" };
+  });
+}
+async function addMember(actor, email2, role) {
+  if (!isRole(role) || role === "owner") throw new HttpError(400, "Choose admin, member, or viewer.");
+  const user = await User.findOne({ email: email2 });
+  if (!user) throw new HttpError(404, "No account uses that email.");
+  const existing = await Membership.findOne({ workspaceId: actor.workspaceId, userId: user._id });
+  if (existing) throw new HttpError(409, "That person is already in this workspace.");
+  await Membership.create({ workspaceId: actor.workspaceId, userId: user._id, role });
+  return { userId: user.id, email: user.email, name: user.name, role };
+}
+async function changeMemberRole(actor, memberId, role) {
+  if (role === "owner") throw new HttpError(400, "Choose admin, member, or viewer.");
+  const member = await Membership.findOne({ workspaceId: actor.workspaceId, userId: memberId });
+  if (!member) throw new HttpError(404, "Member not found.");
+  if (member.role === "owner") throw new HttpError(403, "The owner role cannot be changed here.");
+  member.role = role;
+  await member.save();
+  await bumpMembership(member.userId.toString(), actor.workspaceId);
+  return { userId: member.userId.toString(), role };
+}
+async function removeMember(actor, memberId) {
+  const member = await Membership.findOne({ workspaceId: actor.workspaceId, userId: memberId });
+  if (!member) throw new HttpError(404, "Member not found.");
+  if (member.role === "owner") throw new HttpError(403, "The owner cannot be removed.");
+  await member.deleteOne();
+  await bumpMembership(member.userId.toString(), actor.workspaceId);
+}
+
 // src/keys.ts
+import jwt from "jsonwebtoken";
 function signingKeys() {
   const current = process.env.JWT_SECRET;
   if (!current) throw new HttpError(500, "Auth is not configured.");
@@ -489,8 +663,11 @@ function clearSession(res) {
   res.clearCookie(ACCESS_COOKIE, cookieBase());
   res.clearCookie(REFRESH_COOKIE, cookieBase());
 }
-function writeCookies(res, userId, sessionId, refresh) {
-  const access = signJwt({ sub: userId, sid: sessionId, typ: "access" }, "15m");
+function writeCookies(res, userId, sessionId, refresh, claims) {
+  const access = signJwt(
+    { sub: userId, sid: sessionId, typ: "access", wid: claims.workspaceId, role: claims.role, mv: claims.membershipVersion },
+    "15m"
+  );
   res.cookie(ACCESS_COOKIE, access, { ...cookieBase(), maxAge: ACCESS_MS });
   res.cookie(REFRESH_COOKIE, refresh, { ...cookieBase(), maxAge: REFRESH_MS });
 }
@@ -510,27 +687,42 @@ function coarseLocation(req) {
   if (!country || country === "unknown") return "";
   return country.slice(0, 8);
 }
-async function startSession(req, res, userId) {
+async function claimsFor(userId, known) {
+  if (known) return known;
+  const user = await User.findById(userId).select("personalWorkspaceId membershipVersion");
+  const claims = user ? ownerClaims(user) : null;
+  if (claims) return claims;
+  const tenant = await ensurePersonalWorkspace(userId);
+  return { workspaceId: tenant.workspaceId, role: tenant.role, membershipVersion: user?.membershipVersion ?? 0 };
+}
+function noticeNewDevice(req, userId, before) {
   const userAgent = (req.get("user-agent") ?? "").slice(0, 300);
   const deviceName = deviceLabel(userAgent);
   const ip = coarseIp(req.ip);
-  const seen = await Session.exists({ userId, deviceName, ipCoarse: ip });
-  const any = await Session.exists({ userId });
-  const newDevice = Boolean(any && !seen);
-  await issueSession(req, res, userId, randomBytes(16).toString("hex"));
+  return Promise.all([
+    Session.exists({ userId, deviceName, ipCoarse: ip, createdAt: { $lt: before } }),
+    Session.exists({ userId, createdAt: { $lt: before } })
+  ]).then(([seen, any]) => Boolean(any && !seen));
+}
+async function startSession(req, res, userId, knownClaims) {
+  const before = /* @__PURE__ */ new Date();
+  const noticed = noticeNewDevice(req, userId, before);
+  const claims = await claimsFor(userId, knownClaims);
+  await issueSession(req, res, userId, randomBytes(16).toString("hex"), claims);
+  const newDevice = await noticed;
   if (newDevice) {
+    const ip = coarseIp(req.ip);
     await recordSecurity({
       userId,
       type: "new-device",
-      summary: `New sign-in from ${deviceName}${ip ? ` (${ip})` : ""}.`,
+      summary: `New sign-in from ${deviceLabel(req.get("user-agent") ?? "")}${ip ? ` (${ip})` : ""}.`,
       ipCoarse: ip
     });
   }
   return { newDevice };
 }
-async function issueSession(req, res, userId, familyId, previousId) {
+async function issueSession(req, res, userId, familyId, claims, previous) {
   const refresh = randomBytes(32).toString("hex");
-  const previous = previousId ? await Session.findById(previousId).select("userAgent stepUpAt") : null;
   const userAgent = previous ? previous.userAgent ?? "" : req.get("user-agent") ?? "";
   const now = /* @__PURE__ */ new Date();
   const session = await Session.create({
@@ -545,10 +737,10 @@ async function issueSession(req, res, userId, familyId, previousId) {
     lastSeenAt: now,
     stepUpAt: previous?.stepUpAt ?? now
   });
-  if (previousId) {
-    await Session.updateOne({ _id: previousId }, { replacedBy: session._id, rotatedAt: now });
+  if (previous) {
+    await Session.updateOne({ _id: previous._id }, { replacedBy: session._id, rotatedAt: now });
   }
-  writeCookies(res, userId, session.id, refresh);
+  writeCookies(res, userId, session.id, refresh, claims);
 }
 function accessFromRequest(req) {
   const token = readCookie(req.headers.cookie);
@@ -556,7 +748,14 @@ function accessFromRequest(req) {
   const payload = verifyJwt(token);
   if (!payload || payload.typ !== "access") return null;
   if (typeof payload.sub !== "string" || typeof payload.sid !== "string") return null;
-  return { userId: payload.sub, sid: payload.sid };
+  const role = typeof payload.role === "string" && isRole(payload.role) ? payload.role : void 0;
+  return {
+    userId: payload.sub,
+    sid: payload.sid,
+    workspaceId: typeof payload.wid === "string" ? payload.wid : void 0,
+    role,
+    membershipVersion: typeof payload.mv === "number" ? payload.mv : void 0
+  };
 }
 function sessionExpired(session) {
   if (session.expiresAt.getTime() <= Date.now()) return true;
@@ -593,8 +792,14 @@ async function rotateRefresh(req, res) {
     clearSession(res);
     return null;
   }
-  await issueSession(req, res, current.userId.toString(), current.familyId, current._id);
-  return current.userId.toString();
+  const user = await User.findById(current.userId);
+  if (!user) {
+    clearSession(res);
+    return null;
+  }
+  const claims = await claimsFor(user.id, ownerClaims(user));
+  await issueSession(req, res, user.id, current.familyId, claims, current);
+  return user;
 }
 async function loadSession(id) {
   return Session.findById(id);
@@ -676,136 +881,6 @@ import mongoose4 from "mongoose";
 
 // src/migrate/runner.ts
 import mongoose3 from "mongoose";
-
-// src/data/workspaces.ts
-import { Types as Types2 } from "mongoose";
-
-// src/authz.ts
-var ROLES = ["owner", "admin", "member", "viewer"];
-var RANK = { viewer: 0, member: 1, admin: 2, owner: 3 };
-function roleAtLeast(role, minimum) {
-  return RANK[role] >= RANK[minimum];
-}
-function isRole(value) {
-  return ROLES.includes(value);
-}
-
-// src/data/txn.ts
-import mongoose2 from "mongoose";
-async function withTransaction(fn) {
-  const session = await mongoose2.startSession();
-  try {
-    let result;
-    await session.withTransaction(async () => {
-      result = await fn(session);
-    });
-    return result;
-  } finally {
-    await session.endSession();
-  }
-}
-
-// src/data/workspaces.ts
-function personalWorkspaceName(name) {
-  const trimmed = name.trim() || "Personal";
-  return `${trimmed}'s workspace`.slice(0, 80);
-}
-async function ensurePersonalWorkspace(userId) {
-  const user = await User.findById(userId);
-  if (!user) throw new HttpError(401, "Sign in to continue.");
-  if (user.personalWorkspaceId) {
-    const member = await Membership.findOne({ userId: user._id, workspaceId: user.personalWorkspaceId });
-    if (member) {
-      return { userId: user.id, workspaceId: member.workspaceId.toString(), role: member.role };
-    }
-  }
-  const existing = await Workspace.findOne({ ownerId: user._id, personal: true });
-  if (existing) {
-    const member = await Membership.findOneAndUpdate(
-      { workspaceId: existing._id, userId: user._id },
-      { $setOnInsert: { role: "owner" } },
-      { upsert: true, new: true }
-    );
-    if (!user.personalWorkspaceId?.equals(existing._id)) {
-      user.personalWorkspaceId = existing._id;
-      await user.save();
-    }
-    return { userId: user.id, workspaceId: existing.id, role: member?.role ?? "owner" };
-  }
-  return withTransaction(async (session) => {
-    const created = await Workspace.create(
-      [{ name: personalWorkspaceName(user.name), personal: true, ownerId: user._id }],
-      { session }
-    );
-    const workspace = created[0];
-    if (!workspace) throw new HttpError(500, "Could not create a workspace.");
-    await Membership.create([{ workspaceId: workspace._id, userId: user._id, role: "owner" }], { session });
-    user.personalWorkspaceId = workspace._id;
-    await user.save({ session });
-    return { userId: user.id, workspaceId: workspace.id, role: "owner" };
-  });
-}
-async function resolveTenant(userId, requested) {
-  if (requested && Types2.ObjectId.isValid(requested)) {
-    const member = await Membership.findOne({ userId, workspaceId: requested });
-    if (!member) throw new HttpError(403, "You are not a member of that workspace.");
-    const workspace = await Workspace.findById(member.workspaceId).select("_id");
-    if (!workspace) throw new HttpError(403, "You are not a member of that workspace.");
-    return { userId, workspaceId: workspace.id, role: member.role };
-  }
-  return ensurePersonalWorkspace(userId);
-}
-async function listWorkspaces(userId) {
-  const memberships = await Membership.find({ userId }).lean();
-  const ids = memberships.map((member) => member.workspaceId);
-  const workspaces = await Workspace.find({ _id: { $in: ids } }).lean();
-  const byId = new Map(workspaces.map((workspace) => [workspace._id.toString(), workspace]));
-  return memberships.flatMap((member) => {
-    const workspace = byId.get(member.workspaceId.toString());
-    if (!workspace) return [];
-    return [
-      {
-        id: workspace._id.toString(),
-        name: workspace.name,
-        personal: workspace.personal,
-        role: member.role
-      }
-    ];
-  });
-}
-async function createSharedWorkspace(userId, name) {
-  return withTransaction(async (session) => {
-    const created = await Workspace.create([{ name, personal: false, ownerId: userId }], { session });
-    const workspace = created[0];
-    if (!workspace) throw new HttpError(500, "Could not create a workspace.");
-    await Membership.create([{ workspaceId: workspace._id, userId, role: "owner" }], { session });
-    return { id: workspace.id, name: workspace.name, personal: false, role: "owner" };
-  });
-}
-async function addMember(actor, email2, role) {
-  if (!isRole(role) || role === "owner") throw new HttpError(400, "Choose admin, member, or viewer.");
-  const user = await User.findOne({ email: email2 });
-  if (!user) throw new HttpError(404, "No account uses that email.");
-  const existing = await Membership.findOne({ workspaceId: actor.workspaceId, userId: user._id });
-  if (existing) throw new HttpError(409, "That person is already in this workspace.");
-  await Membership.create({ workspaceId: actor.workspaceId, userId: user._id, role });
-  return { userId: user.id, email: user.email, name: user.name, role };
-}
-async function changeMemberRole(actor, memberId, role) {
-  if (role === "owner") throw new HttpError(400, "Choose admin, member, or viewer.");
-  const member = await Membership.findOne({ workspaceId: actor.workspaceId, userId: memberId });
-  if (!member) throw new HttpError(404, "Member not found.");
-  if (member.role === "owner") throw new HttpError(403, "The owner role cannot be changed here.");
-  member.role = role;
-  await member.save();
-  return { userId: member.userId.toString(), role };
-}
-async function removeMember(actor, memberId) {
-  const member = await Membership.findOne({ workspaceId: actor.workspaceId, userId: memberId });
-  if (!member) throw new HttpError(404, "Member not found.");
-  if (member.role === "owner") throw new HttpError(403, "The owner cannot be removed.");
-  await member.deleteOne();
-}
 
 // src/migrate/personalWorkspaces.ts
 var RETENTION_MS = 90 * 24 * 60 * 60 * 1e3;
@@ -939,7 +1014,7 @@ async function runMigrations(options) {
 
 // src/db.ts
 var globalCache = globalThis;
-function cache() {
+function cache2() {
   globalCache.__alignMongoose ??= { conn: null, promise: null };
   return globalCache.__alignMongoose;
 }
@@ -1041,7 +1116,7 @@ async function connectDb(options) {
   if (!uri || uri === "memory") {
     throw new HttpError(500, "Database is not configured.");
   }
-  const state = cache();
+  const state = cache2();
   if (state.conn) {
     await runMigrations();
     if (shouldSync(options)) await ensureIndexes();
@@ -1099,6 +1174,21 @@ import { ZodError } from "zod";
 var CONFLICT_MESSAGE = "This was changed elsewhere.";
 
 // src/middleware.ts
+var LAST_SEEN_MS = 5 * 60 * 1e3;
+var recentSeen = /* @__PURE__ */ new Map();
+function touchLastSeen(session) {
+  const now = Date.now();
+  if (now - session.lastSeenAt.getTime() < LAST_SEEN_MS) return;
+  const id = session._id.toString();
+  const stamped = recentSeen.get(id);
+  if (stamped !== void 0 && now - stamped < LAST_SEEN_MS) return;
+  recentSeen.set(id, now);
+  if (recentSeen.size > 2e3) {
+    const oldest = recentSeen.keys().next().value;
+    if (oldest) recentSeen.delete(oldest);
+  }
+  void Session.updateOne({ _id: session._id }, { lastSeenAt: /* @__PURE__ */ new Date() }).catch(() => void 0);
+}
 function asyncHandler(fn) {
   return (req, res, next) => {
     fn(req, res, next).catch(next);
@@ -1120,15 +1210,25 @@ var requireAuth = (req, _res, next) => {
       next(new HttpError(401, "Sign in to continue."));
       return;
     }
-    resolveTenant(user.id, req.get("x-workspace-id") || void 0).then((tenant) => {
-      req.userId = user.id;
-      req.sessionId = session.id;
-      req.tenant = tenant;
-      if (Date.now() - session.lastSeenAt.getTime() > 6e4) {
-        void Session.updateOne({ _id: session._id }, { lastSeenAt: /* @__PURE__ */ new Date() }).catch(() => void 0);
-      }
-      next();
-    }).catch(next);
+    req.userId = user.id;
+    req.sessionId = session.id;
+    touchLastSeen(session);
+    const version = user.membershipVersion ?? 0;
+    const requested = req.get("x-workspace-id") || void 0;
+    const claimed = access.workspaceId && access.role && access.membershipVersion === version ? { userId: user.id, workspaceId: access.workspaceId, role: access.role } : null;
+    if (requested && requested !== claimed?.workspaceId) {
+      resolveTenant(user.id, requested, version).then((tenant) => {
+        req.tenant = tenant;
+        next();
+      }).catch(next);
+      return;
+    }
+    if (!claimed) {
+      next(new HttpError(401, "Sign in to continue."));
+      return;
+    }
+    req.tenant = claimed;
+    next();
   }).catch(next);
 };
 function currentUserId(req) {
@@ -1502,27 +1602,45 @@ var users = {
 // src/hibp.ts
 import { createHash as createHash2 } from "node:crypto";
 var RANGE = "https://api.pwnedpasswords.com/range/";
-async function assertPasswordNotBreached(password2, fetchImpl = fetch) {
-  if (process.env.NODE_ENV === "test" && fetchImpl === fetch) return;
+var HIBP_TIMEOUT_MS = 1500;
+async function passwordIsBreached(password2, fetchImpl = fetch, timeoutMs = HIBP_TIMEOUT_MS) {
+  if (process.env.NODE_ENV === "test" && fetchImpl === fetch) return false;
   const digest = createHash2("sha1").update(password2).digest("hex").toUpperCase();
   const prefix = digest.slice(0, 5);
   const suffix = digest.slice(5);
   try {
     const response = await fetchImpl(`${RANGE}${prefix}`, {
       headers: { "Add-Padding": "true", "User-Agent": "align-password-check" },
-      signal: AbortSignal.timeout(2500)
+      signal: AbortSignal.timeout(timeoutMs)
     });
-    if (!response.ok) return;
+    if (!response.ok) return false;
     const body = await response.text();
     for (const line of body.split("\n")) {
       const [hash, count] = line.trim().split(":");
-      if (hash === suffix && Number(count) > 0) {
-        throw new HttpError(400, "This password has appeared in a data breach. Choose a different one.");
-      }
+      if (hash === suffix && Number(count) > 0) return true;
     }
-  } catch (error) {
-    if (error instanceof HttpError) throw error;
+    return false;
+  } catch {
+    return false;
   }
+}
+async function assertPasswordNotBreached(password2, fetchImpl = fetch) {
+  if (await passwordIsBreached(password2, fetchImpl)) {
+    throw new HttpError(400, "This password has appeared in a data breach. Choose a different one.");
+  }
+}
+async function noteBreachedPassword(userId, password2, fetchImpl = fetch) {
+  if (!await passwordIsBreached(password2, fetchImpl)) return;
+  const existing = await SecurityEvent.exists({ userId, type: "password-breached" });
+  if (existing) return;
+  await recordSecurity({
+    userId,
+    type: "password-breached",
+    summary: "This password has appeared in a data breach. Change your password."
+  });
+}
+function watchBreachedPassword(userId, password2, fetchImpl = fetch) {
+  void noteBreachedPassword(userId, password2, fetchImpl).catch(() => void 0);
 }
 
 // src/mail.ts
@@ -1595,7 +1713,7 @@ var PRODUCTION_MAX = {
 function duplicateKey(error) {
   return typeof error === "object" && error !== null && "code" in error && error.code === 11e3;
 }
-async function hit(key, max) {
+async function hit(key) {
   const now = Date.now();
   const expiresAt = new Date(now + WINDOW_MS);
   let doc;
@@ -1612,21 +1730,23 @@ async function hit(key, max) {
   if (doc && doc.expiresAt.getTime() <= now) {
     doc = await RateLimit.findOneAndUpdate({ key }, { $set: { count: 1, expiresAt } }, { new: true });
   }
-  const count = doc?.count ?? 1;
-  if (process.env.NODE_ENV !== "test" && count > 2 && count <= max) {
-    const delay = Math.min(5e3, (count - 2) * 250);
-    await new Promise((resolve) => setTimeout(resolve, delay));
-  }
-  return count > max;
+  return doc?.count ?? 1;
+}
+async function delayFailedAttempt(count) {
+  if (process.env.NODE_ENV === "test" || count <= 2) return;
+  const delay = Math.min(5e3, (count - 2) * 250);
+  await new Promise((resolve) => setTimeout(resolve, delay));
 }
 async function enforceAuthLimit(route, ip, email2) {
   const max = process.env.NODE_ENV === "production" ? PRODUCTION_MAX[route] : 1e3;
   const keys = [`${route}:ip:${ip || "unknown"}`];
   if (email2) keys.push(`${route}:email:${email2}`);
-  const blocked = await Promise.all(keys.map((key) => hit(key, max)));
-  if (blocked.some(Boolean)) {
+  const counts = await Promise.all(keys.map((key) => hit(key)));
+  const count = Math.max(0, ...counts);
+  if (count > max) {
     throw new HttpError(429, "Too many attempts. Try again later.", { headers: { "Retry-After": "60" } });
   }
+  return count;
 }
 
 // src/serialize.ts
@@ -2074,7 +2194,7 @@ ${link}`
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(loginSchema, req.body);
-      const [, user] = await Promise.all([
+      const [attempts, user] = await Promise.all([
         enforceAuthLimit("login", clientIp(req), input.email),
         users.byEmailSecret(input.email)
       ]);
@@ -2095,6 +2215,7 @@ ${link}`
             ipCoarse: coarseIp(req.ip)
           }).catch(() => void 0);
         }
+        await delayFailedAttempt(attempts);
         throw new HttpError(401, "Email or password is incorrect.");
       }
       if (user.totpEnabledAt) {
@@ -2107,6 +2228,7 @@ ${link}`
           maxAge: 5 * 60 * 1e3
         });
         res.json({ mfaRequired: true, methods: ["totp", "recovery", "passkey"] });
+        void watchBreachedPassword(user.id, input.password);
         return;
       }
       if (user.failedLogins || user.lockUntil) {
@@ -2114,15 +2236,15 @@ ${link}`
         user.lockUntil = null;
         await user.save();
       }
-      await ensurePersonalWorkspace(user.id);
-      const started = await startSession(req, res, user.id);
-      await recordSecurity({
+      const started = await startSession(req, res, user.id, ownerClaims(user));
+      res.json({ ...publicUser(user), newDevice: started.newDevice });
+      void recordSecurity({
         userId: user.id,
         type: "sign-in",
         summary: "Signed in with a password.",
         ipCoarse: coarseIp(req.ip)
       });
-      res.json({ ...publicUser(user), newDevice: started.newDevice });
+      void watchBreachedPassword(user.id, input.password);
     })
   );
   router.get(
@@ -2138,21 +2260,14 @@ ${link}`
           return;
         }
       }
-      const userId = await rotateRefresh(req, res);
-      if (!userId) {
-        res.json({ user: null });
-        return;
-      }
-      const user = await users.byId(userId);
+      const user = await rotateRefresh(req, res);
       res.json({ user: user ? publicUser(user) : null });
     })
   );
   router.post(
     "/refresh",
     asyncHandler(async (req, res) => {
-      const userId = await rotateRefresh(req, res);
-      if (!userId) throw new HttpError(401, "Sign in to continue.");
-      const user = await users.byId(userId);
+      const user = await rotateRefresh(req, res);
       if (!user) throw new HttpError(401, "Sign in to continue.");
       res.json(publicUser(user));
     })
