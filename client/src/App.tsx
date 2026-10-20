@@ -30,6 +30,7 @@ import { VerifyEmailPage } from './pages/VerifyEmailPage.tsx'
 import { SearchPage } from './pages/SearchPage.tsx'
 import { SettingsPage } from './pages/SettingsPage.tsx'
 import { TodayPage } from './pages/TodayPage.tsx'
+import { TrashPage } from './pages/TrashPage.tsx'
 import { clearSignedOut, wasSignedOut } from './lib/signedOut.ts'
 import { queryClient } from './queryClient.ts'
 
@@ -195,6 +196,7 @@ export default function App() {
                 <Route path="/notes/:id" element={<NoteEditorPage />} />
                 <Route path="/search" element={<SearchPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/trash" element={<TrashPage />} />
               </Route>
               <Route path="*" element={<PublicNotFound />} />
             </Routes>

@@ -4,6 +4,7 @@ import rateLimit from 'express-rate-limit'
 import helmet from 'helmet'
 import mongoose from 'mongoose'
 import type { HealthReport } from '../../shared/contract.ts'
+import { csrfProtection } from './csrf.ts'
 import { connectDb } from './db.ts'
 import { privateRevalidate } from './httpCache.ts'
 import { errorHandler } from './middleware.ts'
@@ -17,7 +18,10 @@ import { notificationsRouter } from './routes/notifications.ts'
 import { projectsRouter } from './routes/projects.ts'
 import { searchRouter } from './routes/search.ts'
 import { tasksRouter } from './routes/tasks.ts'
+import { mfaRouter } from './routes/mfa.ts'
 import { todayRouter } from './routes/today.ts'
+import { trashRouter } from './routes/trash.ts'
+import { workspacesRouter } from './routes/workspaces.ts'
 import './types.ts'
 
 export type AppOptions = {
@@ -43,6 +47,7 @@ export function createApp(options: AppOptions = {}): Express {
     next()
   })
   app.use(guardOrigin)
+  app.use(csrfProtection)
   app.use((_req, res, next) => {
     res.setHeader('X-Align-Minimum', String(MINIMUM_CLIENT_VERSION))
     next()
@@ -65,6 +70,7 @@ export function createApp(options: AppOptions = {}): Express {
       })
       .catch(() => {
         const body: HealthReport = { ok: false, db: 'down', latencyMs: Date.now() - started }
+        res.setHeader('Retry-After', '5')
         res.status(503).json(body)
       })
   })
@@ -87,7 +93,11 @@ export function createApp(options: AppOptions = {}): Express {
     message: { error: 'Too many attempts. Try again later.' },
   })
 
-  app.use('/api/auth', authRouter(authLimiter))
+  const auth = authRouter(authLimiter)
+  auth.use(mfaRouter())
+  app.use('/api/auth', auth)
+  app.use('/api/workspaces', workspacesRouter())
+  app.use('/api/trash', trashRouter())
   app.use('/api/labels', labelsRouter())
   app.use('/api/projects', projectsRouter())
   app.use('/api/tasks', tasksRouter())

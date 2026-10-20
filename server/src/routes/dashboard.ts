@@ -1,7 +1,8 @@
 import { Router } from 'express'
 import { Types } from 'mongoose'
-import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
-import { Project, Task } from '../models.ts'
+import { bind } from '../data/content.ts'
+import { currentTenant } from '../data/tenant.ts'
+import { asyncHandler, requireAuth } from '../middleware.ts'
 
 const OPEN_LIMIT = 40
 
@@ -25,31 +26,31 @@ export function dashboardRouter(): Router {
   router.get(
     '/',
     asyncHandler(async (req, res) => {
-      const userId = new Types.ObjectId(currentUserId(req))
-      const projects = await Project.find({ userId, status: 'active' }).select('name description').sort({ updatedAt: -1 }).lean()
+      const db = bind(currentTenant(req))
+      const projects = await db.projects.find({ status: 'active' }).select('name description').sort({ updatedAt: -1 }).lean()
       const activeIds = projects.map((project) => project._id)
       const datedFilter = {
-        userId,
         completed: false,
         projectId: { $in: activeIds },
         dueDate: { $gte: '0000-01-01' },
       }
       const [counts, dated, undated, datedOpenCount] = await Promise.all([
-        Task.aggregate<CountRow>([
-          { $match: { userId } },
+        db.tasks.aggregate<CountRow>([
           { $group: { _id: { projectId: '$projectId', completed: '$completed' }, n: { $sum: 1 } } },
         ]),
-        Task.find(datedFilter)
+        db.tasks
+          .find(datedFilter)
           .select('title dueDate priority projectId')
           .sort({ dueDate: 1, title: 1 })
           .limit(OPEN_LIMIT * 2)
           .lean<OpenRow[]>(),
-        Task.find({ userId, completed: false, projectId: { $in: activeIds }, dueDate: null })
+        db.tasks
+          .find({ completed: false, projectId: { $in: activeIds }, dueDate: null })
           .select('title dueDate priority projectId')
           .sort({ title: 1 })
           .limit(OPEN_LIMIT)
           .lean<OpenRow[]>(),
-        Task.countDocuments(datedFilter),
+        db.tasks.find(datedFilter).countDocuments(),
       ])
       const names = new Map(projects.map((project) => [project._id.toString(), project.name]))
 

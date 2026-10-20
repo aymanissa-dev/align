@@ -2,7 +2,7 @@ import request from 'supertest'
 import { describe, expect, it } from 'vitest'
 import { createApp } from '../src/app.ts'
 import { Project } from '../src/models.ts'
-import { app, registerUser } from './helpers.ts'
+import { app, csrfToken, registerUser } from './helpers.ts'
 
 describe('auth', () => {
   it('reports database health without requiring a session', async () => {
@@ -54,9 +54,14 @@ describe('auth', () => {
     })
     expect(created.status).toBe(201)
     const cookie = created.headers['set-cookie']
-    expect(cookie?.[0]).toMatch(/HttpOnly/i)
-    expect(cookie?.[0]).toMatch(/SameSite=Lax/i)
-    expect(cookie?.[0]).not.toMatch(/Secure/i)
+    const list = Array.isArray(cookie) ? cookie : cookie ? [cookie] : []
+    const token = list.find((entry) => entry.startsWith('token='))
+    const csrf = list.find((entry) => entry.startsWith('csrf='))
+    expect(token).toMatch(/HttpOnly/i)
+    expect(token).toMatch(/SameSite=Lax/i)
+    expect(token).not.toMatch(/Secure/i)
+    expect(csrf).toBeTruthy()
+    expect(csrf).not.toMatch(/HttpOnly/i)
 
     const previous = process.env.NODE_ENV
     process.env.NODE_ENV = 'production'
@@ -65,7 +70,9 @@ describe('auth', () => {
         email: created.body.email,
         password: 'password12',
       })
-      expect(secure.headers['set-cookie']?.[0]).toMatch(/Secure/i)
+      const secureCookies = secure.headers['set-cookie']
+      const secureList = Array.isArray(secureCookies) ? secureCookies : secureCookies ? [secureCookies] : []
+      expect(secureList.find((entry) => entry.startsWith('token='))).toMatch(/Secure/i)
     } finally {
       process.env.NODE_ENV = previous
     }
@@ -251,7 +258,10 @@ describe('auth', () => {
     const refresh = cookies.find((cookie) => cookie.startsWith('refresh='))?.split(';')[0]
     expect(refresh).toBeTruthy()
 
-    const rotated = await request(app).post('/api/auth/refresh').set('Cookie', cookies)
+    const rotated = await request(app)
+      .post('/api/auth/refresh')
+      .set('Cookie', cookies)
+      .set('x-csrf-token', csrfToken(issued) ?? '')
     expect(rotated.status).toBe(200)
     const rotatedCookies = rotated.headers['set-cookie']
     const nextCookies = Array.isArray(rotatedCookies) ? rotatedCookies : rotatedCookies ? [rotatedCookies] : []

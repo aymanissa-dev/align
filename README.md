@@ -1,5 +1,7 @@
 # Align
 
+[![CI](https://github.com/aymanissa-dev/align/actions/workflows/ci.yml/badge.svg)](https://github.com/aymanissa-dev/align/actions/workflows/ci.yml)
+
 Align is a minimal project manager for projects, tasks, and notes. One Vercel project serves the Vite client and the Express API on the same domain.
 
 ## Layout
@@ -37,10 +39,15 @@ npm run dev -w client
 ## Checks
 
 ```bash
-npm test   # API integration tests (Vitest, Supertest, mongodb-memory-server)
+npm test            # API unit and integration tests (Vitest, Supertest, replica set)
+npm run test:coverage
+npm run index-audit # fails when a hot query is not an index scan
 npm run lint
-npm run build   # client bundle plus api/index.js for Vercel
+npm run typecheck
+npm run build       # client bundle plus api/index.js for Vercel
 ```
+
+GitHub Actions runs lint, typecheck, coverage, and the index audit on every push to `main`.
 
 ## Deploy on Vercel
 
@@ -68,11 +75,11 @@ Do not set `VITE_API`. Do not set `SEED_DEMO` in production. Do not set `NODE_EN
 
 In Atlas, allow the Vercel functions to connect. The practical setting is Network Access `0.0.0.0/0`, because the functions do not have fixed IP addresses.
 
-Auth routes that accept a password (`register`, `login`, `password`) are limited to 20 requests per 15 minutes per IP. The limit is kept in the function instance, so it resets on a cold start.
+Auth routes that accept a password are limited per IP and per account (login 10 per 15 minutes in production). Extra attempts inside the window are delayed, then rejected with `Retry-After`. The counters live in MongoDB. Optional `JWT_SECRET_PREVIOUS` (and `JWT_KID_PREVIOUS`) keeps the previous signing key valid during rotation. `RESEND_API_KEY` and Google OAuth (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) stay unused until they are set. `WEBAUTHN_RP_ID` and `APP_ORIGIN` override the passkey relying party when the request host is not enough.
 
 ## API
 
-JSON bodies, no envelope. Errors are `{ "error": "..." }`. Deletes return 204. The session is a JWT in an httpOnly cookie named `token`, expiring in 7 days.
+JSON bodies, no envelope. Errors are `{ "error": "..." }`. Deletes return 204. The access session is a JWT in an httpOnly `Secure` (in production) `SameSite=Lax` cookie named `token` (15 minutes). A refresh cookie lasts 60 days, goes idle after 14 days, and rotates as a family. State-changing requests echo the readable `csrf` cookie in `X-CSRF-Token`. A database outage returns 503 with `Retry-After`.
 
 - `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`
 - `PATCH /api/auth/me`, `POST /api/auth/password`, `DELETE /api/auth/me`
@@ -81,4 +88,4 @@ JSON bodies, no envelope. Errors are `{ "error": "..." }`. Deletes return 204. T
 - `GET/POST /api/projects/:id/notes`, `GET/PATCH/DELETE /api/notes/:id`, `GET /api/notes`
 - `GET /api/dashboard`, `GET /api/search?q=`
 
-Every query is scoped to the signed-in user. Deleting a project deletes its tasks and notes. Deleting an account deletes all of that user's data. Archive toggles `active` and `archived`.
+Every query is scoped to the caller's workspace. Deleting a project or task moves it to trash for 30 days (`GET /api/trash`, restore under `/api/trash/.../restore`). Deleting an account removes that user's data in a transaction. Archive toggles `active` and `archived`. Workspaces have owner, admin, member, and viewer roles (`/api/workspaces`). A migration on connect moves existing documents into each user's personal workspace.

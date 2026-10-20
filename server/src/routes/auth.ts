@@ -1,23 +1,38 @@
 import { randomBytes } from 'node:crypto'
 import { Router, type Request, type RequestHandler } from 'express'
-import jwt from 'jsonwebtoken'
+import { deleteAccount } from '../data/content.ts'
+import { ensurePersonalWorkspace } from '../data/workspaces.ts'
+import { users } from '../data/users.ts'
+import { recordSecurity } from '../data/securityLog.ts'
 import { HttpError } from '../errors.ts'
+import { assertPasswordNotBreached } from '../hibp.ts'
+import { signJwt, verifyJwt } from '../keys.ts'
 import { deliverMail } from '../mail.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
-import { Activity, AuthToken, Label, Note, Notification, Project, Session, Task, User, Whiteboard } from '../models.ts'
 import { checkPassword, dummyPasswordHash, hashPassword } from '../password.ts'
 import { enforceAuthLimit } from '../rateLimit.ts'
 import { publicUser } from '../serialize.ts'
 import {
+  IDLE_MS,
   accessFromRequest,
   clearSession,
+  coarseIp,
   deviceLabel,
+  listActiveSessions,
+  loadSession,
+  markStepUp,
+  renameSession,
   revokeRefreshCookie,
+  revokeSessionById,
+  revokeSessions,
   rotateRefresh,
+  sessionExpired,
   startSession,
+  stepUpFresh,
 } from '../session.ts'
 import { consumeAuthToken, issueAuthToken } from '../tokens.ts'
 import {
+  emailChangeSchema,
   forgotSchema,
   loginSchema,
   parseBody,
@@ -25,6 +40,7 @@ import {
   profileSchema,
   registerSchema,
   resetSchema,
+  sessionRenameSchema,
   verifySchema,
 } from '../validate.ts'
 
@@ -32,6 +48,21 @@ const LOCK_AFTER = 5
 
 function clientIp(req: Request): string {
   return req.ip || req.socket.remoteAddress || 'unknown'
+}
+
+async function assertStepUp(req: Request, password?: string): Promise<void> {
+  const sessionId = req.sessionId
+  if (!sessionId) throw new HttpError(401, 'Sign in to continue.')
+  const session = await loadSession(sessionId)
+  if (session && stepUpFresh(session.stepUpAt)) return
+  if (password) {
+    const user = await users.byIdSecret(currentUserId(req))
+    if (user?.passwordHash && (await checkPassword(password, user.passwordHash))) {
+      await markStepUp(sessionId)
+      return
+    }
+  }
+  throw new HttpError(403, 'Confirm it is you to continue.', { code: 'step_up_required' })
 }
 
 function appOrigin(req: Request): string {
@@ -70,14 +101,16 @@ export function authRouter(limiter: RequestHandler): Router {
     asyncHandler(async (req, res) => {
       const input = parseBody(registerSchema, req.body)
       await enforceAuthLimit('register', clientIp(req), input.email)
-      const existing = await User.findOne({ email: input.email })
+      await assertPasswordNotBreached(input.password)
+      const existing = await users.byEmail(input.email)
       if (existing) throw new HttpError(409, 'An account with this email already exists.')
-      const user = await User.create({
+      const user = await users.create({
         name: input.name,
         email: input.email,
         passwordHash: await hashPassword(input.password),
         emailVerifiedAt: null,
       })
+      await ensurePersonalWorkspace(user.id)
       const verifyToken = await issueAuthToken(user.id, 'verify')
       const link = `${appOrigin(req)}/verify?token=${encodeURIComponent(verifyToken)}`
       const mailed = await sendOrReveal(
@@ -85,8 +118,8 @@ export function authRouter(limiter: RequestHandler): Router {
         'Verify your Align email',
         `Confirm your email by opening this link within 24 hours:\n${link}`,
       )
-      await startSession(res, user.id, req.get('user-agent'))
-      res.status(201).json(mailed ? publicUser(user) : { ...publicUser(user), verifyToken })
+      const started = await startSession(req, res, user.id)
+      res.status(201).json(mailed ? { ...publicUser(user), newDevice: started.newDevice } : { ...publicUser(user), verifyToken, newDevice: started.newDevice })
     }),
   )
 
@@ -97,7 +130,7 @@ export function authRouter(limiter: RequestHandler): Router {
       const input = parseBody(loginSchema, req.body)
       const [, user] = await Promise.all([
         enforceAuthLimit('login', clientIp(req), input.email),
-        User.findOne({ email: input.email }).select('+passwordHash'),
+        users.byEmailSecret(input.email),
       ])
       if (user?.lockUntil && user.lockUntil.getTime() > Date.now()) {
         throw new HttpError(429, 'Too many attempts. Try again later.')
@@ -109,16 +142,41 @@ export function authRouter(limiter: RequestHandler): Router {
           user.failedLogins = (user.failedLogins ?? 0) + 1
           if (user.failedLogins >= LOCK_AFTER) user.lockUntil = new Date(Date.now() + lockDelay(user.failedLogins))
           await user.save()
+          await recordSecurity({
+            userId: user.id,
+            type: 'sign-in-failed',
+            summary: 'A sign-in attempt used the wrong password.',
+            ipCoarse: coarseIp(req.ip),
+          }).catch(() => undefined)
         }
         throw new HttpError(401, 'Email or password is incorrect.')
+      }
+      if (user.totpEnabledAt) {
+        const pending = signJwt({ sub: user.id, typ: 'pending' }, '5m')
+        res.cookie('pending', pending, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'lax',
+          path: '/',
+          maxAge: 5 * 60 * 1000,
+        })
+        res.json({ mfaRequired: true, methods: ['totp', 'recovery', 'passkey'] })
+        return
       }
       if (user.failedLogins || user.lockUntil) {
         user.failedLogins = 0
         user.lockUntil = null
         await user.save()
       }
-      await startSession(res, user.id, req.get('user-agent'))
-      res.json(publicUser(user))
+      await ensurePersonalWorkspace(user.id)
+      const started = await startSession(req, res, user.id)
+      await recordSecurity({
+        userId: user.id,
+        type: 'sign-in',
+        summary: 'Signed in with a password.',
+        ipCoarse: coarseIp(req.ip),
+      })
+      res.json({ ...publicUser(user), newDevice: started.newDevice })
     }),
   )
 
@@ -127,15 +185,15 @@ export function authRouter(limiter: RequestHandler): Router {
     asyncHandler(async (req, res) => {
       const access = accessFromRequest(req)
       if (access) {
-        const session = await Session.findById(access.sid)
+        const session = await loadSession(access.sid)
         const current =
           session &&
           !session.revokedAt &&
           !session.replacedBy &&
-          session.expiresAt.getTime() > Date.now() &&
+          !sessionExpired(session) &&
           session.userId.toString() === access.userId
         if (current) {
-          const user = await User.findById(access.userId)
+          const user = await users.byId(access.userId)
           res.json({ user: user ? publicUser(user) : null })
           return
         }
@@ -145,7 +203,7 @@ export function authRouter(limiter: RequestHandler): Router {
         res.json({ user: null })
         return
       }
-      const user = await User.findById(userId)
+      const user = await users.byId(userId)
       res.json({ user: user ? publicUser(user) : null })
     }),
   )
@@ -155,7 +213,7 @@ export function authRouter(limiter: RequestHandler): Router {
     asyncHandler(async (req, res) => {
       const userId = await rotateRefresh(req, res)
       if (!userId) throw new HttpError(401, 'Sign in to continue.')
-      const user = await User.findById(userId)
+      const user = await users.byId(userId)
       if (!user) throw new HttpError(401, 'Sign in to continue.')
       res.json(publicUser(user))
     }),
@@ -167,7 +225,7 @@ export function authRouter(limiter: RequestHandler): Router {
     asyncHandler(async (req, res) => {
       const input = parseBody(forgotSchema, req.body)
       await enforceAuthLimit('forgot', clientIp(req), input.email)
-      const user = await User.findOne({ email: input.email })
+      const user = await users.byEmail(input.email)
       const body: { message: string; resetToken?: string } = {
         message: 'If an account exists for that email, a reset link is ready.',
       }
@@ -192,14 +250,17 @@ export function authRouter(limiter: RequestHandler): Router {
       const input = parseBody(resetSchema, req.body)
       await enforceAuthLimit('reset', clientIp(req))
       const userId = await consumeAuthToken(input.token, 'reset')
-      const user = userId ? await User.findById(userId).select('+passwordHash') : null
+      await assertPasswordNotBreached(input.password)
+      const user = userId ? await users.byIdSecret(userId) : null
       if (!user) throw new HttpError(400, 'This reset link is invalid or has expired.')
       user.passwordHash = await hashPassword(input.password)
       user.failedLogins = 0
       user.lockUntil = null
       await user.save()
-      await Session.updateMany({ userId: user._id, revokedAt: null }, { revokedAt: new Date() })
-      await startSession(res, user.id, req.get('user-agent'))
+      await revokeSessions(user.id)
+      await ensurePersonalWorkspace(user.id)
+      await startSession(req, res, user.id)
+      await recordSecurity({ userId: user.id, type: 'password-reset', summary: 'Password was reset.', ipCoarse: coarseIp(req.ip) })
       res.json(publicUser(user))
     }),
   )
@@ -209,7 +270,7 @@ export function authRouter(limiter: RequestHandler): Router {
     asyncHandler(async (req, res) => {
       const input = parseBody(verifySchema, req.body)
       const userId = await consumeAuthToken(input.token, 'verify')
-      const user = userId ? await User.findById(userId) : null
+      const user = userId ? await users.byId(userId) : null
       if (!user) throw new HttpError(400, 'This verification link is invalid or has expired.')
       if (!user.emailVerifiedAt) user.emailVerifiedAt = new Date()
       await user.save()
@@ -221,7 +282,7 @@ export function authRouter(limiter: RequestHandler): Router {
     '/verify/send',
     requireAuth,
     asyncHandler(async (req, res) => {
-      const user = await User.findById(currentUserId(req))
+      const user = await users.byId(currentUserId(req))
       if (!user) throw new HttpError(401, 'Sign in to continue.')
       if (user.emailVerifiedAt) {
         res.json({ message: 'This email is already verified.' })
@@ -255,22 +316,18 @@ export function authRouter(limiter: RequestHandler): Router {
     '/sessions',
     requireAuth,
     asyncHandler(async (req, res) => {
-      const sessions = await Session.find({
-        userId: currentUserId(req),
-        revokedAt: null,
-        replacedBy: null,
-        expiresAt: { $gt: new Date() },
-      })
-        .select('userAgent lastSeenAt createdAt')
-        .sort({ lastSeenAt: -1 })
-        .lean()
+      const sessions = await listActiveSessions(currentUserId(req))
       res.json(
         sessions.map((session) => ({
           id: session._id.toString(),
           current: session._id.toString() === req.sessionId,
-          device: deviceLabel(session.userAgent || ''),
+          device: session.deviceName || deviceLabel(session.userAgent || ''),
+          ip: session.ipCoarse || '',
+          location: session.location || '',
           lastSeenAt: session.lastSeenAt.toISOString(),
           createdAt: session.createdAt.toISOString(),
+          expiresAt: session.expiresAt.toISOString(),
+          idleExpiresAt: new Date(session.lastSeenAt.getTime() + IDLE_MS).toISOString(),
         })),
       )
     }),
@@ -280,14 +337,16 @@ export function authRouter(limiter: RequestHandler): Router {
     '/sessions/:id',
     requireAuth,
     asyncHandler(async (req, res) => {
-      const session = await Session.findOne({
-        _id: req.params.id,
-        userId: currentUserId(req),
-        revokedAt: null,
-      })
-      if (!session || session.replacedBy) throw new HttpError(404, 'Session not found.')
+      const session = await revokeSessionById(currentUserId(req), req.params.id)
+      if (!session) throw new HttpError(404, 'Session not found.')
       session.revokedAt = new Date()
       await session.save()
+      await recordSecurity({
+        userId: currentUserId(req),
+        type: 'session-revoked',
+        summary: 'A session was revoked.',
+        ipCoarse: coarseIp(req.ip),
+      })
       if (session.id === req.sessionId) clearSession(res)
       res.status(204).send()
     }),
@@ -297,7 +356,15 @@ export function authRouter(limiter: RequestHandler): Router {
     '/sessions/revoke-all',
     requireAuth,
     asyncHandler(async (req, res) => {
-      await Session.updateMany({ userId: currentUserId(req), revokedAt: null }, { revokedAt: new Date() })
+      const body = req.body as { password?: string } | undefined
+      await assertStepUp(req, typeof body?.password === 'string' ? body.password : undefined)
+      await revokeSessions(currentUserId(req))
+      await recordSecurity({
+        userId: currentUserId(req),
+        type: 'sessions-revoked',
+        summary: 'Every session was revoked.',
+        ipCoarse: coarseIp(req.ip),
+      })
       clearSession(res)
       res.status(204).send()
     }),
@@ -307,7 +374,7 @@ export function authRouter(limiter: RequestHandler): Router {
     '/google',
     asyncHandler(async (req, res) => {
       if (!googleConfigured()) throw new HttpError(404, 'Google sign-in is not configured.')
-      const state = jwt.sign({ typ: 'google' }, process.env.JWT_SECRET ?? '', { expiresIn: '10m' })
+      const state = signJwt({ typ: 'google' }, '10m')
       const redirect = `${appOrigin(req)}/api/auth/google/callback`
       const url = new URL('https://accounts.google.com/o/oauth2/v2/auth')
       url.searchParams.set('client_id', process.env.GOOGLE_CLIENT_ID ?? '')
@@ -330,8 +397,8 @@ export function authRouter(limiter: RequestHandler): Router {
         res.redirect('/login?error=google')
       }
       try {
-        const payload = jwt.verify(state, process.env.JWT_SECRET ?? '')
-        if (typeof payload === 'string' || payload.typ !== 'google' || !code) {
+        const payload = verifyJwt(state)
+        if (!payload || payload.typ !== 'google' || !code) {
           fail()
           return
         }
@@ -380,14 +447,14 @@ export function authRouter(limiter: RequestHandler): Router {
         fail()
         return
       }
-      let user = await User.findOne({ googleId: profile.sub })
-      if (!user) user = await User.findOne({ email })
+      let user = await users.byGoogle(profile.sub)
+      if (!user) user = await users.byEmail(email)
       if (user) {
         if (!user.googleId) user.googleId = profile.sub
         if (!user.emailVerifiedAt) user.emailVerifiedAt = new Date()
         await user.save()
       } else {
-        user = await User.create({
+        user = await users.create({
           name: (profile.name || email.split('@')[0] || 'Align').slice(0, 80),
           email,
           passwordHash: await hashPassword(randomBytes(32).toString('hex')),
@@ -395,7 +462,8 @@ export function authRouter(limiter: RequestHandler): Router {
           googleId: profile.sub,
         })
       }
-      await startSession(res, user.id, req.get('user-agent'))
+      await ensurePersonalWorkspace(user.id)
+      await startSession(req, res, user.id)
       res.redirect('/')
     }),
   )
@@ -404,9 +472,9 @@ export function authRouter(limiter: RequestHandler): Router {
     '/me',
     requireAuth,
     asyncHandler(async (req, res) => {
-      const user = await User.findById(currentUserId(req))
+      const user = await users.byId(currentUserId(req))
       if (!user) throw new HttpError(401, 'Sign in to continue.')
-      res.json(publicUser(user))
+      res.json({ ...publicUser(user), totpEnabled: Boolean(user.totpEnabledAt) })
     }),
   )
 
@@ -418,9 +486,38 @@ export function authRouter(limiter: RequestHandler): Router {
       const update: { name?: string; accent?: string } = {}
       if (input.name !== undefined) update.name = input.name
       if (input.accent !== undefined) update.accent = input.accent.toLowerCase()
-      const user = await User.findByIdAndUpdate(currentUserId(req), update, { new: true })
+      const user = await users.update(currentUserId(req), update)
       if (!user) throw new HttpError(401, 'Sign in to continue.')
       res.json(publicUser(user))
+    }),
+  )
+
+  router.post(
+    '/email',
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const input = parseBody(emailChangeSchema, req.body)
+      const userId = currentUserId(req)
+      await assertStepUp(req, input.password)
+      const next = input.email.trim().toLowerCase()
+      const taken = await users.byEmail(next)
+      if (taken && taken.id !== userId) throw new HttpError(409, 'An account already uses that email.')
+      const user = await users.update(userId, { email: next, emailVerifiedAt: null })
+      if (!user) throw new HttpError(401, 'Sign in to continue.')
+      await recordSecurity({
+        userId,
+        type: 'email-changed',
+        summary: 'The account email was changed.',
+        ipCoarse: coarseIp(req.ip),
+      })
+      const token = await issueAuthToken(user.id, 'verify')
+      const link = `${appOrigin(req)}/verify?token=${encodeURIComponent(token)}`
+      const mailed = await sendOrReveal(
+        user.email,
+        'Verify your new Align email',
+        `Confirm this email by opening this link within one hour:\n${link}`,
+      )
+      res.json({ ...publicUser(user), ...(mailed ? {} : { verifyToken: token }) })
     }),
   )
 
@@ -430,16 +527,21 @@ export function authRouter(limiter: RequestHandler): Router {
     requireAuth,
     asyncHandler(async (req, res) => {
       const input = parseBody(passwordSchema, req.body)
-      const user = await User.findById(currentUserId(req)).select('+passwordHash')
+      const user = await users.byIdSecret(currentUserId(req))
       if (!user?.passwordHash) throw new HttpError(401, 'Sign in to continue.')
       const matches = await checkPassword(input.currentPassword, user.passwordHash)
       if (!matches) throw new HttpError(400, 'Current password is incorrect.')
+      await assertPasswordNotBreached(input.newPassword)
       user.passwordHash = await hashPassword(input.newPassword)
       await user.save()
-      await Session.updateMany(
-        { userId: user._id, _id: { $ne: req.sessionId }, revokedAt: null },
-        { revokedAt: new Date() },
-      )
+      if (req.sessionId) await markStepUp(req.sessionId)
+      await revokeSessions(user.id, req.sessionId)
+      await recordSecurity({
+        userId: user.id,
+        type: 'password-changed',
+        summary: 'Password was changed.',
+        ipCoarse: coarseIp(req.ip),
+      })
       await rotateRefresh(req, res)
       res.status(204).send()
     }),
@@ -450,18 +552,22 @@ export function authRouter(limiter: RequestHandler): Router {
     requireAuth,
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req)
-      await Task.deleteMany({ userId })
-      await Note.deleteMany({ userId })
-      await Label.deleteMany({ userId })
-      await Activity.deleteMany({ userId })
-      await Notification.deleteMany({ userId })
-      await Whiteboard.deleteMany({ userId })
-      await Project.deleteMany({ userId })
-      await Session.deleteMany({ userId })
-      await AuthToken.deleteMany({ userId })
-      await User.deleteOne({ _id: userId })
+      const body = req.body as { password?: string } | undefined
+      await assertStepUp(req, typeof body?.password === 'string' ? body.password : undefined)
+      await deleteAccount(userId)
       clearSession(res)
       res.status(204).send()
+    }),
+  )
+
+  router.patch(
+    '/sessions/:id',
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const input = parseBody(sessionRenameSchema, req.body)
+      const session = await renameSession(currentUserId(req), req.params.id, input.name)
+      if (!session) throw new HttpError(404, 'Session not found.')
+      res.json({ id: session.id, device: session.deviceName })
     }),
   )
 

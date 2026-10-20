@@ -8,6 +8,7 @@ import { useToast } from '../components/toast-context.ts'
 import { PageHeader } from '../components/chrome.tsx'
 import { AccentPicker, ThemeToggle } from '../components/ThemeControls.tsx'
 import { PasswordMeter } from '../components/PasswordMeter.tsx'
+import { SecurityPanel } from './SecurityPanel.tsx'
 import { Button, ConfirmDialog, Field, Input, ListSkeleton } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { isMediumPassword, MEDIUM_PASSWORD_HINT, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
@@ -15,7 +16,7 @@ import { clearSignedOut, markSignedOut } from '../lib/signedOut.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
 export function SettingsPage() {
-  const { user, updateProfile, logout, deleteAccount } = useAuth()
+  const { user, updateProfile, logout, deleteAccount, acceptSession } = useAuth()
   const navigate = useNavigate()
   const toast = useToast()
   const [name, setName] = useState(user?.name ?? '')
@@ -26,7 +27,15 @@ export function SettingsPage() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [passwordError, setPasswordError] = useState('')
   const [savingPassword, setSavingPassword] = useState(false)
+  const [nextEmail, setNextEmail] = useState('')
+  const [emailPassword, setEmailPassword] = useState('')
+  const [emailError, setEmailError] = useState('')
+  const [savingEmail, setSavingEmail] = useState(false)
+  const [confirmRevoke, setConfirmRevoke] = useState(false)
+  const [revokePassword, setRevokePassword] = useState('')
+  const [revoking, setRevoking] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deletePassword, setDeletePassword] = useState('')
   const [deleting, setDeleting] = useState(false)
   const [sessions, setSessions] = useState<AuthSession[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(true)
@@ -132,14 +141,35 @@ export function SettingsPage() {
     }
   }
 
+  async function onChangeEmail(event: FormEvent) {
+    event.preventDefault()
+    setEmailError('')
+    setSavingEmail(true)
+    try {
+      const updated = await api.changeEmail({ email: nextEmail.trim(), password: emailPassword })
+      acceptSession(updated)
+      setVerifyToken(updated.verifyToken ?? '')
+      setVerifyMessage(updated.verifyToken ? 'Email updated. Verify the new address when you can.' : 'Email updated.')
+      setNextEmail('')
+      setEmailPassword('')
+      toast('Email updated')
+    } catch (caught) {
+      setEmailError(errorMessage(caught))
+    } finally {
+      setSavingEmail(false)
+    }
+  }
+
   async function onSignOutEverywhere() {
+    setRevoking(true)
     markSignedOut()
     try {
-      await api.revokeAllSessions()
+      await api.revokeAllSessions(revokePassword)
       await logout()
       navigate('/', { replace: true })
     } catch (caught) {
       clearSignedOut()
+      setRevoking(false)
       toast(errorMessage(caught))
     }
   }
@@ -159,7 +189,7 @@ export function SettingsPage() {
     setDeleting(true)
     markSignedOut()
     try {
-      await deleteAccount()
+      await deleteAccount(deletePassword)
       navigate('/', { replace: true })
     } catch (caught) {
       clearSignedOut()
@@ -287,7 +317,27 @@ export function SettingsPage() {
                 </p>
                 <p className="mt-1 text-xs text-neutral-500">
                   Last seen {new Date(session.lastSeenAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                  {session.location ? ` · ${session.location}` : ''}
+                  {session.ip ? ` · ${session.ip}` : ''}
                 </p>
+                <form
+                  className="mt-2 flex gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    const data = new FormData(event.currentTarget)
+                    const name = String(data.get('name') ?? '').trim()
+                    if (!name) return
+                    void api.renameSession(session.id, name).then(() => {
+                      setSessions((current) => current.map((item) => (item.id === session.id ? { ...item, device: name } : item)))
+                      toast('Session renamed')
+                    })
+                  }}
+                >
+                  <Input name="name" aria-label={`Rename ${session.device}`} defaultValue={session.device} className="h-9" />
+                  <Button variant="secondary" type="submit">
+                    Rename
+                  </Button>
+                </form>
               </div>
               <Button variant="secondary" onClick={() => void onRevoke(session)}>
                 Revoke
@@ -300,11 +350,40 @@ export function SettingsPage() {
           <Button variant="secondary" onClick={() => void onSignOut()}>
             Sign out
           </Button>
-          <Button variant="secondary" onClick={() => void onSignOutEverywhere()}>
+          <Button variant="secondary" onClick={() => setConfirmRevoke(true)}>
             Sign out everywhere
           </Button>
         </div>
       </section>
+
+      <section className="mt-4 max-w-lg border border-neutral-200 p-5">
+        <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Email address</h2>
+        <form onSubmit={(event) => void onChangeEmail(event)} className="mt-4 space-y-4" noValidate>
+          <Field label="New email" htmlFor="next-email" error={emailError}>
+            <Input
+              id="next-email"
+              type="email"
+              autoComplete="email"
+              value={nextEmail}
+              onChange={(event) => setNextEmail(event.target.value)}
+            />
+          </Field>
+          <Field label="Current password" htmlFor="email-password">
+            <Input
+              id="email-password"
+              type="password"
+              autoComplete="current-password"
+              value={emailPassword}
+              onChange={(event) => setEmailPassword(event.target.value)}
+            />
+          </Field>
+          <Button type="submit" disabled={savingEmail}>
+            {savingEmail ? 'Updating…' : 'Update email'}
+          </Button>
+        </form>
+      </section>
+
+      <SecurityPanel />
 
       <section className="mt-4 max-w-lg border border-dashed border-neutral-300 p-5">
         <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Delete account</h2>
@@ -317,16 +396,52 @@ export function SettingsPage() {
       </section>
 
       <ConfirmDialog
+        open={confirmRevoke}
+        title="Confirm it's you"
+        body="Enter your password to sign out every device, including this one."
+        confirmLabel="Sign out everywhere"
+        pending={revoking}
+        onConfirm={() => void onSignOutEverywhere()}
+        onClose={() => {
+          if (!revoking) setConfirmRevoke(false)
+        }}
+      >
+        <div className="mt-4">
+          <Field label="Password" htmlFor="revoke-password">
+            <Input
+              id="revoke-password"
+              type="password"
+              autoComplete="current-password"
+              value={revokePassword}
+              onChange={(event) => setRevokePassword(event.target.value)}
+            />
+          </Field>
+        </div>
+      </ConfirmDialog>
+
+      <ConfirmDialog
         open={confirmDelete}
-        title="Delete account"
-        body="Delete your account? Projects, tasks, and notes are removed permanently."
+        title="Confirm it's you"
+        body="Enter your password to delete this account. Projects, tasks, and notes are removed permanently."
         confirmLabel="Delete account"
         pending={deleting}
         onConfirm={() => void onDelete()}
         onClose={() => {
           if (!deleting) setConfirmDelete(false)
         }}
-      />
+      >
+        <div className="mt-4">
+          <Field label="Password" htmlFor="delete-password">
+            <Input
+              id="delete-password"
+              type="password"
+              autoComplete="current-password"
+              value={deletePassword}
+              onChange={(event) => setDeletePassword(event.target.value)}
+            />
+          </Field>
+        </div>
+      </ConfirmDialog>
     </div>
   )
 }

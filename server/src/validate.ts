@@ -2,6 +2,7 @@ import type { ZodType } from 'zod'
 import { HttpError } from './errors.ts'
 
 export {
+  emailChangeSchema,
   emptyScene,
   forgotSchema,
   labelCreateSchema,
@@ -19,7 +20,14 @@ export {
   taskCreateSchema,
   taskPatchSchema,
   verifySchema,
+  memberRoleSchema,
+  memberSchema,
+  mfaSchema,
+  sessionRenameSchema,
+  stepUpSchema,
+  totpCodeSchema,
   whiteboardSceneSchema,
+  workspaceCreateSchema,
 } from '../../shared/schemas.ts'
 
 export function parseBody<T>(schema: ZodType<T>, body: unknown): T {

@@ -1,8 +1,9 @@
 import { Router } from 'express'
 import type { Types } from 'mongoose'
+import { bind } from '../data/content.ts'
+import { currentTenant } from '../data/tenant.ts'
 import { HttpError } from '../errors.ts'
-import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
-import { Project, Task } from '../models.ts'
+import { asyncHandler, requireAuth } from '../middleware.ts'
 import { normalizeDueDate } from '../validate.ts'
 
 const FIELDS = 'projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt __v'
@@ -51,12 +52,12 @@ export function todayRouter(): Router {
     asyncHandler(async (req, res) => {
       const date = typeof req.query.date === 'string' ? normalizeDueDate(req.query.date) : null
       if (!date) throw new HttpError(400, 'Use a valid date.')
-      const userId = currentUserId(req)
+      const db = bind(currentTenant(req))
       const [open, plannedDone, finishedOn, projects] = await Promise.all([
-        Task.find({ userId, completed: false }).select(FIELDS).lean<TodayTask[]>(),
-        Task.find({ userId, completed: true, plannedFor: date }).select(FIELDS).lean<TodayTask[]>(),
-        Task.find({ userId, completed: true, completedOn: date }).select(FIELDS).lean<TodayTask[]>(),
-        Project.find({ userId, status: 'active' }).select('name').lean(),
+        db.tasks.find({ completed: false }).select(FIELDS).lean<TodayTask[]>(),
+        db.tasks.find({ completed: true, plannedFor: date }).select(FIELDS).lean<TodayTask[]>(),
+        db.tasks.find({ completed: true, completedOn: date }).select(FIELDS).lean<TodayTask[]>(),
+        db.projects.find({ status: 'active' }).select('name').lean(),
       ])
       const names = new Map(projects.map((project) => [project._id.toString(), project.name]))
       const merged = new Map<string, TodayTask>()

@@ -1,11 +1,12 @@
 import { Router } from 'express'
 import { Types } from 'mongoose'
+import { bind } from '../data/content.ts'
+import { currentTenant, type Tenant } from '../data/tenant.ts'
 import { shiftISODate } from '../dates.ts'
 import { HttpError } from '../errors.ts'
-import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
-import { Notification, Project, Task } from '../models.ts'
+import { asyncHandler, requireAuth, requireWriter } from '../middleware.ts'
 import { decodeCursor, encodeCursor, pageLimit } from '../page.ts'
-import { objectId } from '../scope.ts'
+import { objectId } from '../data/content.ts'
 import { publicNotification } from '../serialize.ts'
 import { normalizeDueDate } from '../validate.ts'
 
@@ -30,13 +31,14 @@ function requireToday(value: unknown): string {
   return today
 }
 
-async function dueRows(userId: string, today: string): Promise<DueRow[]> {
+async function dueRows(tenant: Tenant, today: string): Promise<DueRow[]> {
+  const db = bind(tenant)
   const tomorrow = shiftISODate(today, 1)
-  const tasks = await Task.find({
-    userId,
-    completed: false,
-    dueDate: { $gte: '0000-01-01', $lte: tomorrow },
-  })
+  const tasks = await db.tasks
+    .find({
+      completed: false,
+      dueDate: { $gte: '0000-01-01', $lte: tomorrow },
+    })
     .select('title dueDate projectId')
     .lean()
 
@@ -49,10 +51,10 @@ async function dueRows(userId: string, today: string): Promise<DueRow[]> {
   const [projects, stored] = await Promise.all([
     projectIds.length === 0
       ? Promise.resolve([])
-      : Project.find({ userId, _id: { $in: projectIds } }).select('name').lean(),
+      : db.projects.find({ _id: { $in: projectIds } }).select('name').lean(),
     keys.length === 0
       ? Promise.resolve([])
-      : Notification.find({ userId, key: { $in: keys } }).select('key read createdAt').lean(),
+      : db.notifications.find({ key: { $in: keys } }).select('key read createdAt').lean(),
   ])
   const names = new Map(projects.map((project) => [project._id.toString(), project.name]))
   const flags = new Map(stored.map((item) => [item.key, item]))
@@ -96,13 +98,13 @@ function present(row: DueRow) {
 
 export function notificationsRouter(): Router {
   const router = Router()
-  router.use(requireAuth)
+  router.use(requireAuth, requireWriter)
 
   router.get(
     '/',
     asyncHandler(async (req, res) => {
       const today = requireToday(req.query.today)
-      const rows = await dueRows(currentUserId(req), today)
+      const rows = await dueRows(currentTenant(req), today)
       rows.sort((a, b) => (a.createdAt === b.createdAt ? (a.key < b.key ? 1 : -1) : a.createdAt < b.createdAt ? 1 : -1))
       const cursor = decodeCursor(req.query.cursor)
       const filtered =
@@ -120,14 +122,16 @@ export function notificationsRouter(): Router {
   router.post(
     '/read-all',
     asyncHandler(async (req, res) => {
-      const userId = currentUserId(req)
+      const tenant = currentTenant(req)
+      const db = bind(tenant)
+      const userId = tenant.userId
       const today = typeof req.query.today === 'string' && req.query.today ? requireToday(req.query.today) : null
       if (today) {
-        const rows = await dueRows(userId, today)
+        const rows = await dueRows(tenant, today)
         const userObjectId = new Types.ObjectId(userId)
         const expireAt = new Date(Date.now() + NINETY_DAYS_MS)
         if (rows.length > 0) {
-          await Notification.bulkWrite(
+          await db.notifications.bulkWrite(
             rows.map((row) => ({
               updateOne: {
                 filter: { userId: userObjectId, key: row.key },
@@ -149,7 +153,7 @@ export function notificationsRouter(): Router {
           )
         }
       }
-      await Notification.updateMany({ userId, read: false }, { read: true })
+      await db.notifications.updateMany({ read: false }, { read: true })
       res.status(204).send()
     }),
   )
@@ -157,10 +161,12 @@ export function notificationsRouter(): Router {
   router.post(
     '/:id/read',
     asyncHandler(async (req, res) => {
-      const userId = currentUserId(req)
+      const tenant = currentTenant(req)
+      const db = bind(tenant)
+      const userId = tenant.userId
       const id = objectId(req.params.id)
       if (id) {
-        const item = await Notification.findOneAndUpdate({ _id: id, userId }, { read: true }, { new: true })
+        const item = await db.notifications.findOneAndUpdate({ _id: id }, { read: true }, { new: true })
         if (!item) throw new HttpError(404, 'Notification not found.')
         res.json(publicNotification(item))
         return
@@ -171,14 +177,15 @@ export function notificationsRouter(): Router {
       const taskId = match[1] ?? ''
       const kind = match[2] as 'overdue' | 'due-soon'
       const dueDate = match[3] ?? ''
-      const task = await Task.findOne({ _id: taskId, userId, completed: false, dueDate }).select('title projectId dueDate')
+      const task = await db.tasks.findOne({ _id: taskId, completed: false, dueDate }).select('title projectId dueDate')
       if (!task?.dueDate) throw new HttpError(404, 'Notification not found.')
-      const project = await Project.findOne({ _id: task.projectId, userId }).select('name')
-      if (!project) throw new HttpError(404, 'Notification not found.')
-      const item = await Notification.findOneAndUpdate(
+      const project = await db.projects.find({ _id: task.projectId }).select('name')
+      const named = project[0]
+      if (!named) throw new HttpError(404, 'Notification not found.')
+      const item = await db.notifications.findOneAndUpdate(
         { userId, key: req.params.id },
         {
-          $set: { read: true, title: task.title, projectName: project.name },
+          $set: { read: true, title: task.title, projectName: named.name },
           $setOnInsert: {
             userId,
             projectId: task.projectId,

@@ -4,7 +4,7 @@ import { useAuth } from '../auth/auth-context.ts'
 import { cn } from '../lib/cn.ts'
 import { useMediaQuery } from '../hooks/useMediaQuery.ts'
 import { Eyebrow } from './chrome.tsx'
-import { IconClose, IconDashboard, IconMenu, IconNotes, IconProjects, IconSearch, IconSettings, IconToday } from './icons.tsx'
+import { IconClose, IconDashboard, IconMenu, IconNotes, IconProjects, IconSearch, IconSettings, IconToday, IconTrash } from './icons.tsx'
 import { NotificationBell } from './NotificationBell.tsx'
 import { ThemeToggle } from './ThemeControls.tsx'
 
@@ -13,6 +13,7 @@ const NAV = [
   { to: '/today', label: 'Today', icon: IconToday, end: false },
   { to: '/projects', label: 'Projects', icon: IconProjects, end: false },
   { to: '/notes', label: 'Notes', icon: IconNotes, end: false },
+  { to: '/trash', label: 'Trash', icon: IconTrash, end: false },
   { to: '/settings', label: 'Settings', icon: IconSettings, end: false },
 ] as const
 

@@ -1,7 +1,25 @@
 import mongoose from 'mongoose'
 import { wordList } from '../../shared/search.ts'
-import { HttpError } from './errors.ts'
-import { Activity, AuthToken, Label, Note, Notification, Project, RateLimit, Session, Task, User, Whiteboard } from './models.ts'
+import { HttpError, unavailable } from './errors.ts'
+import { runMigrations } from './migrate/runner.ts'
+import {
+  Activity,
+  AuthToken,
+  Label,
+  Membership,
+  Note,
+  Notification,
+  Passkey,
+  Project,
+  RateLimit,
+  SecurityEvent,
+  Session,
+  Task,
+  User,
+  WebAuthnChallenge,
+  Whiteboard,
+  Workspace,
+} from './models.ts'
 
 type Cache = {
   conn: typeof mongoose | null
@@ -92,6 +110,11 @@ async function syncAllIndexes(): Promise<void> {
     Session.syncIndexes(),
     AuthToken.syncIndexes(),
     RateLimit.syncIndexes(),
+    Workspace.syncIndexes(),
+    Membership.syncIndexes(),
+    Passkey.syncIndexes(),
+    SecurityEvent.syncIndexes(),
+    WebAuthnChallenge.syncIndexes(),
   ])
 }
 
@@ -118,7 +141,7 @@ function ensureIndexes(): Promise<void> {
 
 function databaseFailure(error: unknown): HttpError {
   console.error(error)
-  return new HttpError(500, 'Database connection failed.')
+  return unavailable()
 }
 
 function shouldSync(options?: { indexes?: boolean }): boolean {
@@ -133,6 +156,7 @@ export async function connectDb(options?: { indexes?: boolean }): Promise<typeof
 
   const state = cache()
   if (state.conn) {
+    await runMigrations()
     if (shouldSync(options)) await ensureIndexes()
     return state.conn
   }
@@ -141,11 +165,16 @@ export async function connectDb(options?: { indexes?: boolean }): Promise<typeof
     mongoose.set('bufferCommands', false)
     state.promise = mongoose
       .connect(uri, {
-        serverSelectionTimeoutMS: 5000,
+        retryWrites: true,
+        retryReads: true,
+        serverSelectionTimeoutMS: 5_000,
+        connectTimeoutMS: 10_000,
+        socketTimeoutMS: 20_000,
+        heartbeatFrequencyMS: 10_000,
+        waitQueueTimeoutMS: 5_000,
         maxPoolSize: 5,
         minPoolSize: 1,
         maxIdleTimeMS: 60_000,
-        socketTimeoutMS: 20_000,
       })
       .then((connection) => {
         state.conn = connection
@@ -164,6 +193,7 @@ export async function connectDb(options?: { indexes?: boolean }): Promise<typeof
     state.promise = null
     throw error instanceof HttpError ? error : databaseFailure(error)
   }
+  await runMigrations()
   if (shouldSync(options)) await ensureIndexes()
   return state.conn
 }

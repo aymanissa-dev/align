@@ -15,8 +15,8 @@ async function main(): Promise<void> {
   }
 
   if (process.env.MONGODB_URI === 'memory') {
-    const { MongoMemoryServer } = await import('mongodb-memory-server')
-    const memory = await MongoMemoryServer.create()
+    const { MongoMemoryReplSet } = await import('mongodb-memory-server')
+    const memory = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
     process.env.MONGODB_URI = memory.getUri('align')
     console.log('Using an in-memory MongoDB. Data is discarded when the API stops.')
   }

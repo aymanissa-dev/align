@@ -160,6 +160,7 @@ export function ConfirmDialog({
   pending = false,
   onConfirm,
   onClose,
+  children,
 }: {
   open: boolean
   title: string
@@ -168,10 +169,12 @@ export function ConfirmDialog({
   pending?: boolean
   onConfirm: () => void
   onClose: () => void
+  children?: ReactNode
 }) {
   return (
     <Modal open={open} title={title} onClose={pending ? () => undefined : onClose}>
       <p className="text-sm leading-6 text-neutral-600">{body}</p>
+      {children}
       <div className="mt-6 flex justify-end gap-2">
         <Button variant="secondary" onClick={onClose} disabled={pending}>
           Cancel

@@ -14,6 +14,9 @@
     "dev": "concurrently -n api,web -c blue,green \"npm run dev -w server\" \"npm run dev -w client\"",
     "build": "npm run build -w client && npm run build:api -w server",
     "test": "npm test -w server",
+    "test:coverage": "npm run test:coverage -w server",
+    "index-audit": "npm run index-audit -w server",
+    "typecheck": "npm run typecheck -w client && npm run lint -w server",
     "e2e": "node e2e/production-crud.mjs",
     "lint": "npm run lint -w client && npm run lint -w server",
     "start": "npm run start -w server"

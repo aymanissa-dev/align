@@ -76,11 +76,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (input: LoginInput) => {
     const next = await api.login(input)
+    if ('mfaRequired' in next) return next
     epoch.current += 1
     allowPersistedCache(next.id)
     writeLocalUser(next)
     queryClient.clear()
     setUser(next)
+    return next
   }, [])
 
   const register = useCallback(async (input: RegisterInput) => {
@@ -114,9 +116,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return next
   }, [])
 
-  const deleteAccount = useCallback(async () => {
+  const deleteAccount = useCallback(async (password?: string) => {
     const id = ownerRef.current ?? user?.id ?? null
-    await api.deleteAccount()
+    await api.deleteAccount(password ? { password } : {})
     broadcastSignedOut()
     dropLocalSession(id)
   }, [dropLocalSession, user?.id])

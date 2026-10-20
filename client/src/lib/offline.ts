@@ -1,4 +1,5 @@
 import { onlineManager } from '@tanstack/react-query'
+import { csrfHeaders } from './csrf.ts'
 import { queryClient } from '../queryClient.ts'
 import { refreshSession } from './refresh.ts'
 import type { DashboardData, OpenTask, Project, Task, TodayData, TodayTask } from '../api/types.ts'
@@ -540,6 +541,7 @@ async function runFlush(signal: AbortSignal): Promise<FlushResult> {
           signal: request.signal,
           headers: {
             Accept: 'application/json',
+            ...csrfHeaders(),
             ...(item.body ? { 'Content-Type': 'application/json' } : {}),
             ...(item.match ? { 'If-Match': item.match } : {}),
           },

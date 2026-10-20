@@ -561,7 +561,7 @@ export const mockApi = {
     persist()
   },
 
-  async revokeAllSessions() {
+  async revokeAllSessions(_password?: string) {
     await wait()
     const state = load()
     state.sessionUserId = null
@@ -1152,5 +1152,58 @@ export const mockApi = {
           })),
       }
     })
+  },
+  async totpSetup() {
+    return { secret: 'MOCKSECRET', otpauth: 'otpauth://totp/Align:mock', qr: '' }
+  },
+  async totpConfirm() {
+    return { recoveryCodes: ['abcde-fghij'] }
+  },
+  async totpDisable() {},
+  async regenerateRecoveryCodes() {
+    return { recoveryCodes: ['abcde-fghij'] }
+  },
+  async completeMfa() {
+    const state = load()
+    return publicUser(requireUser(state))
+  },
+  async stepUp() {},
+  async listSecurityEvents() {
+    return []
+  },
+  async renameSession(_id: string, name: string) {
+    return { id: 'local', device: name }
+  },
+  async listPasskeys() {
+    return []
+  },
+  async passkeyRegisterOptions() {
+    return {}
+  },
+  async passkeyRegisterVerify() {},
+  async passkeyDelete() {},
+  async passkeyLoginOptions() {
+    return {}
+  },
+  async passkeyLoginVerify() {
+    const state = load()
+    return publicUser(requireUser(state))
+  },
+  async changeEmail(input: { email: string; password: string }) {
+    await wait()
+    const state = load()
+    const user = requireUser(state)
+    user.email = input.email
+    persist()
+    return publicUser(user)
+  },
+  async listTrash() {
+    return { projects: [], tasks: [] }
+  },
+  async restoreProject(id: string) {
+    return { id, name: 'Restored' }
+  },
+  async restoreTask(id: string) {
+    return { id, title: 'Restored' }
   },
 } satisfies AlignApi

@@ -219,6 +219,46 @@ export const whiteboardSceneSchema = z.object({
   }),
 })
 
+export const sessionRenameSchema = z.object({
+  name: text('Device name', 80),
+})
+
+export const totpCodeSchema = z.object({
+  code: z
+    .string({ required_error: 'Enter the 6-digit code.' })
+    .trim()
+    .regex(/^\d{6}$/, 'Enter the 6-digit code.'),
+})
+
+export const mfaSchema = z.object({
+  code: z.string({ required_error: 'Enter a code.' }).trim().min(6, 'Enter a code.').max(32, 'Enter a code.'),
+  method: z.enum(['totp', 'recovery']),
+})
+
+export const emailChangeSchema = z.object({
+  email,
+  password: z.string().min(1, 'Confirm it is you to continue.').max(128, 'Confirm it is you to continue.'),
+})
+
+export const stepUpSchema = z.object({
+  password: z.string().min(1).max(128).optional(),
+  code: z.string().trim().min(6).max(32).optional(),
+  method: z.enum(['password', 'totp', 'recovery']).optional(),
+})
+
+export const workspaceCreateSchema = z.object({
+  name: text('Workspace name', 80),
+})
+
+export const memberSchema = z.object({
+  email,
+  role: z.enum(['admin', 'member', 'viewer']),
+})
+
+export const memberRoleSchema = z.object({
+  role: z.enum(['admin', 'member', 'viewer']),
+})
+
 export const emptyScene = {
   strokes: [],
   shapes: [],

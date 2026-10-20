@@ -1,3 +1,4 @@
+import { csrfHeaders } from '../lib/csrf.ts'
 import { ApiError } from './errors.ts'
 import { broadcastSignedOut } from '../lib/authChannel.ts'
 import { forceSignOut } from '../lib/forceSignOut.ts'
@@ -80,6 +81,9 @@ async function fetchResponse(path: string, init: RequestInit = {}, refreshed = f
   const headers = new Headers(init.headers)
   headers.set('Accept', 'application/json')
   if (init.body) headers.set('Content-Type', 'application/json')
+  if (method !== 'GET' && method !== 'HEAD') {
+    for (const [key, value] of Object.entries(csrfHeaders())) headers.set(key, value)
+  }
   const cached = method === 'GET' || method === 'HEAD' ? etags.get(path) : undefined
   if (cached) headers.set('If-None-Match', cached.etag)
 
@@ -136,17 +140,30 @@ async function fetchResponse(path: string, init: RequestInit = {}, refreshed = f
     rememberGet(path, response, body)
   }
   if (response.ok && !fromWorkerCache) noteNetworkSuccess({ trusted: method !== 'GET' && method !== 'HEAD' })
+  if (response.status === 503 && canQueue) {
+    markUnreachable()
+    try {
+      enqueueWrite({ path, method, body, match: headers.get('If-Match') ?? undefined })
+    } catch {
+      throw new ApiError(0, "You're offline, and this change could not be saved on this device.")
+    }
+    throw new ApiError(0, OFFLINE_MESSAGE, true)
+  }
   if (!response.ok) {
     let message = 'Request failed.'
+    let code: string | undefined
     try {
       const data: unknown = await response.json()
       if (data && typeof data === 'object' && 'error' in data && typeof data.error === 'string') {
         message = data.error
       }
+      if (data && typeof data === 'object' && 'code' in data && typeof data.code === 'string') {
+        code = data.code
+      }
     } catch {
       // Non-JSON error bodies fall back to the generic message.
     }
-    throw new ApiError(response.status, message)
+    throw new ApiError(response.status, message, false, code)
   }
   return response
 }
@@ -201,7 +218,10 @@ export const httpApi = {
     return request<User>('/api/auth/register', { method: 'POST', body: JSON.stringify(input) })
   },
   login(input) {
-    return request<User>('/api/auth/login', { method: 'POST', body: JSON.stringify(input) })
+    return request<User | import('./types.ts').MfaChallenge>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
   },
   async logout() {
     await request<void>('/api/auth/logout', { method: 'POST' })
@@ -221,8 +241,17 @@ export const httpApi = {
   async revokeSession(id) {
     await request<void>(`/api/auth/sessions/${id}`, { method: 'DELETE' })
   },
-  async revokeAllSessions() {
-    await request<void>('/api/auth/sessions/revoke-all', { method: 'POST' })
+  async revokeAllSessions(password) {
+    await request<void>('/api/auth/sessions/revoke-all', {
+      method: 'POST',
+      body: JSON.stringify({ password: password ?? '' }),
+    })
+  },
+  changeEmail(input) {
+    return request<import('./types.ts').User & { verifyToken?: string }>('/api/auth/email', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
   },
   async session() {
     const data = await request<{ user: User | null }>('/api/auth/session')
@@ -243,8 +272,68 @@ export const httpApi = {
   async changePassword(input) {
     await request<void>('/api/auth/password', { method: 'POST', body: JSON.stringify(input) })
   },
-  async deleteAccount() {
-    await request<void>('/api/auth/me', { method: 'DELETE' })
+  async deleteAccount(input) {
+    await request<void>('/api/auth/me', { method: 'DELETE', body: JSON.stringify(input ?? {}) })
+  },
+  totpSetup() {
+    return request<{ secret: string; otpauth: string; qr: string }>('/api/auth/totp/setup', { method: 'POST' })
+  },
+  totpConfirm(code) {
+    return request<{ recoveryCodes: string[] }>('/api/auth/totp/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    })
+  },
+  async totpDisable(input) {
+    await request<void>('/api/auth/totp/disable', { method: 'POST', body: JSON.stringify(input) })
+  },
+  regenerateRecoveryCodes(input) {
+    return request<{ recoveryCodes: string[] }>('/api/auth/recovery/regenerate', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  },
+  completeMfa(input) {
+    return request<User>('/api/auth/login/mfa', { method: 'POST', body: JSON.stringify(input) })
+  },
+  async stepUp(input) {
+    await request<void>('/api/auth/step-up', { method: 'POST', body: JSON.stringify(input) })
+  },
+  listSecurityEvents() {
+    return request<import('./types.ts').SecurityEvent[]>('/api/auth/security-events')
+  },
+  renameSession(id, name) {
+    return request<{ id: string; device: string }>(`/api/auth/sessions/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    })
+  },
+  listPasskeys() {
+    return request<import('./types.ts').Passkey[]>('/api/auth/passkeys')
+  },
+  passkeyRegisterOptions() {
+    return request<unknown>('/api/auth/passkeys/register/options', { method: 'POST' })
+  },
+  async passkeyRegisterVerify(body) {
+    await request<void>('/api/auth/passkeys/register/verify', { method: 'POST', body: JSON.stringify(body) })
+  },
+  async passkeyDelete(id, input) {
+    await request<void>(`/api/auth/passkeys/${id}`, { method: 'DELETE', body: JSON.stringify(input ?? {}) })
+  },
+  passkeyLoginOptions() {
+    return request<unknown>('/api/auth/passkeys/login/options', { method: 'POST' })
+  },
+  passkeyLoginVerify(body) {
+    return request<User>('/api/auth/passkeys/login/verify', { method: 'POST', body: JSON.stringify(body) })
+  },
+  listTrash() {
+    return request<{ projects: import('./types.ts').TrashItem[]; tasks: import('./types.ts').TrashItem[] }>('/api/trash')
+  },
+  restoreProject(id) {
+    return request<{ id: string; name: string }>(`/api/trash/projects/${id}/restore`, { method: 'POST' })
+  },
+  restoreTask(id) {
+    return request<{ id: string; title: string }>(`/api/trash/tasks/${id}/restore`, { method: 'POST' })
   },
   listProjects(params?) {
     return request<Project[]>(withQuery('/api/projects', { status: params?.status }))

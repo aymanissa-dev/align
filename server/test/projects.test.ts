@@ -39,8 +39,9 @@ describe('projects', () => {
 
     const removed = await agent.delete(`/api/projects/${id}`)
     expect(removed.status).toBe(204)
-    expect(await Task.countDocuments({ projectId: id })).toBe(0)
-    expect(await Note.countDocuments({ projectId: id })).toBe(0)
+    expect(await Task.countDocuments({ projectId: id, deletedAt: null })).toBe(0)
+    expect(await Task.countDocuments({ projectId: id })).toBe(1)
+    expect(await Note.countDocuments({ projectId: id })).toBe(1)
     expect((await agent.get(`/api/projects/${id}`)).status).toBe(404)
     expect((await agent.get(`/api/tasks/${task.body.id}`)).status).toBe(404)
     expect((await agent.get(`/api/notes/${note.body.id}`)).status).toBe(404)

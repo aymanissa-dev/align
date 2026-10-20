@@ -1,8 +1,9 @@
 import { Router } from 'express'
 import { relevanceScore, searchTokens } from '../../../shared/search.ts'
+import { bind } from '../data/content.ts'
+import { currentTenant } from '../data/tenant.ts'
 import { ensureSearchWords } from '../db.ts'
-import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
-import { Note, Project, Task } from '../models.ts'
+import { asyncHandler, requireAuth } from '../middleware.ts'
 import { publicProject } from '../serialize.ts'
 
 const RESULT_LIMIT = 20
@@ -19,9 +20,8 @@ function escapeRegExp(value: string): string {
 }
 
 /** Every token is a case-sensitive prefix of a lowercase searchWords entry, ANDed. */
-function tokenFilter(userId: string, tokens: string[]) {
+function tokenFilter(tokens: string[]) {
   return {
-    userId,
     $and: tokens.map((token) => ({ searchWords: { $regex: `^${escapeRegExp(token)}` } })),
   }
 }
@@ -44,20 +44,23 @@ export function searchRouter(): Router {
       }
 
       await ensureSearchWords()
-      const userId = currentUserId(req)
-      const filter = tokenFilter(userId, tokens)
+      const db = bind(currentTenant(req))
+      const filter = tokenFilter(tokens)
       const [projects, tasks, notes] = await Promise.all([
-        Project.find(filter)
+        db.projects
+          .find(filter)
           .select('name description status createdAt updatedAt __v')
           .limit(CANDIDATE_LIMIT)
           .maxTimeMS(TIME_MS)
           .lean(),
-        Task.find(filter)
+        db.tasks
+          .find(filter)
           .select('projectId title completed')
           .limit(CANDIDATE_LIMIT)
           .maxTimeMS(TIME_MS)
           .lean(),
-        Note.find(filter)
+        db.notes
+          .find(filter)
           .select('projectId title body')
           .limit(CANDIDATE_LIMIT)
           .maxTimeMS(TIME_MS)
@@ -68,7 +71,7 @@ export function searchRouter(): Router {
       const named =
         projectIds.length === 0
           ? []
-          : await Project.find({ userId, _id: { $in: projectIds } }).select('name').maxTimeMS(TIME_MS).lean()
+          : await db.projects.find({ _id: { $in: projectIds } }).select('name').maxTimeMS(TIME_MS).lean()
       const names = new Map(named.map((project) => [project._id.toString(), project.name]))
 
       const rankedProjects = byScore(

@@ -1,9 +1,11 @@
 import type { ErrorRequestHandler, NextFunction, Request, RequestHandler, Response } from 'express'
 import { ZodError } from 'zod'
 import { CONFLICT_MESSAGE } from '../../shared/contract.ts'
+import { roleAtLeast } from './authz.ts'
+import { resolveTenant } from './data/workspaces.ts'
 import { HttpError } from './errors.ts'
 import { Session, User } from './models.ts'
-import { accessFromRequest } from './session.ts'
+import { accessFromRequest, sessionExpired } from './session.ts'
 
 export function asyncHandler(
   fn: (req: Request, res: Response, next: NextFunction) => Promise<unknown>,
@@ -25,16 +27,22 @@ export const requireAuth: RequestHandler = (req, _res, next) => {
         next(new HttpError(401, 'Sign in to continue.'))
         return
       }
-      if (session.expiresAt.getTime() <= Date.now()) {
+      if (sessionExpired(session)) {
+        void Session.updateOne({ _id: session._id, revokedAt: null }, { revokedAt: new Date() }).catch(() => undefined)
         next(new HttpError(401, 'Sign in to continue.'))
         return
       }
-      req.userId = user.id
-      req.sessionId = session.id
-      if (Date.now() - session.lastSeenAt.getTime() > 60_000) {
-        void Session.updateOne({ _id: session._id }, { lastSeenAt: new Date() }).catch(() => undefined)
-      }
-      next()
+      resolveTenant(user.id, req.get('x-workspace-id') || undefined)
+        .then((tenant) => {
+          req.userId = user.id
+          req.sessionId = session.id
+          req.tenant = tenant
+          if (Date.now() - session.lastSeenAt.getTime() > 60_000) {
+            void Session.updateOne({ _id: session._id }, { lastSeenAt: new Date() }).catch(() => undefined)
+          }
+          next()
+        })
+        .catch(next)
     })
     .catch(next)
 }
@@ -42,6 +50,18 @@ export const requireAuth: RequestHandler = (req, _res, next) => {
 export function currentUserId(req: Request): string {
   if (!req.userId) throw new HttpError(401, 'Sign in to continue.')
   return req.userId
+}
+
+export const requireWriter: RequestHandler = (req, _res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
+    next()
+    return
+  }
+  if (!req.tenant || !roleAtLeast(req.tenant.role, 'member')) {
+    next(new HttpError(403, 'You do not have permission to change this workspace.'))
+    return
+  }
+  next()
 }
 
 function isRecord(error: unknown): error is Record<string, unknown> {
@@ -52,7 +72,8 @@ export const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
   if (res.headersSent) return
 
   if (error instanceof HttpError) {
-    res.status(error.status).json({ error: error.message })
+    for (const [key, value] of Object.entries(error.headers)) res.setHeader(key, value)
+    res.status(error.status).json(error.code ? { error: error.message, code: error.code } : { error: error.message })
     return
   }
   if (error instanceof ZodError) {

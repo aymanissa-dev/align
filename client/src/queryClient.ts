@@ -31,6 +31,7 @@ function invalidateQueries(): Promise<void> {
     queryClient.invalidateQueries({ queryKey: ['today'] }),
     queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
     queryClient.invalidateQueries({ queryKey: ['search'] }),
+    queryClient.invalidateQueries({ queryKey: ['trash'] }),
   ]).then(() => undefined)
 }
 

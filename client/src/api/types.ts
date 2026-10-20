@@ -41,6 +41,38 @@ export type AuthSession = {
   device: string
   lastSeenAt: string
   createdAt: string
+  ip?: string
+  location?: string
+  expiresAt?: string
+  idleExpiresAt?: string
+}
+
+export type MfaChallenge = {
+  mfaRequired: true
+  methods: Array<'totp' | 'recovery' | 'passkey'>
+}
+
+export type SecurityEvent = {
+  id: string
+  type: string
+  summary: string
+  ip: string
+  createdAt: string
+}
+
+export type TrashItem = {
+  id: string
+  name?: string
+  title?: string
+  projectId?: string
+  deletedAt: string | null
+  purgeAt: string | null
+}
+
+export type Passkey = {
+  id: string
+  name: string
+  createdAt: string
 }
 
 export type AuthProviders = {
@@ -227,7 +259,7 @@ export interface AlignApi {
   /** POST /api/auth/register */
   register(input: RegisterInput): Promise<User>
   /** POST /api/auth/login */
-  login(input: LoginInput): Promise<User>
+  login(input: LoginInput): Promise<User | MfaChallenge>
   /** POST /api/auth/logout */
   logout(): Promise<void>
   /** GET /api/auth/providers */
@@ -241,7 +273,9 @@ export interface AlignApi {
   /** DELETE /api/auth/sessions/:id */
   revokeSession(id: string): Promise<void>
   /** POST /api/auth/sessions/revoke-all */
-  revokeAllSessions(): Promise<void>
+  revokeAllSessions(password?: string): Promise<void>
+  /** POST /api/auth/email */
+  changeEmail(input: { email: string; password: string }): Promise<User & { verifyToken?: string }>
   /** GET /api/auth/session — 200 even when signed out */
   session(): Promise<User | null>
   /** POST /api/auth/forgot */
@@ -255,7 +289,24 @@ export interface AlignApi {
   /** POST /api/auth/password */
   changePassword(input: { currentPassword: string; newPassword: string }): Promise<void>
   /** DELETE /api/auth/me */
-  deleteAccount(): Promise<void>
+  deleteAccount(input?: { password?: string }): Promise<void>
+  totpSetup(): Promise<{ secret: string; otpauth: string; qr: string }>
+  totpConfirm(code: string): Promise<{ recoveryCodes: string[] }>
+  totpDisable(input: { password?: string; code?: string }): Promise<void>
+  regenerateRecoveryCodes(input: { password?: string }): Promise<{ recoveryCodes: string[] }>
+  completeMfa(input: { code: string; method: 'totp' | 'recovery' }): Promise<User>
+  stepUp(input: { password?: string; code?: string; method?: 'password' | 'totp' | 'recovery' }): Promise<void>
+  listSecurityEvents(): Promise<SecurityEvent[]>
+  renameSession(id: string, name: string): Promise<{ id: string; device: string }>
+  listPasskeys(): Promise<Passkey[]>
+  passkeyRegisterOptions(): Promise<unknown>
+  passkeyRegisterVerify(body: unknown): Promise<void>
+  passkeyDelete(id: string, input?: { password?: string }): Promise<void>
+  passkeyLoginOptions(): Promise<unknown>
+  passkeyLoginVerify(body: unknown): Promise<User>
+  listTrash(): Promise<{ projects: TrashItem[]; tasks: TrashItem[] }>
+  restoreProject(id: string): Promise<{ id: string; name: string }>
+  restoreTask(id: string): Promise<{ id: string; title: string }>
 
   /** GET /api/projects */
   listProjects(params?: { status?: ProjectStatus }): Promise<Project[]>

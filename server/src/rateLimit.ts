@@ -31,7 +31,12 @@ async function hit(key: string, max: number): Promise<boolean> {
   if (doc && doc.expiresAt.getTime() <= now) {
     doc = await RateLimit.findOneAndUpdate({ key }, { $set: { count: 1, expiresAt } }, { new: true })
   }
-  return (doc?.count ?? 1) > max
+  const count = doc?.count ?? 1
+  if (process.env.NODE_ENV !== 'test' && count > 2 && count <= max) {
+    const delay = Math.min(5_000, (count - 2) * 250)
+    await new Promise((resolve) => setTimeout(resolve, delay))
+  }
+  return count > max
 }
 
 export async function enforceAuthLimit(
@@ -43,5 +48,7 @@ export async function enforceAuthLimit(
   const keys = [`${route}:ip:${ip || 'unknown'}`]
   if (email) keys.push(`${route}:email:${email}`)
   const blocked = await Promise.all(keys.map((key) => hit(key, max)))
-  if (blocked.some(Boolean)) throw new HttpError(429, 'Too many attempts. Try again later.')
+  if (blocked.some(Boolean)) {
+    throw new HttpError(429, 'Too many attempts. Try again later.', { headers: { 'Retry-After': '60' } })
+  }
 }

@@ -12,11 +12,14 @@ const DEMO_EMAIL = 'demo@align.app'
 const DEMO_PASSWORD = 'password'
 
 export function LoginPage() {
-  const { login } = useAuth()
+  const { login, acceptSession } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
+  const [mfa, setMfa] = useState(false)
+  const [code, setCode] = useState('')
+  const [useRecovery, setUseRecovery] = useState(false)
   const [google, setGoogle] = useState(false)
   const [params] = useSearchParams()
   const [signedOut] = useState(() => params.get('signedOut') === '1' || consumeForcedSignOut())
@@ -41,7 +44,11 @@ export function LoginPage() {
     setError('')
     setPending(true)
     try {
-      await login({ email: nextEmail, password: nextPassword })
+      const result = await login({ email: nextEmail, password: nextPassword })
+      if ('mfaRequired' in result && result.mfaRequired) {
+        setMfa(true)
+        setPending(false)
+      }
     } catch (caught) {
       setError(errorMessage(caught))
       setPending(false)
@@ -64,7 +71,52 @@ export function LoginPage() {
             You were signed out.
           </p>
         ) : null}
-        <form onSubmit={onSubmit} className="space-y-4" noValidate>
+        {mfa ? (
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault()
+              setError('')
+              setPending(true)
+              void api
+                .completeMfa({ code, method: useRecovery ? 'recovery' : 'totp' })
+                .then((user) => {
+                  acceptSession(user)
+                })
+                .catch((caught: unknown) => {
+                  setError(errorMessage(caught))
+                  setPending(false)
+                })
+            }}
+          >
+            <Field label={useRecovery ? 'Recovery code' : 'Authenticator code'} htmlFor="mfa-code">
+              <Input
+                id="mfa-code"
+                inputMode={useRecovery ? 'text' : 'numeric'}
+                autoComplete="one-time-code"
+                value={code}
+                onChange={(event) => setCode(event.target.value)}
+                required
+              />
+            </Field>
+            {error ? (
+              <p role="alert" className="text-sm text-neutral-800">
+                {error}
+              </p>
+            ) : null}
+            <Button type="submit" disabled={pending}>
+              {pending ? 'Checking…' : 'Continue'}
+            </Button>
+            <button
+              type="button"
+              className="focus-ring text-sm text-neutral-700 underline underline-offset-4"
+              onClick={() => setUseRecovery((value) => !value)}
+            >
+              {useRecovery ? 'Use an authenticator code' : 'Use a recovery code'}
+            </button>
+          </form>
+        ) : null}
+        <form onSubmit={onSubmit} className={mfa ? 'hidden' : 'space-y-4'} noValidate>
           <Field label="Email" htmlFor="email">
             <Input
               id="email"

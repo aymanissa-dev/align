@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto'
 import playwright from 'playwright-core'
 
 const { chromium } = playwright
@@ -28,6 +29,32 @@ const context = await browser.newContext({
 const page = await context.newPage()
 page.setDefaultTimeout(20_000)
 page.on('dialog', (dialog) => void dialog.accept())
+
+const TOTP_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+
+function totpCode(secret) {
+  const cleaned = secret.replace(/=+$/g, '').toUpperCase().replace(/[^A-Z2-7]/g, '')
+  let bits = 0
+  let value = 0
+  const bytes = []
+  for (const char of cleaned) {
+    const index = TOTP_ALPHABET.indexOf(char)
+    if (index === -1) continue
+    value = (value << 5) | index
+    bits += 5
+    if (bits >= 8) {
+      bytes.push((value >>> (bits - 8)) & 0xff)
+      bits -= 8
+    }
+  }
+  const counter = Math.floor(Date.now() / 1000 / 30)
+  const buffer = Buffer.alloc(8)
+  buffer.writeBigUInt64BE(BigInt(counter))
+  const hmac = createHmac('sha1', Buffer.from(bytes)).update(buffer).digest()
+  const offset = hmac[hmac.length - 1] & 0x0f
+  const binary = (hmac.readUInt32BE(offset) & 0x7fffffff) % 1_000_000
+  return binary.toString().padStart(6, '0')
+}
 
 const results = []
 function pass(name) {
@@ -853,9 +880,70 @@ try {
   await page.getByRole('link', { name: projectName, exact: true }).waitFor({ state: 'detached' })
   pass('delete project')
 
+  await page.getByLabel('Primary').getByRole('link', { name: 'Trash' }).click()
+  await page.getByRole('heading', { name: 'Trash', exact: true }).waitFor()
+  await page.getByRole('button', { name: `Restore ${projectName}` }).click()
+  await page.getByRole('button', { name: `Restore ${renamedTask}` }).click()
+  await page.getByLabel('Primary').getByRole('link', { name: 'Projects' }).click()
+  await page.getByRole('link', { name: projectName, exact: true }).waitFor()
+  pass('trash restore')
+
+  const other = await browser.newContext({
+    timezoneId: 'Asia/Riyadh',
+    serviceWorkers: 'block',
+    viewport: { width: 1280, height: 800 },
+  })
+  const secondLogin = await other.request.post(`${base}/api/auth/login`, { data: { email, password } })
+  if (!secondLogin.ok()) throw new Error(`second login ${secondLogin.status()}`)
+  await page.goto(`${base}/settings`)
+  await page.getByText('This device').waitFor()
+  const otherRow = page.getByRole('listitem').filter({ has: page.getByRole('button', { name: 'Revoke' }) }).filter({ hasNotText: 'This device' })
+  await otherRow.getByRole('button', { name: 'Revoke' }).click()
+  if ((await other.request.get(`${base}/api/auth/me`)).status() !== 401) throw new Error('revoked session still worked')
+  await other.close()
+  pass('revoke session')
+
+  const currentSession = page.getByRole('listitem').filter({ hasText: 'This device' })
+  await currentSession.locator('input[aria-label^="Rename"]').fill('Desk browser')
+  await currentSession.getByRole('button', { name: 'Rename' }).click()
+  await page.getByText('Session renamed').waitFor()
+  pass('rename session')
+
+  await page.getByRole('button', { name: 'Set up authenticator' }).click()
+  const secret = await page.locator('[data-secret]').getAttribute('data-secret')
+  if (!secret) throw new Error('totp secret missing')
+  await page.locator('#totp-code').fill(totpCode(secret))
+  await page.getByRole('button', { name: 'Confirm code' }).click()
+  const recovery = (await page.getByLabel('Recovery codes').locator('li').first().innerText()).trim()
+  if (!recovery) throw new Error('recovery code missing')
+  pass('enable totp')
+
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click()
+  await page.goto(`${base}/login`)
+  await page.locator('#email').fill(email)
+  await page.locator('#password').fill(password)
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+  await page.locator('#mfa-code').fill(totpCode(secret))
+  await page.getByRole('button', { name: 'Continue' }).click()
+  await page.getByLabel('Primary').getByRole('link', { name: 'Settings' }).waitFor()
+  pass('login with totp')
+
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click()
+  await page.goto(`${base}/login`)
+  await page.locator('#email').fill(email)
+  await page.locator('#password').fill(password)
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+  await page.getByRole('button', { name: 'Use a recovery code' }).click()
+  await page.locator('#mfa-code').fill(recovery)
+  await page.getByRole('button', { name: 'Continue' }).click()
+  await page.getByLabel('Primary').getByRole('link', { name: 'Settings' }).waitFor()
+  pass('login with recovery code')
+
   await page.goto(`${base}/settings`)
   await page.getByRole('button', { name: 'Delete account' }).click()
-  await page.getByRole('button', { name: 'Delete account' }).last().click()
+  await page.getByRole('dialog', { name: "Confirm it's you" }).waitFor()
+  await page.locator('#delete-password').fill(password)
+  await page.getByRole('dialog', { name: "Confirm it's you" }).getByRole('button', { name: 'Delete account' }).click()
   await page.waitForURL(/\/login|\/$/)
   const session = await context.request.get(`${base}/api/auth/session`)
   const body = await session.json()
