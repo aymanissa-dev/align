@@ -18,26 +18,35 @@ const MIGRATIONS: Migration[] = [
   { id: PERSONAL_WORKSPACES, up: upPersonalWorkspaces, down: downPersonalWorkspaces },
 ]
 
-let running: Promise<MigrationResult[]> | null = null
+let appliedOnce: Promise<MigrationResult[]> | null = null
 
-export async function runMigrations(options?: {
+export function runMigrations(options?: {
   dryRun?: boolean
   direction?: 'up' | 'down'
   only?: string
 }): Promise<MigrationResult[]> {
   if (!options?.dryRun && !options?.direction && !options?.only) {
-    running ??= runMigrations({ ...options, direction: 'up' }).finally(() => {
-      running = null
+    appliedOnce ??= execute({ direction: 'up' }).catch((error: unknown) => {
+      appliedOnce = null
+      throw error
     })
-    return running
+    return appliedOnce
   }
+  return execute(options)
+}
+
+async function execute(options?: {
+  dryRun?: boolean
+  direction?: 'up' | 'down'
+  only?: string
+}): Promise<MigrationResult[]> {
   const db = mongoose.connection.db
   if (!db) return []
   const collection = db.collection<{ id: string; appliedAt: Date; counts: MigrationCounts }>('migrations')
   const applied = new Set((await collection.find({}, { projection: { id: 1 } }).toArray()).map((doc) => doc.id))
-  const dryRun = options.dryRun === true
-  const direction = options.direction ?? 'up'
-  const selected = options.only ? MIGRATIONS.filter((migration) => migration.id === options.only) : MIGRATIONS
+  const dryRun = options?.dryRun === true
+  const direction = options?.direction ?? 'up'
+  const selected = options?.only ? MIGRATIONS.filter((migration) => migration.id === options.only) : MIGRATIONS
   const results: MigrationResult[] = []
   const list = direction === 'down' ? [...selected].reverse() : selected
   for (const migration of list) {
