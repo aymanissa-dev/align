@@ -4162,8 +4162,10 @@ function createApp(options = {}) {
       const db = mongoose5.connection.db;
       if (!db) throw new Error("Database is not connected.");
       await db.command({ ping: 1 });
-    }).then(() => {
-      const body = { ok: true, db: "up", latencyMs: Date.now() - started };
+      const migration = await db.collection("migrations").findOne({ id: "001_personal_workspaces" });
+      return migration?.counts ? { id: migration.id, counts: migration.counts } : void 0;
+    }).then((migration) => {
+      const body = { ok: true, db: "up", latencyMs: Date.now() - started, ...migration ? { migration } : {} };
       res.json(body);
     }).catch(() => {
       const body = { ok: false, db: "down", latencyMs: Date.now() - started };

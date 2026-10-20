@@ -63,9 +63,11 @@ export function createApp(options: AppOptions = {}): Express {
         const db = mongoose.connection.db
         if (!db) throw new Error('Database is not connected.')
         await db.command({ ping: 1 })
+        const migration = await db.collection<{ id: string; counts?: Record<string, number> }>('migrations').findOne({ id: '001_personal_workspaces' })
+        return migration?.counts ? { id: migration.id, counts: migration.counts } : undefined
       })
-      .then(() => {
-        const body: HealthReport = { ok: true, db: 'up', latencyMs: Date.now() - started }
+      .then((migration) => {
+        const body: HealthReport = { ok: true, db: 'up', latencyMs: Date.now() - started, ...(migration ? { migration } : {}) }
         res.json(body)
       })
       .catch(() => {

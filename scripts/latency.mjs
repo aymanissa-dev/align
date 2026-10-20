@@ -6,7 +6,7 @@
  */
 const base = (process.argv[2] ?? 'https://align-hazel-kappa.vercel.app').replace(/\/$/, '')
 const email = `latency-${Date.now().toString(36)}@align.test`
-const password = 'password12'
+const password = 'AlignLamp-e2e-2026x'
 
 function percentile(samples, p) {
   const sorted = [...samples].sort((a, b) => a - b)
@@ -101,4 +101,8 @@ for (let i = 0; i < 4; i += 1) {
 }
 report('refresh', refreshSamples, refreshErrors)
 
-await fetch(`${base}/api/auth/me`, { method: 'DELETE', headers: { Cookie: cookie, 'Content-Type': 'application/json', 'X-CSRF-Token': decodeURIComponent(csrf ?? '') }, body: '{}' })
+await fetch(`${base}/api/auth/me`, {
+  method: 'DELETE',
+  headers: { Cookie: cookie, 'Content-Type': 'application/json', 'X-CSRF-Token': decodeURIComponent(csrf ?? '') },
+  body: JSON.stringify({ password }),
+})

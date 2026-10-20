@@ -6,7 +6,7 @@ const { chromium } = playwright
 const base = 'https://align-hazel-kappa.vercel.app'
 const stamp = Date.now().toString(36)
 const email = `e2e-${stamp}@align.test`
-const password = 'password12'
+const password = 'AlignLamp-e2e-2026x'
 const projectName = `E2E Lamp ${stamp}`
 const taskTitle = `Cut the wick ${stamp}`
 const renamedTask = `Trim the wick ${stamp}`
@@ -54,6 +54,12 @@ function totpCode(secret) {
   const offset = hmac[hmac.length - 1] & 0x0f
   const binary = (hmac.readUInt32BE(offset) & 0x7fffffff) % 1_000_000
   return binary.toString().padStart(6, '0')
+}
+
+async function apiHeaders(browserContext) {
+  const { cookies } = await browserContext.storageState()
+  const csrf = cookies.find((cookie) => cookie.name === 'csrf')?.value
+  return csrf ? { 'X-CSRF-Token': decodeURIComponent(csrf) } : {}
 }
 
 const results = []
@@ -421,7 +427,10 @@ async function queuedAddFlushesWithoutEvents(browser, signedIn, projectUrl) {
     const retries = taskPostAt.filter((at) => at >= queuedAt && at < restoredAt)
     const span = Math.max(restoredAt - queuedAt, 1)
     const allowed = Math.floor(span / 15_000) + 1
-    if (retries.length > allowed) throw new Error(`queue posted ${retries.length} times in ${span}ms, cap is one attempt per 15s (${allowed})`)
+    if (retries.length > allowed) {
+      const offsets = retries.map((at) => at - queuedAt).join(',')
+      throw new Error(`queue posted ${retries.length} times in ${span}ms, cap is one attempt per 15s (${allowed}), offsets ${offsets}`)
+    }
     const toast = swPage.getByText('Synced 1 saved change.')
     await Promise.all([
       toast.waitFor({ timeout: 8_000 }),
@@ -506,7 +515,7 @@ async function signedOutOfflineAndUnvisited(browser) {
   const stamp = Date.now().toString(36)
   const name = `E2E Priv ${stamp}`
   const email = `e2e-priv-${stamp}@align.test`
-  const password = 'password12'
+  const password = 'AlignLamp-e2e-2026x'
   const openedName = `Opened shade ${stamp}`
   const hiddenName = `Unvisited shade ${stamp}`
   const label = `Wax ${stamp}`
@@ -563,7 +572,10 @@ async function signedOutOfflineAndUnvisited(browser) {
     await ctx.setOffline(false)
     await swPage.getByRole('heading', { name: openedName }).waitFor()
 
-    const created = await ctx.request.post(`${base}/api/projects`, { data: { name: hiddenName } })
+    const created = await ctx.request.post(`${base}/api/projects`, {
+      data: { name: hiddenName },
+      headers: await apiHeaders(ctx),
+    })
     if (!created.ok()) throw new Error(`second project ${created.status()}`)
     const hidden = await created.json()
     if (!hidden.id) throw new Error('second project has no id')
@@ -601,8 +613,8 @@ async function signedOutOfflineAndUnvisited(browser) {
     pass('logged-out offline hides identity')
   } finally {
     await ctx.setOffline(false).catch(() => {})
-    const login = await ctx.request.post(`${base}/api/auth/login`, { data: { email, password } }).catch(() => null)
-    if (login?.ok()) await ctx.request.delete(`${base}/api/auth/me`).catch(() => {})
+    const login = await ctx.request.post(`${base}/api/auth/login`, { data: { email, password }, headers: await apiHeaders(ctx) }).catch(() => null)
+    if (login?.ok()) await ctx.request.delete(`${base}/api/auth/me`, { headers: await apiHeaders(ctx), data: { password } }).catch(() => {})
     await ctx.close()
   }
 }
@@ -692,6 +704,7 @@ try {
   if (!label) throw new Error('label missing')
   const patched = await context.request.patch(`${base}/api/labels/${label.id}`, {
     data: { name: `${labelName} edited` },
+    headers: await apiHeaders(context),
   })
   if (patched.status() !== 200) throw new Error(`label patch ${patched.status()}`)
   const board = await (await context.request.get(`${base}/api/projects/${project.id}/whiteboard`)).json()
@@ -811,19 +824,21 @@ try {
   page.off('request', onProbe)
   await context.setOffline(false)
   const gaps = probeHits.map((hit, index) => (index === 0 ? 0 : hit - probeHits[index - 1])).slice(1)
+  // One in-flight probe can overlap the first recovery probe as the network drops.
+  const ladder = gaps[0] < 450 ? gaps.slice(1) : gaps
   if (probeHits.length < 3 || probeHits.length > 8) {
     throw new Error(`probe count ${probeHits.length} in ${Date.now() - probeStart}ms gaps ${gaps.join(',')}`)
   }
-  if (gaps.some((gap) => gap < 450)) throw new Error(`probe gaps too small ${gaps.join(',')}`)
-  if (gaps.some((gap) => gap > 4500)) throw new Error(`probe backed off too far ${gaps.join(',')}`)
-  if (!gaps.some((gap) => gap >= 1800)) throw new Error(`probe did not reach 2s ${gaps.join(',')}`)
+  if (ladder.some((gap) => gap < 450)) throw new Error(`probe gaps too small ${gaps.join(',')}`)
+  if (ladder.some((gap) => gap > 4500)) throw new Error(`probe backed off too far ${gaps.join(',')}`)
+  if (!ladder.some((gap) => gap >= 1800)) throw new Error(`probe did not reach 2s ${gaps.join(',')}`)
   pass('probe backoff')
 
   const laterTitle = `Far due ${stamp}`
   await page.goto(projectUrl)
   await page.getByRole('tab', { name: 'Tasks' }).click()
   await page.getByLabel('Task title').fill(laterTitle)
-  await page.getByLabel('Due date').fill('2026-10-25')
+  await page.getByLabel('Due date').fill('2026-11-20')
   await page.getByRole('button', { name: 'Add', exact: true }).click()
   await page.getByText(laterTitle).waitFor()
   await page.goto(`${base}/`)
@@ -893,12 +908,19 @@ try {
     serviceWorkers: 'block',
     viewport: { width: 1280, height: 800 },
   })
-  const secondLogin = await other.request.post(`${base}/api/auth/login`, { data: { email, password } })
+  const secondLogin = await other.request.post(`${base}/api/auth/login`, {
+    data: { email, password },
+    headers: await apiHeaders(other),
+  })
   if (!secondLogin.ok()) throw new Error(`second login ${secondLogin.status()}`)
   await page.goto(`${base}/settings`)
   await page.getByText('This device').waitFor()
   const otherRow = page.getByRole('listitem').filter({ has: page.getByRole('button', { name: 'Revoke' }) }).filter({ hasNotText: 'This device' })
+  const revoked = page.waitForResponse(
+    (response) => response.url().includes('/api/auth/sessions/') && response.request().method() === 'DELETE',
+  )
   await otherRow.getByRole('button', { name: 'Revoke' }).click()
+  if ((await revoked).status() !== 204) throw new Error('revoke did not succeed')
   if ((await other.request.get(`${base}/api/auth/me`)).status() !== 401) throw new Error('revoked session still worked')
   await other.close()
   pass('revoke session')
@@ -919,6 +941,7 @@ try {
   pass('enable totp')
 
   await page.getByRole('button', { name: 'Sign out', exact: true }).click()
+  await page.getByRole('heading', { name: 'Keep your work in alignment.' }).waitFor()
   await page.goto(`${base}/login`)
   await page.locator('#email').fill(email)
   await page.locator('#password').fill(password)
@@ -928,7 +951,9 @@ try {
   await page.getByLabel('Primary').getByRole('link', { name: 'Settings' }).waitFor()
   pass('login with totp')
 
+  await page.goto(`${base}/settings`)
   await page.getByRole('button', { name: 'Sign out', exact: true }).click()
+  await page.getByRole('heading', { name: 'Keep your work in alignment.' }).waitFor()
   await page.goto(`${base}/login`)
   await page.locator('#email').fill(email)
   await page.locator('#password').fill(password)
@@ -958,7 +983,7 @@ try {
   await page.screenshot({ path: '/tmp/align-e2e/fail.png', fullPage: true }).catch(() => {})
   console.error('FAIL', error)
   console.log('URL', page.url())
-  await context.request.delete(`${base}/api/auth/me`).catch(() => {})
+  await context.request.delete(`${base}/api/auth/me`, { headers: await apiHeaders(context), data: { password } }).catch(() => {})
   process.exitCode = 1
 } finally {
   await browser.close()

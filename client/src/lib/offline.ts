@@ -834,6 +834,9 @@ function armProbeForQueuedWrite() {
 function noteBrowserOffline() {
   markUnreachable()
   if (probeInFlight) return
+  // Offline and connection can both fire as the network drops. The second one
+  // must not start a probe beside the one that just began.
+  if (lastProbeAt !== 0 && Date.now() - lastProbeAt < ACCEL_MIN_MS) return
   if (probeTimer !== undefined && scheduledDelay !== HEALTHY_PROBE_MS) return
   clearProbeTimer()
   void runProbe()
