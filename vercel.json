@@ -18,50 +18,39 @@
       "destination": "/index.html"
     }
   ],
-  "headers": [
+  "routes": [
     {
-      "source": "/api/(.*)",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "private, no-store"
-        }
-      ]
+      "src": "^/api/(.*)$",
+      "headers": {
+        "Cache-Control": "private, no-store"
+      },
+      "continue": true
     },
     {
-      "source": "/asset-missing.txt",
-      "headers": [
-        {
-          "key": "Content-Type",
-          "value": "text/plain; charset=utf-8"
-        },
-        {
-          "key": "Cache-Control",
-          "value": "no-store"
-        },
-        {
-          "key": "X-Content-Type-Options",
-          "value": "nosniff"
-        }
-      ]
+      "src": "^/asset-missing\\.txt$",
+      "headers": {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff"
+      },
+      "continue": true
     },
     {
-      "source": "/assets/(.*)",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "public, max-age=31536000, immutable"
-        }
-      ]
+      "src": "^/((?!api/)(?!assets/).*)",
+      "headers": {
+        "Cache-Control": "no-cache"
+      },
+      "continue": true
     },
     {
-      "source": "/((?!api/)(?!assets/).*)",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "no-cache"
-        }
-      ]
+      "handle": "hit"
+    },
+    {
+      "src": "^/assets/(.*)$",
+      "headers": {
+        "Cache-Control": "public, max-age=31536000, immutable"
+      },
+      "continue": true
     }
   ]
 }

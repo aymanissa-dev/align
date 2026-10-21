@@ -8,7 +8,7 @@ describe('asset routing', () => {
   it('answers a missing hashed file with a plain 404 instead of the app shell', () => {
     const config = JSON.parse(readFileSync(resolve(root, 'vercel.json'), 'utf8')) as {
       rewrites: { source: string; destination: string; statusCode?: number }[]
-      headers: { source: string; headers: { key: string; value: string }[] }[]
+      routes: { handle?: string; src?: string; headers?: Record<string, string>; continue?: boolean }[]
     }
     const shell = config.rewrites.findIndex((rewrite) => rewrite.destination === '/index.html')
     const missing = config.rewrites.findIndex((rewrite) => rewrite.destination === '/asset-missing.txt')
@@ -21,8 +21,16 @@ describe('asset routing', () => {
     const body = readFileSync(resolve(root, 'client/public/asset-missing.txt'), 'utf8')
     expect(body.trim()).toBe('Not found')
     expect(body.toLowerCase()).not.toContain('<html')
-    const missingHeaders = config.headers.find((rule) => rule.source === '/asset-missing.txt')
-    expect(missingHeaders?.headers.some((header) => header.value === 'no-store')).toBe(true)
-    expect(missingHeaders?.headers.some((header) => header.value.includes('text/plain'))).toBe(true)
+    const hit = config.routes.findIndex((route) => route.handle === 'hit')
+    expect(hit).toBeGreaterThan(0)
+    const immutable = config.routes.findIndex(
+      (route) => route.src === '^/assets/(.*)$' && route.headers?.['Cache-Control']?.includes('immutable'),
+    )
+    expect(immutable).toBeGreaterThan(hit)
+    expect(config.routes.slice(0, hit).some((route) => route.headers?.['Cache-Control']?.includes('immutable'))).toBe(false)
+    const plain = config.routes.find((route) => route.src === '^/asset-missing\\.txt$')
+    expect(plain?.headers?.['Cache-Control']).toBe('no-store')
+    expect(plain?.headers?.['Content-Type']).toContain('text/plain')
+    expect(config.routes.indexOf(plain!)).toBeLessThan(hit)
   })
 })
