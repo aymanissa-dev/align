@@ -33,7 +33,7 @@ export function SettingsPage() {
   const [emailPassword, setEmailPassword] = useState('')
   const [emailError, setEmailError] = useState('')
   const [savingEmail, setSavingEmail] = useState(false)
-  const [confirmRevoke, setConfirmRevoke] = useState(false)
+  const [revokeMode, setRevokeMode] = useState<'all' | 'others' | null>(null)
   const [revokePassword, setRevokePassword] = useState('')
   const [revoking, setRevoking] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -180,9 +180,18 @@ export function SettingsPage() {
     }
   }
 
-  async function onSignOutEverywhere() {
+  async function onRevokeSessions() {
+    const others = revokeMode === 'others'
     setRevoking(true)
     const save = async () => {
+      if (others) {
+        await api.revokeOtherSessions(revokePassword)
+        setSessions((current) => current.filter((session) => session.current))
+        setRevokePassword('')
+        setRevokeMode(null)
+        toast('Other sessions were signed out')
+        return
+      }
       markSignedOut()
       await api.revokeAllSessions(revokePassword)
       await logout()
@@ -199,6 +208,8 @@ export function SettingsPage() {
         return
       }
       toast(errorMessage(caught))
+    } finally {
+      if (others) setRevoking(false)
     }
   }
 
@@ -386,7 +397,10 @@ export function SettingsPage() {
           <Button variant="secondary" onClick={() => void onSignOut()}>
             Sign out
           </Button>
-          <Button variant="secondary" onClick={() => setConfirmRevoke(true)}>
+          <Button variant="secondary" onClick={() => setRevokeMode('others')}>
+            Sign out all other sessions
+          </Button>
+          <Button variant="secondary" onClick={() => setRevokeMode('all')}>
             Sign out everywhere
           </Button>
         </div>
@@ -432,14 +446,18 @@ export function SettingsPage() {
       </section>
 
       <ConfirmDialog
-        open={confirmRevoke}
+        open={revokeMode !== null}
         title="Confirm it's you"
-        body="Enter your password to sign out every device, including this one."
-        confirmLabel="Sign out everywhere"
+        body={
+          revokeMode === 'others'
+            ? 'Enter your password to sign out every other device. This browser stays signed in.'
+            : 'Enter your password to sign out every device, including this one.'
+        }
+        confirmLabel={revokeMode === 'others' ? 'Sign out other sessions' : 'Sign out everywhere'}
         pending={revoking}
-        onConfirm={() => void onSignOutEverywhere()}
+        onConfirm={() => void onRevokeSessions()}
         onClose={() => {
-          if (!revoking) setConfirmRevoke(false)
+          if (!revoking) setRevokeMode(null)
         }}
       >
         <div className="mt-4">

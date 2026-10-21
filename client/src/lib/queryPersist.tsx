@@ -49,7 +49,9 @@ function shouldPersistQuery(query: Query, userId: string): boolean {
   if (sealed.has(userId)) return false
   if (query.state.status !== 'success') return false
   const [head, id] = query.queryKey
-  if (head === 'projects' || head === 'today' || head === 'labels') return true
+  // Dashboard and trash are visited shells. Keep them with the other lists so
+  // a reload offline restores what the user already loaded.
+  if (head === 'projects' || head === 'today' || head === 'labels' || head === 'dashboard' || head === 'trash') return true
   if ((head === 'tasks' || head === 'project') && typeof id === 'string') {
     return readRecent(userId).includes(id)
   }

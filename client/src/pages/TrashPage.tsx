@@ -62,7 +62,8 @@ export function TrashPage() {
   const tasks = trash.data?.tasks ?? []
   const empty = projects.length === 0 && tasks.length === 0
   const loading = trash.isLoading && !trash.data
-  const failed = !trash.data && trash.isError
+  const offline = miss === 'offline' && !trash.data
+  const failed = !trash.data && trash.isError && !offline
   const pendingId = restoreProject.isPending
     ? restoreProject.variables
     : restoreTask.isPending
@@ -89,18 +90,18 @@ export function TrashPage() {
           <ListSkeleton />
         </div>
       ) : null}
-      {failed && miss === 'offline' ? (
+      {offline ? (
         <div className="mt-8">
           <OfflineState />
         </div>
       ) : null}
-      {failed && miss !== 'offline' && miss !== 'loading' ? (
+      {failed && miss !== 'loading' ? (
         <div className="mt-8">
           <ErrorState onRetry={() => void trash.refetch()} />
         </div>
       ) : null}
 
-      {!loading && !failed && empty ? (
+      {!loading && !failed && !offline && empty ? (
         <div className="mt-8">
           <EmptyState title="Trash is empty" body="Deleted projects and tasks show up here until the 30 days are up." />
         </div>

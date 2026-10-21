@@ -302,6 +302,7 @@ describe('sessions and second factors', () => {
       () => agent.post('/api/auth/recovery/regenerate').send({ password }),
       () => agent.delete('/api/auth/me').send({ password }),
       () => agent.post('/api/auth/sessions/revoke-all').send({ password }),
+      () => agent.post('/api/auth/sessions/revoke-others').send({ password }),
     ]
     for (const call of routes) {
       const rejected = await call()
@@ -328,6 +329,34 @@ describe('sessions and second factors', () => {
     expect((await agent.delete('/api/auth/me').send({ password: 'password123' })).status).toBe(204)
   })
 
+  it('signs out other sessions and keeps the current one', async () => {
+    const { agent, email, password, id } = await registerUser()
+    const other = request.agent(app)
+    const signed = await other.post('/api/auth/login').send({ email, password })
+    const token = csrfToken(signed.headers['set-cookie'])
+    if (token) other.set('x-csrf-token', token)
+    expect((await other.get('/api/auth/me')).status).toBe(200)
+
+    expect((await agent.post('/api/auth/sessions/revoke-others').send({})).status).toBe(400)
+    expect((await agent.post('/api/auth/sessions/revoke-others').send({ password: 'not-the-password' })).status).toBe(400)
+    expect((await other.get('/api/auth/me')).status).toBe(200)
+
+    await Session.updateMany({ userId: id }, { stepUpAt: new Date(Date.now() - 11 * 60 * 1000) })
+    const stale = await agent.post('/api/auth/sessions/revoke-others').send({ password })
+    expect(stale.status).toBe(403)
+    expect(stale.body.code).toBe('step_up_required')
+    expect((await agent.post('/api/auth/step-up').send({ password })).status).toBe(204)
+    expect((await agent.post('/api/auth/sessions/revoke-others').send({ password })).status).toBe(204)
+
+    expect((await agent.get('/api/auth/me')).status).toBe(200)
+    expect((await other.get('/api/auth/me')).status).toBe(401)
+    const sessions = await agent.get('/api/auth/sessions')
+    expect(sessions.body).toHaveLength(1)
+    expect(sessions.body[0].current).toBe(true)
+    const events = await SecurityEvent.find({ userId: id, type: 'other-sessions-revoked' })
+    expect(events).toHaveLength(1)
+  })
+
   it('rejects an empty or wrong credential inside the step-up window and accepts a valid code', async () => {
     const { agent, password, id } = await registerUser()
     const setup = await agent.post('/api/auth/totp/setup')
@@ -351,6 +380,7 @@ describe('sessions and second factors', () => {
 
     expect((await agent.post('/api/auth/recovery/regenerate').send({})).status).toBe(400)
     expect((await agent.post('/api/auth/sessions/revoke-all').send({})).status).toBe(400)
+    expect((await agent.post('/api/auth/sessions/revoke-others').send({})).status).toBe(400)
     expect((await agent.delete('/api/auth/me').send({})).status).toBe(400)
     expect((await agent.delete('/api/auth/passkeys/missing').send({})).status).toBe(400)
     expect((await agent.post('/api/auth/email').send({ email: `blank-${crypto.randomUUID()}@align.test` })).status).toBe(400)

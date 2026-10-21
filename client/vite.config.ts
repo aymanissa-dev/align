@@ -56,7 +56,10 @@ export default defineConfig({
         // a shell offline. sw-reload.js serves that shell only after a navigation
         // fetch rejects; it does not race a slow network.
         globPatterns: ['**/*.{js,css,html,ico,png,svg,webp,webmanifest,woff2}'],
-        navigateFallback: undefined,
+        // Do not answer a missing hashed file with the app shell. sw-reload.js
+        // turns an HTML response for /assets/* into a 404.
+        navigateFallback: null,
+        navigateFallbackDenylist: [/^\/assets\//, /^\/api\//],
         runtimeCaching: [
           {
             urlPattern: ({ request }) => request.mode === 'navigate',

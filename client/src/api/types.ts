@@ -277,6 +277,8 @@ export interface AlignApi {
   revokeSession(id: string): Promise<void>
   /** POST /api/auth/sessions/revoke-all */
   revokeAllSessions(password?: string): Promise<void>
+  /** POST /api/auth/sessions/revoke-others — keeps the current session */
+  revokeOtherSessions(password?: string): Promise<void>
   /** POST /api/auth/email */
   changeEmail(input: { email: string; password: string }): Promise<User & { verifyToken?: string }>
   /** GET /api/auth/session — 200 even when signed out */

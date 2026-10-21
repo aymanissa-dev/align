@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { startOfflineSync } from './lib/offline.ts'
+import { purgeStaleClient } from './lib/staleClient.ts'
 
 startOfflineSync()
 
@@ -26,6 +27,10 @@ if ('serviceWorker' in navigator) {
   })
   window.setInterval(update, 15_000)
   update()
+  window.addEventListener('vite:preloadError', (event) => {
+    event.preventDefault()
+    void purgeStaleClient()
+  })
 }
 
 const root = document.getElementById('root')

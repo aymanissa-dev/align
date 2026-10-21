@@ -257,6 +257,12 @@ export const httpApi = {
       body: JSON.stringify({ password: password ?? '' }),
     })
   },
+  async revokeOtherSessions(password) {
+    await request<void>('/api/auth/sessions/revoke-others', {
+      method: 'POST',
+      body: JSON.stringify({ password: password ?? '' }),
+    })
+  },
   changeEmail(input) {
     return request<import('./types.ts').User & { verifyToken?: string }>('/api/auth/email', {
       method: 'POST',

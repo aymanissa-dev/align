@@ -365,6 +365,25 @@ export function authRouter(limiter: RequestHandler): Router {
     }),
   )
 
+  router.post(
+    '/sessions/revoke-others',
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const body = parseBody(stepUpSchema, req.body)
+      assertCredentialPresent(body)
+      await requireFreshStepUp(req.sessionId)
+      await requireSensitiveCredential(currentUserId(req), body)
+      await revokeSessions(currentUserId(req), req.sessionId)
+      await recordSecurity({
+        userId: currentUserId(req),
+        type: 'other-sessions-revoked',
+        summary: 'Other sessions were signed out.',
+        ...requestAudit(req),
+      })
+      res.status(204).send()
+    }),
+  )
+
   router.get(
     '/google',
     asyncHandler(async (req, res) => {

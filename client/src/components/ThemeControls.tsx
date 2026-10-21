@@ -62,7 +62,10 @@ export function AccentPicker() {
             role="radio"
             aria-checked={current === color}
             aria-label={color}
-            className={cn('focus-ring h-7 w-7 border', current === color ? 'border-neutral-950' : 'border-transparent')}
+            className={cn(
+              'color-swatch focus-ring h-7 w-7 border',
+              current === color ? 'border-neutral-950' : 'border-transparent',
+            )}
             style={{ backgroundColor: color }}
             onClick={() => void choose(color)}
           />

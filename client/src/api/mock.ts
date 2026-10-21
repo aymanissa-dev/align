@@ -568,6 +568,10 @@ export const mockApi = {
     persist()
   },
 
+  async revokeOtherSessions(_password?: string) {
+    await wait()
+  },
+
   async me() {
     await wait()
     const state = load()

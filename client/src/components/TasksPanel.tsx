@@ -276,7 +276,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                 aria-checked={labelColor === color}
                 aria-label={color}
                 className={cn(
-                  'focus-ring h-11 w-11 shrink-0 border min-h-[44px] min-w-[44px]',
+                  'color-swatch focus-ring h-11 w-11 shrink-0 border min-h-[44px] min-w-[44px]',
                   labelColor === color ? 'border-neutral-950' : 'border-neutral-300',
                 )}
                 style={{ backgroundColor: color }}
@@ -507,7 +507,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
 function LabelSwatch({ label, named = false }: { label: Label; named?: boolean }) {
   return (
     <span className="inline-flex items-center gap-1.5 border border-neutral-300 px-1.5 py-0.5 text-xs text-neutral-700">
-      <span className="inline-block h-2.5 w-2.5" style={{ backgroundColor: label.color }} aria-hidden />
+      <span className="color-swatch inline-block h-2.5 w-2.5" style={{ backgroundColor: label.color }} aria-hidden />
       {named ? label.name : null}
     </span>
   )
@@ -537,7 +537,7 @@ function LabelPicker({
               on ? 'border-neutral-950 bg-neutral-950 text-white' : 'border-neutral-300 text-neutral-700',
             )}
           >
-            <span className="inline-block h-2.5 w-2.5" style={{ backgroundColor: label.color }} aria-hidden />
+            <span className="color-swatch inline-block h-2.5 w-2.5" style={{ backgroundColor: label.color }} aria-hidden />
             {label.name}
           </button>
         )

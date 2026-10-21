@@ -41,9 +41,7 @@
           })
         })
       }
-      // If boot never finishes, the installed worker is likely serving a stale bundle.
-      window.setTimeout(function () {
-        if (document.documentElement.dataset.booted === '1') return
+      function recoverStaleClient() {
         var key = 'align-sw-reset'
         try {
           if (sessionStorage.getItem(key) === '1') return
@@ -82,6 +80,24 @@
             location.reload()
           },
         )
+      }
+      // A hashed module answered with HTML (or a missing chunk) means the
+      // installed worker is stale. Drop it once and load the network copy.
+      window.addEventListener(
+        'error',
+        function (event) {
+          var target = event.target
+          if (!target || target === window) return
+          var url = target.src || target.href || ''
+          if (url.indexOf('/assets/') === -1) return
+          recoverStaleClient()
+        },
+        true,
+      )
+      // If boot never finishes, the installed worker is likely serving a stale bundle.
+      window.setTimeout(function () {
+        if (document.documentElement.dataset.booted === '1') return
+        recoverStaleClient()
       }, 8000)
     </script>
     <script>
