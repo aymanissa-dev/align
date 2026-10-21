@@ -101,17 +101,57 @@ async function claim(db: mongoose.mongo.Db): Promise<'copy' | 'delete'> {
   return 'copy'
 }
 
+function isNetwork(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return error.name === 'MongoNetworkError' || error.name === 'MongoNetworkTimeoutError' || /connection .* closed/i.test(error.message)
+}
+
+function annotate(step: string, error: unknown): Error {
+  const message = error instanceof Error ? error.message : 'failed'
+  const wrapped = new Error(`wipe step ${step}: ${message}`)
+  if (typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'number') {
+    Object.assign(wrapped, { code: error.code })
+  }
+  if (typeof error === 'object' && error !== null && 'codeName' in error && typeof error.codeName === 'string') {
+    Object.assign(wrapped, { codeName: error.codeName })
+  }
+  return wrapped
+}
+
+async function copyCollection(db: mongoose.mongo.Db, name: string): Promise<void> {
+  const backup = backupDb().collection(name)
+  const exists = (await db.listCollections({ name }).toArray()).length > 0
+  if (!exists) {
+    if ((await backup.countDocuments()) !== 0) await backup.deleteMany({})
+    return
+  }
+  await backup.deleteMany({})
+  const cursor = db.collection(name).find({}, { batchSize: 200 })
+  let batch: mongoose.mongo.Document[] = []
+  for await (const doc of cursor) {
+    batch.push(doc)
+    if (batch.length >= 200) {
+      await backup.insertMany(batch, { ordered: true })
+      batch = []
+    }
+  }
+  if (batch.length > 0) await backup.insertMany(batch, { ordered: true })
+}
+
 async function copyAll(db: mongoose.mongo.Db, names: string[]): Promise<void> {
   const locks = db.collection('migration_locks')
-  const backup = backupDb()
   for (const name of names) {
     await locks.updateOne({ key: LOCK_ID }, { $set: { heartbeat: new Date() } })
-    const exists = (await db.listCollections({ name }).toArray()).length > 0
-    if (!exists) {
-      if ((await backup.collection(name).countDocuments()) !== 0) await backup.collection(name).deleteMany({})
-      continue
+    try {
+      await copyCollection(db, name)
+    } catch (error) {
+      if (!isNetwork(error)) throw annotate(`copy ${name}`, error)
+      try {
+        await copyCollection(db, name)
+      } catch (second) {
+        throw annotate(`copy ${name}`, second)
+      }
     }
-    await db.collection(name).aggregate([{ $match: {} }, { $out: { db: BACKUP_DB, coll: name } }]).toArray()
   }
 }
 
@@ -125,14 +165,34 @@ async function deleteUserData(db: mongoose.mongo.Db, names: string[]): Promise<v
 export async function upFullWipe(dryRun: boolean): Promise<MigrationCounts> {
   const db = mongoose.connection.db
   if (!db) return {}
-  const names = await collectionNames(db)
-  const before = await countAll(db, names)
+  let names: string[]
+  try {
+    names = await collectionNames(db)
+  } catch (error) {
+    throw annotate('list collections', error)
+  }
+  let before: CountMap
+  try {
+    before = await countAll(db, names)
+  } catch (error) {
+    throw annotate('count source', error)
+  }
   if (dryRun) return prefix('before', before)
 
-  await claim(db)
+  try {
+    await claim(db)
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('wipe already running')) throw error
+    throw annotate('claim', error)
+  }
   const backup = backupDb()
   try {
-    const manifest = await backup.collection<Manifest>('wipe_manifest').findOne({ id: MANIFEST_ID })
+    let manifest: Manifest | null
+    try {
+      manifest = await backup.collection<Manifest>('wipe_manifest').findOne({ id: MANIFEST_ID })
+    } catch (error) {
+      throw annotate('read backup', error)
+    }
     let beforeCounts = before
     let backupCounts: CountMap
     if (manifest?.verified === true) {
@@ -165,8 +225,12 @@ export async function upFullWipe(dryRun: boolean): Promise<MigrationCounts> {
     )
     return { ...prefix('before', beforeCounts), ...prefix('backup', backupCounts), ...prefix('after', after) }
   } catch (error) {
-    const lock = await db.collection<{ phase?: string }>('migration_locks').findOne({ key: LOCK_ID })
-    if (lock?.phase === 'copying') await db.collection('migration_locks').deleteOne({ key: LOCK_ID, phase: 'copying' })
+    try {
+      const lock = await db.collection<{ phase?: string }>('migration_locks').findOne({ key: LOCK_ID })
+      if (lock?.phase === 'copying') await db.collection('migration_locks').deleteOne({ key: LOCK_ID, phase: 'copying' })
+    } catch {
+      // The copy failure is the one that must surface. Lock cleanup can retry.
+    }
     throw error
   }
 }
