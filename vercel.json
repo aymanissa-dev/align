@@ -40,7 +40,8 @@
     {
       "src": "^/((?!api/)(?!assets/).*)",
       "headers": {
-        "Cache-Control": "no-cache"
+        "Cache-Control": "no-cache",
+        "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
       },
       "continue": true
     },

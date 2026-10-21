@@ -11,6 +11,7 @@ import { privateRevalidate } from './httpCache.ts'
 import { errorHandler } from './middleware.ts'
 import { guardOrigin } from './security.ts'
 import { APP_VERSION, MINIMUM_CLIENT_VERSION } from './version.ts'
+import { AUTH_ROUTE_LIMIT } from './rateLimit.ts'
 import { authRouter } from './routes/auth.ts'
 import { dashboardRouter } from './routes/dashboard.ts'
 import { labelsRouter } from './routes/labels.ts'
@@ -64,17 +65,14 @@ export function createApp(options: AppOptions = {}): Express {
         const db = mongoose.connection.db
         if (!db) throw new Error('Database is not connected.')
         await db.command({ ping: 1 })
-        const migration = await db.collection<{ id: string; counts?: Record<string, number> }>('migrations').findOne({ id: '001_personal_workspaces' })
-        return migration?.counts ? { id: migration.id, counts: migration.counts } : undefined
       })
-      .then((migration) => {
-        const dbMs = Date.now() - started
-        markTiming(res, 'db', dbMs)
-        const body: HealthReport = { ok: true, db: 'up', latencyMs: dbMs, ...(migration ? { migration } : {}) }
+      .then(() => {
+        markTiming(res, 'db', Date.now() - started)
+        const body: HealthReport = { ok: true, db: 'up' }
         res.json(body)
       })
       .catch(() => {
-        const body: HealthReport = { ok: false, db: 'down', latencyMs: Date.now() - started }
+        const body: HealthReport = { ok: false, db: 'down' }
         res.setHeader('Retry-After', '5')
         res.status(503).json(body)
       })
@@ -97,7 +95,7 @@ export function createApp(options: AppOptions = {}): Express {
 
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: options.authRateLimitMax ?? 1000,
+    max: options.authRateLimitMax ?? (process.env.NODE_ENV === 'production' ? AUTH_ROUTE_LIMIT : 1000),
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many attempts. Try again later.' },

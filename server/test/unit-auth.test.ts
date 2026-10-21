@@ -27,6 +27,7 @@ describe('auth units', () => {
     })
     expect(verifyJwt(older)?.sub).toBe('user-2')
     expect(verifyJwt(`${token}x`)).toBeNull()
+    expect(verifyJwt('eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4IiwidHlwIjoiYWNjZXNzIn0.')).toBeNull()
     delete process.env.JWT_SECRET_PREVIOUS
     delete process.env.JWT_KID_PREVIOUS
 

@@ -107,7 +107,7 @@ export function notificationsRouter(): Router {
       const tenant = currentTenant(req)
       const [rows, devices] = await Promise.all([
         dueRows(tenant, today),
-        bind(tenant).notifications.find({ kind: 'new-device' }).sort({ createdAt: -1 }).limit(20).lean(),
+        bind(tenant).notifications.find({ kind: { $in: ['new-device', 'passkey-added'] } }).sort({ createdAt: -1 }).limit(20).lean(),
       ])
       const listed = [
         ...rows.map(present),
@@ -115,7 +115,7 @@ export function notificationsRouter(): Router {
           id: item._id.toString(),
           projectId: '',
           taskId: '',
-          kind: 'new-device' as const,
+          kind: item.kind === 'passkey-added' ? ('passkey-added' as const) : ('new-device' as const),
           title: item.title,
           projectName: item.projectName ?? '',
           dueDate: '',

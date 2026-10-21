@@ -18,14 +18,14 @@ export async function issueAuthToken(userId: string, type: 'verify' | 'reset'): 
 }
 
 export async function consumeAuthToken(token: string, type: 'verify' | 'reset'): Promise<string | null> {
-  const found = await AuthToken.findOne({
-    tokenHash: hashToken(token),
-    type,
-    usedAt: null,
-    expiresAt: { $gt: new Date() },
-  })
-  if (!found) return null
-  found.usedAt = new Date()
-  await found.save()
-  return found.userId.toString()
+  const found = await AuthToken.findOneAndUpdate(
+    {
+      tokenHash: hashToken(token),
+      type,
+      usedAt: null,
+      expiresAt: { $gt: new Date() },
+    },
+    { $set: { usedAt: new Date() } },
+  )
+  return found ? found.userId.toString() : null
 }

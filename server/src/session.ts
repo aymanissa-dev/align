@@ -166,7 +166,7 @@ async function issueSession(
     ipCoarse: coarseIp(req.ip),
     location: coarseLocation(req),
     lastSeenAt: now,
-    stepUpAt: previous?.stepUpAt ?? now,
+    stepUpAt: previous?.stepUpAt ?? null,
   })
   if (previous) {
     await Session.updateOne({ _id: previous._id }, { replacedBy: session._id, rotatedAt: now })

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import type { Request } from 'express'
 import {
   generateAuthenticationOptions,
@@ -8,7 +8,7 @@ import {
 } from '@simplewebauthn/server'
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server'
 import { HttpError } from '../errors.ts'
-import { Passkey, SecurityEvent, User, WebAuthnChallenge } from '../models.ts'
+import { Notification, Passkey, SecurityEvent, User, WebAuthnChallenge } from '../models.ts'
 import { hashToken } from '../session.ts'
 import { generateRecoveryCodes, generateTotpSecret, otpauthUrl, verifyTotp } from '../totp.ts'
 
@@ -83,14 +83,35 @@ export async function regenerateRecoveryCodes(userId: string): Promise<string[]>
 }
 
 export async function consumeRecoveryCode(userId: string, code: string): Promise<boolean> {
-  const user = await User.findById(userId).select('+recoveryCodes')
-  if (!user) return false
   const hash = recoveryHash(code)
-  const match = user.recoveryCodes?.find((entry) => entry.hash === hash && !entry.usedAt)
-  if (!match) return false
-  match.usedAt = new Date()
+  const updated = await User.findOneAndUpdate(
+    { _id: userId, recoveryCodes: { $elemMatch: { hash, usedAt: null } } },
+    { $set: { 'recoveryCodes.$.usedAt': new Date() } },
+  )
+  return Boolean(updated)
+}
+
+/** Password reset drops every second factor so a reset cannot be held hostage. */
+export async function clearAllFactors(userId: string): Promise<void> {
+  const user = await User.findById(userId).select('+totpSecret +recoveryCodes')
+  if (!user) return
+  user.totpSecret = null
+  user.totpEnabledAt = null
+  user.set('recoveryCodes', [])
   await user.save()
-  return true
+  await Passkey.deleteMany({ userId })
+}
+
+export async function notifyPasskeyAdded(userId: string): Promise<void> {
+  await Notification.create({
+    userId,
+    kind: 'passkey-added',
+    title: 'A passkey was added to your account',
+    projectName: '',
+    dueDate: '',
+    read: false,
+    key: `passkey-added:${randomBytes(8).toString('hex')}`,
+  })
 }
 
 export async function userHasPasskey(userId: string): Promise<boolean> {
@@ -126,7 +147,7 @@ export async function registrationOptions(req: Request, userId: string, email: s
       id: passkey.credentialId,
       transports: passkey.transports as ('internal' | 'hybrid')[],
     })),
-    authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' },
+    authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' },
   })
   await storeChallenge(userId, options.challenge, 'register')
   return options
@@ -143,7 +164,7 @@ export async function verifyRegistration(req: Request, userId: string, response:
     expectedChallenge: client.challenge,
     expectedOrigin: origin,
     expectedRPID: rpID,
-    requireUserVerification: false,
+    requireUserVerification: true,
   })
   if (!verified.verified) throw new HttpError(400, 'Passkey could not be verified.')
   const credential = verified.registrationInfo.credential
@@ -162,7 +183,7 @@ export async function authenticationOptions(req: Request, userId?: string) {
   const existing = userId ? await Passkey.find({ userId }).select('credentialId transports') : []
   const options = await generateAuthenticationOptions({
     rpID,
-    userVerification: userId ? 'discouraged' : 'preferred',
+    userVerification: userId ? 'discouraged' : 'required',
     allowCredentials: existing.map((passkey) => ({
       id: passkey.credentialId,
       transports: passkey.transports as ('internal' | 'hybrid')[],
@@ -190,7 +211,7 @@ export async function verifyPasskey(
     expectedChallenge: client.challenge,
     expectedOrigin: origin,
     expectedRPID: rpID,
-    requireUserVerification: false,
+    requireUserVerification: kind === 'login',
     credential: {
       id: passkey.credentialId,
       publicKey: new Uint8Array(passkey.publicKey),

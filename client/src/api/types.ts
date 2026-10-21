@@ -103,7 +103,7 @@ export type Project = {
 }
 
 export type ActivityType = 'create' | 'update' | 'delete' | 'complete'
-export type NotificationKind = 'due-soon' | 'overdue' | 'new-device'
+export type NotificationKind = 'due-soon' | 'overdue' | 'new-device' | 'passkey-added'
 
 export type ActivityEvent = {
   id: string
@@ -295,8 +295,8 @@ export interface AlignApi {
   changePassword(input: { currentPassword: string; newPassword: string }): Promise<void>
   /** DELETE /api/auth/me */
   deleteAccount(input?: { password?: string }): Promise<void>
-  totpSetup(): Promise<{ secret: string; otpauth: string; qr: string }>
-  totpConfirm(code: string): Promise<{ recoveryCodes: string[] }>
+  totpSetup(password: string): Promise<{ secret: string; otpauth: string; qr: string }>
+  totpConfirm(code: string, password: string): Promise<{ recoveryCodes: string[] }>
   totpDisable(input: { password?: string; code?: string }): Promise<void>
   regenerateRecoveryCodes(input: { password?: string; code?: string }): Promise<{ recoveryCodes: string[] }>
   completeMfa(input: { code: string; method: 'totp' | 'recovery' }): Promise<User & { dashboard?: DashboardData; newDevice?: boolean }>

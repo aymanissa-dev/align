@@ -2,8 +2,13 @@ import { HttpError } from './errors.ts'
 import { RateLimit } from './models.ts'
 
 const WINDOW_MS = 15 * 60 * 1000
+const REGISTER_WINDOW_MS = 60 * 60 * 1000
 const SUCCESS_WINDOW_MS = 60 * 1000
 const SUCCESS_MAX = 30
+const MFA_MAX = 5
+
+/** Production cap for the in-memory limiter around every /api/auth route. */
+export const AUTH_ROUTE_LIMIT = 60
 
 /**
  * Sign-in has one failure policy. A wrong password increments per-email and
@@ -13,7 +18,7 @@ const SUCCESS_MAX = 30
  */
 const PRODUCTION_MAX: Record<'login' | 'register' | 'forgot' | 'reset', number> = {
   login: 10,
-  register: 5,
+  register: 3,
   forgot: 5,
   reset: 10,
 }
@@ -118,10 +123,12 @@ export async function enforceAuthLimit(
   ip: string,
   email?: string,
 ): Promise<number> {
-  const max = process.env.NODE_ENV === 'production' ? PRODUCTION_MAX[route] : 1000
+  const production = process.env.NODE_ENV === 'production'
+  const max = production ? PRODUCTION_MAX[route] : 1000
+  const windowMs = production && route === 'register' ? REGISTER_WINDOW_MS : WINDOW_MS
   const keys = [`${route}:ip:${ip || 'unknown'}`]
   if (email) keys.push(`${route}:email:${email}`)
-  const hits = await Promise.all(keys.map((key) => hit(key)))
+  const hits = await Promise.all(keys.map((key) => hit(key, windowMs)))
   const count = Math.max(0, ...hits.map((entry) => entry.count))
   if (count > max) {
     const now = Date.now()
@@ -132,4 +139,28 @@ export async function enforceAuthLimit(
     throw new HttpError(429, 'Too many attempts. Try again later.', { headers: { 'Retry-After': String(seconds) } })
   }
   return count
+}
+
+function mfaKeys(ip: string, userId: string): string[] {
+  return [`mfa:fail:ip:${ip || 'unknown'}`, `mfa:fail:user:${userId}`]
+}
+
+function mfaMax(): number {
+  return process.env.NODE_ENV === 'production' ? MFA_MAX : 1000
+}
+
+/** Refuse a two-factor attempt that already used its failure budget. */
+export async function guardMfa(ip: string, userId: string): Promise<void> {
+  const hits = await Promise.all(mfaKeys(ip, userId).map((key) => readActive(key)))
+  rejectIfAtLeast(hits, mfaMax())
+}
+
+/** Count one rejected authenticator or recovery code. */
+export async function recordMfaFailure(ip: string, userId: string): Promise<number> {
+  const [, userHit] = await Promise.all(mfaKeys(ip, userId).map((key) => hit(key)))
+  return userHit?.count ?? 1
+}
+
+export async function clearMfaFailures(userId: string): Promise<void> {
+  await RateLimit.deleteOne({ key: `mfa:fail:user:${userId}` })
 }

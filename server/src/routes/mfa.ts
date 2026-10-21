@@ -15,6 +15,7 @@ import {
   verifyPasskey,
   verifyRegistration,
   deletePasskey,
+  notifyPasskeyAdded,
 } from '../data/factors.ts'
 import { ensurePersonalWorkspace } from '../data/workspaces.ts'
 import { users } from '../data/users.ts'
@@ -22,6 +23,7 @@ import { recordSecurity } from '../data/securityLog.ts'
 import { HttpError } from '../errors.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { checkPassword } from '../password.ts'
+import { clearMfaFailures, delayFailedAttempt, guardMfa, recordMfaFailure } from '../rateLimit.ts'
 import { publicUser } from '../serialize.ts'
 import { dashboardForUser } from './dashboard.ts'
 import {
@@ -83,6 +85,21 @@ export async function requireSensitiveCredential(
   throw new HttpError(400, code ? 'That code is not valid.' : 'Current password is incorrect.')
 }
 
+/** TOTP enrolment needs the account password, and a blank one fails before step-up. */
+async function requireAccountPassword(req: Request, userId: string): Promise<void> {
+  const password = typeof req.body?.password === 'string' ? req.body.password : ''
+  if (!password.trim()) throw new HttpError(400, 'Enter your current password.')
+  await requireFreshStepUp(req.sessionId)
+  const user = await users.byIdSecret(userId)
+  if (!user?.passwordHash || !(await checkPassword(password, user.passwordHash))) {
+    throw new HttpError(400, 'Current password is incorrect.')
+  }
+}
+
+function clientIp(req: Request): string {
+  return req.ip || req.socket.remoteAddress || 'unknown'
+}
+
 export function mfaRouter(): Router {
   const router = Router()
 
@@ -90,7 +107,9 @@ export function mfaRouter(): Router {
     '/totp/setup',
     requireAuth,
     asyncHandler(async (req, res) => {
-      const user = await users.byId(currentUserId(req))
+      const userId = currentUserId(req)
+      await requireAccountPassword(req, userId)
+      const user = await users.byId(userId)
       if (!user) throw new HttpError(401, 'Sign in to continue.')
       const started = await beginTotp(user.id, user.email)
       const qr = await QRCode.toDataURL(started.otpauth)
@@ -103,10 +122,11 @@ export function mfaRouter(): Router {
     requireAuth,
     asyncHandler(async (req, res) => {
       const input = parseBody(totpCodeSchema, req.body)
-      const codes = await confirmTotp(currentUserId(req), input.code)
-      if (req.sessionId) await markStepUp(req.sessionId)
+      const userId = currentUserId(req)
+      await requireAccountPassword(req, userId)
+      const codes = await confirmTotp(userId, input.code)
       await recordSecurity({
-        userId: currentUserId(req),
+        userId,
         type: 'totp-enabled',
         summary: 'Two-factor authentication was turned on.',
         ...requestAudit(req),
@@ -158,6 +178,8 @@ export function mfaRouter(): Router {
     asyncHandler(async (req, res) => {
       const input = parseBody(mfaSchema, req.body)
       const userId = pendingUser(req)
+      const ip = clientIp(req)
+      await guardMfa(ip, userId)
       const user = await users.byIdSecret(userId)
       if (!user) throw new HttpError(401, 'Sign in to continue.')
       const ok =
@@ -165,14 +187,17 @@ export function mfaRouter(): Router {
           ? Boolean(user.totpSecret && verifyTotp(user.totpSecret, input.code))
           : await consumeRecoveryCode(user.id, input.code)
       if (!ok) {
+        const failures = await recordMfaFailure(ip, user.id)
         await recordSecurity({
           userId: user.id,
           type: 'mfa-failed',
           summary: 'A two-factor code was rejected.',
           ...requestAudit(req),
         })
+        await delayFailedAttempt(failures)
         throw new HttpError(401, 'That code is not valid.')
       }
+      await clearMfaFailures(user.id)
       res.clearCookie('pending', { path: '/' })
       await ensurePersonalWorkspace(user.id)
       const fresh = (await users.byId(user.id)) ?? user
@@ -250,6 +275,7 @@ export function mfaRouter(): Router {
     '/passkeys/register/options',
     requireAuth,
     asyncHandler(async (req, res) => {
+      await requireFreshStepUp(req.sessionId)
       const user = await users.byId(currentUserId(req))
       if (!user) throw new HttpError(401, 'Sign in to continue.')
       res.json(await registrationOptions(req, user.id, user.email))
@@ -260,14 +286,17 @@ export function mfaRouter(): Router {
     '/passkeys/register/verify',
     requireAuth,
     asyncHandler(async (req, res) => {
+      await requireFreshStepUp(req.sessionId)
+      const userId = currentUserId(req)
       const name = typeof req.body?.name === 'string' ? req.body.name : 'Passkey'
-      await verifyRegistration(req, currentUserId(req), req.body as RegistrationResponseJSON, name)
+      await verifyRegistration(req, userId, req.body as RegistrationResponseJSON, name)
       await recordSecurity({
-        userId: currentUserId(req),
+        userId,
         type: 'passkey-added',
         summary: 'A passkey was added.',
         ...requestAudit(req),
       })
+      await notifyPasskeyAdded(userId)
       res.status(204).send()
     }),
   )

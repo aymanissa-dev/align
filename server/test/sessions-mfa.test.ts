@@ -1,4 +1,4 @@
-import request from 'supertest'
+import request, { type Agent } from 'supertest'
 import { describe, expect, it } from 'vitest'
 import { authenticators } from '../src/data/factors.ts'
 import { SecurityEvent, Session } from '../src/models.ts'
@@ -13,6 +13,18 @@ function cookiePair(setCookie: string | string[] | undefined, name: string): str
     if (pair.startsWith(`${name}=`)) return pair
   }
   return undefined
+}
+
+async function enableTotp(agent: Agent, password: string) {
+  const stepped = await agent.post('/api/auth/step-up').send({ password })
+  expect(stepped.status).toBe(204)
+  const setup = await agent.post('/api/auth/totp/setup').send({ password })
+  expect(setup.status).toBe(200)
+  expect(setup.body.qr).toContain('data:image')
+  const code = totpAt(setup.body.secret as string, Math.floor(Date.now() / 1000 / 30))
+  const confirmed = await agent.post('/api/auth/totp/confirm').send({ code, password })
+  expect(confirmed.status).toBe(200)
+  return { secret: setup.body.secret as string, code, recovery: confirmed.body.recoveryCodes[0] as string }
 }
 
 describe('sessions and second factors', () => {
@@ -83,13 +95,7 @@ describe('sessions and second factors', () => {
 
   it('signs in with a TOTP code and a one-time recovery code', async () => {
     const { agent, email, password } = await registerUser()
-    const setup = await agent.post('/api/auth/totp/setup')
-    expect(setup.status).toBe(200)
-    expect(setup.body.qr).toContain('data:image')
-    const code = totpAt(setup.body.secret as string, Math.floor(Date.now() / 1000 / 30))
-    const confirmed = await agent.post('/api/auth/totp/confirm').send({ code })
-    expect(confirmed.status).toBe(200)
-    const recovery = confirmed.body.recoveryCodes[0] as string
+    const { code, recovery } = await enableTotp(agent, password)
 
     await agent.post('/api/auth/logout')
     const challenge = await request(app).post('/api/auth/login').send({ email, password })
@@ -136,9 +142,7 @@ describe('sessions and second factors', () => {
 
   it('requires a fresh step-up before disabling 2FA or deleting the account', async () => {
     const { agent, password, id } = await registerUser()
-    const setup = await agent.post('/api/auth/totp/setup')
-    const code = totpAt(setup.body.secret as string, Math.floor(Date.now() / 1000 / 30))
-    await agent.post('/api/auth/totp/confirm').send({ code })
+    await enableTotp(agent, password)
     await Session.updateOne({ userId: id, revokedAt: null, replacedBy: null }, { stepUpAt: new Date(Date.now() - 11 * 60 * 1000) })
     const staleDisable = await agent.post('/api/auth/totp/disable').send({ password })
     expect(staleDisable.status).toBe(403)
@@ -188,8 +192,12 @@ describe('sessions and second factors', () => {
 
     try {
       const { agent, email, password } = await registerUser()
+      expect((await agent.post('/api/auth/passkeys/register/options')).status).toBe(403)
+      expect((await agent.post('/api/auth/passkeys/register/verify').send({})).status).toBe(403)
+      expect((await agent.post('/api/auth/step-up').send({ password })).status).toBe(204)
       const options = await agent.post('/api/auth/passkeys/register/options')
       expect(options.status).toBe(200)
+      expect(options.body.authenticatorSelection.userVerification).toBe('required')
       const clientDataJSON = Buffer.from(JSON.stringify({ challenge: options.body.challenge, type: 'webauthn.create' })).toString('base64url')
       const saved = await agent.post('/api/auth/passkeys/register/verify').send({
         id: credentialId,
@@ -205,6 +213,7 @@ describe('sessions and second factors', () => {
       expect((await agent.get('/api/auth/mfa')).body.passkey).toBe(true)
 
       const step = await agent.post('/api/auth/passkeys/step-up/options')
+      expect(step.body.userVerification).toBe('discouraged')
       const stepClient = Buffer.from(JSON.stringify({ challenge: step.body.challenge })).toString('base64url')
       expect(
         (
@@ -220,6 +229,7 @@ describe('sessions and second factors', () => {
 
       const loginOptions = await request(app).post('/api/auth/passkeys/login/options')
       expect(loginOptions.status).toBe(200)
+      expect(loginOptions.body.userVerification).toBe('required')
       await request(app)
         .post('/api/auth/login')
         .set('User-Agent', 'Mozilla/5.0 (Macintosh) Firefox/120.0')
@@ -232,6 +242,7 @@ describe('sessions and second factors', () => {
       expect(freshDevice?.location).toBe('SA')
       const inbox = await agent.get('/api/notifications?today=2026-10-21')
       expect(inbox.body.some((item: { kind: string; title: string }) => item.kind === 'new-device' && item.title.includes('Firefox on macOS'))).toBe(true)
+      expect(inbox.body.some((item: { kind: string }) => item.kind === 'passkey-added')).toBe(true)
       expect(await SecurityEvent.countDocuments({ type: 'passkey-added' })).toBe(1)
 
       const id = passkeys.body[0].id as string
@@ -290,9 +301,7 @@ describe('sessions and second factors', () => {
 
   it('rejects a stale session on every sensitive route until a fresh step-up', async () => {
     const { agent, password, id } = await registerUser()
-    const setup = await agent.post('/api/auth/totp/setup')
-    const code = totpAt(setup.body.secret as string, Math.floor(Date.now() / 1000 / 30))
-    await agent.post('/api/auth/totp/confirm').send({ code })
+    const { secret } = await enableTotp(agent, password)
     await Session.updateMany({ userId: id }, { stepUpAt: new Date(Date.now() - 11 * 60 * 1000) })
     const email = `step-${crypto.randomUUID()}@align.test`
     const routes = [
@@ -310,7 +319,7 @@ describe('sessions and second factors', () => {
       expect(rejected.body.code).toBe('step_up_required')
     }
     expect((await agent.post('/api/auth/step-up').send({ password: 'not-the-password' })).status).toBe(403)
-    const freshCode = totpAt(setup.body.secret as string, Math.floor(Date.now() / 1000 / 30))
+    const freshCode = totpAt(secret, Math.floor(Date.now() / 1000 / 30))
     expect((await agent.post('/api/auth/step-up').send({ code: freshCode, method: 'totp' })).status).toBe(204)
     const changed = await agent.post('/api/auth/email').send({ email, password })
     expect(changed.status).toBe(200)
@@ -338,6 +347,7 @@ describe('sessions and second factors', () => {
     expect((await other.get('/api/auth/me')).status).toBe(200)
 
     expect((await agent.post('/api/auth/sessions/revoke-others').send({})).status).toBe(400)
+    expect((await agent.post('/api/auth/step-up').send({ password })).status).toBe(204)
     expect((await agent.post('/api/auth/sessions/revoke-others').send({ password: 'not-the-password' })).status).toBe(400)
     expect((await other.get('/api/auth/me')).status).toBe(200)
 
@@ -359,12 +369,7 @@ describe('sessions and second factors', () => {
 
   it('rejects an empty or wrong credential inside the step-up window and accepts a valid code', async () => {
     const { agent, password, id } = await registerUser()
-    const setup = await agent.post('/api/auth/totp/setup')
-    const secret = setup.body.secret as string
-    const code = totpAt(secret, Math.floor(Date.now() / 1000 / 30))
-    const confirmed = await agent.post('/api/auth/totp/confirm').send({ code })
-    const recovery = confirmed.body.recoveryCodes[0] as string
-    expect(confirmed.status).toBe(200)
+    const { secret, recovery } = await enableTotp(agent, password)
 
     const empty = await agent.post('/api/auth/totp/disable').send({ password: '' })
     expect(empty.status).toBe(400)

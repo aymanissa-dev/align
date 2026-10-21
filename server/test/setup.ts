@@ -3,6 +3,7 @@ import { connectDb, disconnectDb } from '../src/db.ts'
 import {
   Activity,
   AuthToken,
+  Invite,
   Label,
   Membership,
   Note,
@@ -45,6 +46,7 @@ beforeEach(async () => {
     RateLimit.deleteMany({}),
     Workspace.deleteMany({}),
     Membership.deleteMany({}),
+    Invite.deleteMany({}),
     Passkey.deleteMany({}),
     SecurityEvent.deleteMany({}),
     WebAuthnChallenge.deleteMany({}),

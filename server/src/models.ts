@@ -165,7 +165,7 @@ const notificationSchema = new Schema(
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     projectId: { type: Schema.Types.ObjectId, ref: 'Project', default: null },
     taskId: { type: Schema.Types.ObjectId, ref: 'Task', default: null },
-    kind: { type: String, enum: ['due-soon', 'overdue', 'new-device'], required: true },
+    kind: { type: String, enum: ['due-soon', 'overdue', 'new-device', 'passkey-added'], required: true },
     title: { type: String, required: true },
     projectName: { type: String, default: '' },
     dueDate: { type: String, default: '' },
@@ -260,6 +260,17 @@ const membershipSchema = new Schema(
 membershipSchema.index({ workspaceId: 1, userId: 1 }, { unique: true, name: 'MembershipUser' })
 membershipSchema.index({ userId: 1, workspaceId: 1 }, { name: 'MembershipByUser' })
 
+const inviteSchema = new Schema(
+  {
+    workspaceId: { type: Schema.Types.ObjectId, ref: 'Workspace', required: true },
+    email: { type: String, required: true },
+    role: { type: String, enum: ['admin', 'member', 'viewer'], required: true },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } },
+)
+inviteSchema.index({ workspaceId: 1, email: 1 }, { unique: true, name: 'InviteEmail' })
+inviteSchema.index({ email: 1 }, { name: 'InviteByEmail' })
+
 const passkeySchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
@@ -350,6 +361,7 @@ export const AuthToken = compile('AuthToken', () => model('AuthToken', tokenSche
 export const RateLimit = compile('RateLimit', () => model('RateLimit', rateLimitSchema))
 export const Workspace = compile('Workspace', () => model('Workspace', workspaceSchema))
 export const Membership = compile('Membership', () => model('Membership', membershipSchema))
+export const Invite = compile('Invite', () => model('Invite', inviteSchema))
 export const Passkey = compile('Passkey', () => model('Passkey', passkeySchema))
 export const SecurityEvent = compile('SecurityEvent', () => model('SecurityEvent', securityEventSchema))
 export const WebAuthnChallenge = compile('WebAuthnChallenge', () => model('WebAuthnChallenge', challengeSchema))

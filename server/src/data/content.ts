@@ -1,8 +1,9 @@
-import { Types, type FilterQuery } from 'mongoose'
+import { Types, type ClientSession, type FilterQuery } from 'mongoose'
 import { HttpError } from '../errors.ts'
 import {
   Activity,
   AuthToken,
+  Invite,
   Label,
   Membership,
   Note,
@@ -277,9 +278,33 @@ export function bind(tenant: Tenant) {
   }
 }
 
+async function purgeWorkspaces(workspaceIds: Types.ObjectId[], session: ClientSession): Promise<void> {
+  const projects = await Project.find({ workspaceId: { $in: workspaceIds } }).session(session).select('_id')
+  const projectIds = projects.map((project) => project._id)
+  if (projectIds.length > 0) await Notification.deleteMany({ projectId: { $in: projectIds } }, { session })
+  await Task.deleteMany({ workspaceId: { $in: workspaceIds } }, { session })
+  await Note.deleteMany({ workspaceId: { $in: workspaceIds } }, { session })
+  await Whiteboard.deleteMany({ workspaceId: { $in: workspaceIds } }, { session })
+  await Activity.deleteMany({ workspaceId: { $in: workspaceIds } }, { session })
+  await Label.deleteMany({ workspaceId: { $in: workspaceIds } }, { session })
+  await Project.deleteMany({ workspaceId: { $in: workspaceIds } }, { session })
+  await Membership.deleteMany({ workspaceId: { $in: workspaceIds } }, { session })
+  await Invite.deleteMany({ workspaceId: { $in: workspaceIds } }, { session })
+  await Workspace.deleteMany({ _id: { $in: workspaceIds } }, { session })
+}
+
 export async function deleteAccount(userId: string): Promise<void> {
   await withTransaction(async (session) => {
     const id = new Types.ObjectId(userId)
+    const shared = await Workspace.find({ ownerId: id, personal: false }).session(session).select('_id')
+    const sharedIds = shared.map((workspace) => workspace._id)
+    if (sharedIds.length > 0) {
+      const others = await Membership.countDocuments({ workspaceId: { $in: sharedIds }, userId: { $ne: id } }).session(session)
+      if (others > 0) {
+        throw new HttpError(409, 'Transfer ownership of shared workspaces before deleting this account.')
+      }
+      await purgeWorkspaces(sharedIds, session)
+    }
     await Task.deleteMany({ userId: id }, { session })
     await Note.deleteMany({ userId: id }, { session })
     await Label.deleteMany({ userId: id }, { session })

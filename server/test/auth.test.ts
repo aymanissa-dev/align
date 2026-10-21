@@ -11,9 +11,7 @@ describe('auth', () => {
   it('reports database health without requiring a session', async () => {
     const health = await request(app).get('/api/health')
     expect(health.status).toBe(200)
-    expect(health.body.ok).toBe(true)
-    expect(health.body.db).toBe('up')
-    expect(typeof health.body.latencyMs).toBe('number')
+    expect(health.body).toEqual({ ok: true, db: 'up' })
   })
 
   it('answers 304 when a GET representation has not changed', async () => {
@@ -139,6 +137,7 @@ describe('auth', () => {
     expect((await agent.patch('/api/auth/me').send({ accent: 'blue' })).status).toBe(400)
     expect((await agent.patch('/api/auth/me').send({})).status).toBe(400)
 
+    expect((await agent.post('/api/auth/step-up').send({ password })).status).toBe(204)
     const badPassword = await agent.post('/api/auth/password').send({
       currentPassword: 'nope',
       newPassword: 'password123',
@@ -294,6 +293,7 @@ describe('auth', () => {
     expect((await agent.delete(`/api/auth/sessions/${other.id}`)).status).toBe(204)
     expect((await agent.get('/api/auth/sessions')).body).toHaveLength(1)
 
+    expect((await agent.post('/api/auth/step-up').send({ password })).status).toBe(204)
     expect((await agent.post('/api/auth/sessions/revoke-all').send({ password })).status).toBe(204)
     expect((await agent.get('/api/auth/me')).status).toBe(401)
   })
@@ -398,6 +398,8 @@ describe('auth', () => {
       expect(sent.body).toEqual({ message: VERIFY_MESSAGE })
 
       const next = `next-${crypto.randomUUID()}@align.test`
+      const stepped = await request(app).post('/api/auth/step-up').set('Cookie', cookie).set('x-csrf-token', csrf).send({ password })
+      expect(stepped.status).toBe(204)
       const changed = await request(app)
         .post('/api/auth/email')
         .set('Cookie', cookie)

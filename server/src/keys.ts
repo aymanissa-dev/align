@@ -30,7 +30,7 @@ export function verifyJwt(token: string): jwt.JwtPayload | null {
   const ordered = [...keys.filter((key) => key.kid === kid), ...keys.filter((key) => key.kid !== kid)]
   for (const key of ordered) {
     try {
-      const payload = jwt.verify(token, key.secret)
+      const payload = jwt.verify(token, key.secret, { algorithms: ['HS256'] })
       if (typeof payload === 'string') return null
       return payload
     } catch {

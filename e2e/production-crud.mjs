@@ -980,7 +980,11 @@ try {
   await page.getByText('Session renamed').waitFor()
   pass('rename session')
 
+  await page.locator('#security-password').fill(password)
   await page.getByRole('button', { name: 'Set up authenticator' }).click()
+  await page.getByRole('dialog', { name: "Verify it's you" }).waitFor()
+  await page.locator('#step-up-password').fill(password)
+  await page.getByRole('dialog', { name: "Verify it's you" }).getByRole('button', { name: 'Continue' }).click()
   const secret = await page.locator('[data-secret]').getAttribute('data-secret')
   if (!secret) throw new Error('totp secret missing')
   await page.locator('#totp-code').fill(totpCode(secret))
@@ -1018,6 +1022,9 @@ try {
   await page.getByRole('dialog', { name: "Confirm it's you" }).waitFor()
   await page.locator('#delete-password').fill(password)
   await page.getByRole('dialog', { name: "Confirm it's you" }).getByRole('button', { name: 'Delete account' }).click()
+  await page.getByRole('dialog', { name: "Verify it's you" }).waitFor()
+  await page.locator('#step-up-password').fill(password)
+  await page.getByRole('dialog', { name: "Verify it's you" }).getByRole('button', { name: 'Continue' }).click()
   await page.waitForURL(/\/login|\/$/)
   const session = await context.request.get(`${base}/api/auth/session`)
   const body = await session.json()
@@ -1025,7 +1032,16 @@ try {
   pass('delete account')
 
   const health = await (await context.request.get(`${base}/api/health`)).json()
-  if (health.db !== 'up') throw new Error(`health ${JSON.stringify(health)}`)
+  if (health.db !== 'up' || health.ok !== true || health.latencyMs || health.migration) {
+    throw new Error(`health ${JSON.stringify(health)}`)
+  }
+  const shellResponse = await context.request.get(base)
+  const shell = await shellResponse.text()
+  const csp = shellResponse.headers()['content-security-policy'] ?? ''
+  if (!/script-src 'self'(;|$)/.test(csp) || !csp.includes("object-src 'none'") || !csp.includes("base-uri 'self'") || !csp.includes("frame-ancestors 'none'") || !csp.includes("connect-src 'self'")) {
+    throw new Error(`csp ${csp}`)
+  }
+  if (/<script\b[^>]*>\s*[^<\s]/.test(shell) || !shell.includes('src="/boot.js"')) throw new Error('inline script still in the shell')
   pass('health')
   console.log(JSON.stringify({ email, results }, null, 2))
 } catch (error) {

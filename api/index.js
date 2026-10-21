@@ -232,7 +232,7 @@ var notificationSchema = new Schema(
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     projectId: { type: Schema.Types.ObjectId, ref: "Project", default: null },
     taskId: { type: Schema.Types.ObjectId, ref: "Task", default: null },
-    kind: { type: String, enum: ["due-soon", "overdue", "new-device"], required: true },
+    kind: { type: String, enum: ["due-soon", "overdue", "new-device", "passkey-added"], required: true },
     title: { type: String, required: true },
     projectName: { type: String, default: "" },
     dueDate: { type: String, default: "" },
@@ -320,6 +320,16 @@ var membershipSchema = new Schema(
 );
 membershipSchema.index({ workspaceId: 1, userId: 1 }, { unique: true, name: "MembershipUser" });
 membershipSchema.index({ userId: 1, workspaceId: 1 }, { name: "MembershipByUser" });
+var inviteSchema = new Schema(
+  {
+    workspaceId: { type: Schema.Types.ObjectId, ref: "Workspace", required: true },
+    email: { type: String, required: true },
+    role: { type: String, enum: ["admin", "member", "viewer"], required: true }
+  },
+  { timestamps: { createdAt: true, updatedAt: false } }
+);
+inviteSchema.index({ workspaceId: 1, email: 1 }, { unique: true, name: "InviteEmail" });
+inviteSchema.index({ email: 1 }, { name: "InviteByEmail" });
 var passkeySchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
@@ -394,6 +404,7 @@ var AuthToken = compile("AuthToken", () => model("AuthToken", tokenSchema));
 var RateLimit = compile("RateLimit", () => model("RateLimit", rateLimitSchema));
 var Workspace = compile("Workspace", () => model("Workspace", workspaceSchema));
 var Membership = compile("Membership", () => model("Membership", membershipSchema));
+var Invite = compile("Invite", () => model("Invite", inviteSchema));
 var Passkey = compile("Passkey", () => model("Passkey", passkeySchema));
 var SecurityEvent = compile("SecurityEvent", () => model("SecurityEvent", securityEventSchema));
 var WebAuthnChallenge = compile("WebAuthnChallenge", () => model("WebAuthnChallenge", challengeSchema));
@@ -568,12 +579,27 @@ async function createSharedWorkspace(userId, name) {
 }
 async function addMember(actor, email2, role) {
   if (!isRole(role) || role === "owner") throw new HttpError(400, "Choose admin, member, or viewer.");
-  const user = await User.findOne({ email: email2 });
-  if (!user) throw new HttpError(404, "No account uses that email.");
+  const normalized = email2.trim().toLowerCase();
+  const user = await User.findOne({ email: normalized });
+  if (!user) {
+    await Invite.findOneAndUpdate(
+      { workspaceId: actor.workspaceId, email: normalized },
+      { $set: { role }, $setOnInsert: { workspaceId: actor.workspaceId, email: normalized } },
+      { upsert: true }
+    );
+    return { email: normalized, role };
+  }
   const existing = await Membership.findOne({ workspaceId: actor.workspaceId, userId: user._id });
-  if (existing) throw new HttpError(409, "That person is already in this workspace.");
-  await Membership.create({ workspaceId: actor.workspaceId, userId: user._id, role });
-  return { userId: user.id, email: user.email, name: user.name, role };
+  if (!existing) await Membership.create({ workspaceId: actor.workspaceId, userId: user._id, role });
+  return { email: user.email, role: existing?.role ?? role };
+}
+async function claimInvites(userId, email2) {
+  const invites = await Invite.find({ email: email2.trim().toLowerCase() });
+  for (const invite of invites) {
+    const existing = await Membership.findOne({ workspaceId: invite.workspaceId, userId });
+    if (!existing) await Membership.create({ workspaceId: invite.workspaceId, userId, role: invite.role });
+    await invite.deleteOne();
+  }
 }
 async function changeMemberRole(actor, memberId, role) {
   if (role === "owner") throw new HttpError(400, "Choose admin, member, or viewer.");
@@ -619,7 +645,7 @@ function verifyJwt(token) {
   const ordered = [...keys.filter((key) => key.kid === kid), ...keys.filter((key) => key.kid !== kid)];
   for (const key of ordered) {
     try {
-      const payload = jwt.verify(token, key.secret);
+      const payload = jwt.verify(token, key.secret, { algorithms: ["HS256"] });
       if (typeof payload === "string") return null;
       return payload;
     } catch {
@@ -757,7 +783,7 @@ async function issueSession(req, res, userId, familyId, claims, previous) {
     ipCoarse: coarseIp(req.ip),
     location: coarseLocation(req),
     lastSeenAt: now,
-    stepUpAt: previous?.stepUpAt ?? now
+    stepUpAt: previous?.stepUpAt ?? null
   });
   if (previous) {
     await Session.updateOne({ _id: previous._id }, { replacedBy: session._id, rotatedAt: now });
@@ -1038,10 +1064,52 @@ async function downRevokeExposedTokens(_dryRun) {
   return { tokens: 0, accounts: 0 };
 }
 
+// src/migrate/purgeReviewerWorkspace.ts
+import { Types as Types3 } from "mongoose";
+var PURGE_REVIEWER_WORKSPACE = "003_purge_reviewer_workspace";
+var WORKSPACE_ID = "6ad897539bb929a182fb6e47";
+var PROJECT_ID = "6ad897539bb929a182fb6e54";
+async function upPurgeReviewerWorkspace(dryRun) {
+  const workspaceId = new Types3.ObjectId(WORKSPACE_ID);
+  const projectId = new Types3.ObjectId(PROJECT_ID);
+  const projects = await Project.find({ $or: [{ _id: projectId }, { workspaceId }] }).select("_id");
+  const projectIds = projects.map((project) => project._id);
+  if (!projectIds.some((id) => id.equals(projectId))) projectIds.push(projectId);
+  const counts = {
+    workspaces: await Workspace.countDocuments({ _id: workspaceId }),
+    projects: await Project.countDocuments({ _id: { $in: projectIds } }),
+    tasks: await Task.countDocuments({ $or: [{ workspaceId }, { projectId: { $in: projectIds } }] }),
+    notes: await Note.countDocuments({ $or: [{ workspaceId }, { projectId: { $in: projectIds } }] }),
+    whiteboards: await Whiteboard.countDocuments({ $or: [{ workspaceId }, { projectId: { $in: projectIds } }] }),
+    activity: await Activity.countDocuments({ $or: [{ workspaceId }, { projectId: { $in: projectIds } }] }),
+    notifications: await Notification.countDocuments({ projectId: { $in: projectIds } }),
+    memberships: await Membership.countDocuments({ workspaceId }),
+    invites: await Invite.countDocuments({ workspaceId }),
+    labels: await Label.countDocuments({ workspaceId })
+  };
+  if (!dryRun) {
+    await Notification.deleteMany({ projectId: { $in: projectIds } });
+    await Task.deleteMany({ $or: [{ workspaceId }, { projectId: { $in: projectIds } }] });
+    await Note.deleteMany({ $or: [{ workspaceId }, { projectId: { $in: projectIds } }] });
+    await Whiteboard.deleteMany({ $or: [{ workspaceId }, { projectId: { $in: projectIds } }] });
+    await Activity.deleteMany({ $or: [{ workspaceId }, { projectId: { $in: projectIds } }] });
+    await Label.deleteMany({ workspaceId });
+    await Project.deleteMany({ _id: { $in: projectIds } });
+    await Membership.deleteMany({ workspaceId });
+    await Invite.deleteMany({ workspaceId });
+    await Workspace.deleteMany({ _id: workspaceId });
+  }
+  return counts;
+}
+async function downPurgeReviewerWorkspace(_dryRun) {
+  return { workspaces: 0, projects: 0 };
+}
+
 // src/migrate/runner.ts
 var MIGRATIONS = [
   { id: PERSONAL_WORKSPACES, up: upPersonalWorkspaces, down: downPersonalWorkspaces },
-  { id: REVOKE_EXPOSED_TOKENS, up: upRevokeExposedTokens, down: downRevokeExposedTokens }
+  { id: REVOKE_EXPOSED_TOKENS, up: upRevokeExposedTokens, down: downRevokeExposedTokens },
+  { id: PURGE_REVIEWER_WORKSPACE, up: upPurgeReviewerWorkspace, down: downPurgeReviewerWorkspace }
 ];
 var appliedOnce = null;
 function runMigrations(options) {
@@ -1358,8 +1426,8 @@ var errorHandler = (error, _req, res, _next) => {
   }
   if (isRecord(error) && error.code === 11e3) {
     const pattern = isRecord(error.keyPattern) ? error.keyPattern : null;
-    if (!pattern || "email" in pattern) {
-      res.status(409).json({ error: "An account with this email already exists." });
+    if (!pattern || "email" in pattern && !("workspaceId" in pattern)) {
+      res.status(409).json({ error: "We couldn't create an account with those details." });
       return;
     }
     res.status(409).json({ error: "That record already exists." });
@@ -1433,20 +1501,137 @@ var guardOrigin = (req, res, next) => {
 var APP_VERSION = 2;
 var MINIMUM_CLIENT_VERSION = 2;
 
+// src/rateLimit.ts
+var WINDOW_MS = 15 * 60 * 1e3;
+var REGISTER_WINDOW_MS = 60 * 60 * 1e3;
+var SUCCESS_WINDOW_MS = 60 * 1e3;
+var SUCCESS_MAX = 30;
+var MFA_MAX = 5;
+var AUTH_ROUTE_LIMIT = 60;
+var PRODUCTION_MAX = {
+  login: 10,
+  register: 3,
+  forgot: 5,
+  reset: 10
+};
+function duplicateKey(error) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === 11e3;
+}
+function loginFailureMax() {
+  return process.env.NODE_ENV === "production" ? PRODUCTION_MAX.login : 1e3;
+}
+function loginSuccessMax() {
+  return process.env.NODE_ENV === "production" ? SUCCESS_MAX : 1e3;
+}
+function failureKeys(ip, email2) {
+  return [`login:fail:ip:${ip || "unknown"}`, `login:fail:email:${email2}`];
+}
+function successKeys(ip, email2) {
+  return [`login:ok:ip:${ip || "unknown"}`, `login:ok:email:${email2}`];
+}
+async function hit(key, windowMs = WINDOW_MS) {
+  const now = Date.now();
+  const expiresAt = new Date(now + windowMs);
+  let doc;
+  try {
+    doc = await RateLimit.findOneAndUpdate(
+      { key },
+      { $inc: { count: 1 }, $setOnInsert: { expiresAt } },
+      { upsert: true, new: true }
+    );
+  } catch (error) {
+    if (!duplicateKey(error)) throw error;
+    doc = await RateLimit.findOneAndUpdate({ key }, { $inc: { count: 1 } }, { new: true });
+  }
+  if (doc && doc.expiresAt.getTime() <= now) {
+    doc = await RateLimit.findOneAndUpdate({ key }, { $set: { count: 1, expiresAt } }, { new: true });
+  }
+  return { count: doc?.count ?? 1, expiresAt: doc?.expiresAt ?? expiresAt };
+}
+async function readActive(key) {
+  const doc = await RateLimit.findOne({ key }).lean();
+  if (!doc || doc.expiresAt.getTime() <= Date.now()) return null;
+  return { count: doc.count, expiresAt: doc.expiresAt };
+}
+function rejectIfAtLeast(hits, max) {
+  const now = Date.now();
+  const blocked = hits.filter((entry) => entry !== null && entry.count >= max);
+  if (blocked.length === 0) return;
+  const remainingMs = Math.max(...blocked.map((entry) => entry.expiresAt.getTime() - now));
+  const seconds = Math.max(1, Math.ceil(remainingMs / 1e3));
+  throw new HttpError(429, "Too many attempts. Try again later.", { headers: { "Retry-After": String(seconds) } });
+}
+async function guardLogin(ip, email2) {
+  const keys = [...failureKeys(ip, email2), ...successKeys(ip, email2)];
+  const [failIp, failEmail, okIp, okEmail] = await Promise.all(keys.map((key) => readActive(key)));
+  rejectIfAtLeast([failIp ?? null, failEmail ?? null], loginFailureMax());
+  rejectIfAtLeast([okIp ?? null, okEmail ?? null], loginSuccessMax());
+}
+async function recordLoginFailure(ip, email2) {
+  const [, emailHit] = await Promise.all(failureKeys(ip, email2).map((key) => hit(key)));
+  return emailHit?.count ?? 1;
+}
+async function clearLoginFailures(email2) {
+  await RateLimit.deleteOne({ key: `login:fail:email:${email2}` });
+}
+async function recordLoginSuccess(ip, email2) {
+  await Promise.all(successKeys(ip, email2).map((key) => hit(key, SUCCESS_WINDOW_MS)));
+}
+async function delayFailedAttempt(count) {
+  if (process.env.NODE_ENV === "test" || count <= 2) return;
+  const delay = Math.min(5e3, (count - 2) * 250);
+  await new Promise((resolve) => setTimeout(resolve, delay));
+}
+async function enforceAuthLimit(route, ip, email2) {
+  const production = process.env.NODE_ENV === "production";
+  const max = production ? PRODUCTION_MAX[route] : 1e3;
+  const windowMs = production && route === "register" ? REGISTER_WINDOW_MS : WINDOW_MS;
+  const keys = [`${route}:ip:${ip || "unknown"}`];
+  if (email2) keys.push(`${route}:email:${email2}`);
+  const hits = await Promise.all(keys.map((key) => hit(key, windowMs)));
+  const count = Math.max(0, ...hits.map((entry) => entry.count));
+  if (count > max) {
+    const now = Date.now();
+    const remainingMs = Math.max(
+      ...hits.filter((entry) => entry.count > max).map((entry) => entry.expiresAt.getTime() - now)
+    );
+    const seconds = Math.max(1, Math.ceil(remainingMs / 1e3));
+    throw new HttpError(429, "Too many attempts. Try again later.", { headers: { "Retry-After": String(seconds) } });
+  }
+  return count;
+}
+function mfaKeys(ip, userId) {
+  return [`mfa:fail:ip:${ip || "unknown"}`, `mfa:fail:user:${userId}`];
+}
+function mfaMax() {
+  return process.env.NODE_ENV === "production" ? MFA_MAX : 1e3;
+}
+async function guardMfa(ip, userId) {
+  const hits = await Promise.all(mfaKeys(ip, userId).map((key) => readActive(key)));
+  rejectIfAtLeast(hits, mfaMax());
+}
+async function recordMfaFailure(ip, userId) {
+  const [, userHit] = await Promise.all(mfaKeys(ip, userId).map((key) => hit(key)));
+  return userHit?.count ?? 1;
+}
+async function clearMfaFailures(userId) {
+  await RateLimit.deleteOne({ key: `mfa:fail:user:${userId}` });
+}
+
 // src/routes/auth.ts
-import { randomBytes as randomBytes6 } from "node:crypto";
+import { randomBytes as randomBytes7 } from "node:crypto";
 import { Router as Router3 } from "express";
 
 // src/data/content.ts
-import { Types as Types3 } from "mongoose";
+import { Types as Types4 } from "mongoose";
 var TRASH_MS = 30 * 24 * 60 * 60 * 1e3;
 function objectId(id) {
   if (!/^[a-f\d]{24}$/i.test(id)) return null;
-  return new Types3.ObjectId(id);
+  return new Types4.ObjectId(id);
 }
 function bind(tenant) {
-  const workspaceId = new Types3.ObjectId(tenant.workspaceId);
-  const userId = new Types3.ObjectId(tenant.userId);
+  const workspaceId = new Types4.ObjectId(tenant.workspaceId);
+  const userId = new Types4.ObjectId(tenant.userId);
   const alive = { deletedAt: null };
   function wid(filter = {}) {
     return { workspaceId, ...filter };
@@ -1682,9 +1867,32 @@ function bind(tenant) {
     }
   };
 }
+async function purgeWorkspaces(workspaceIds, session) {
+  const projects = await Project.find({ workspaceId: { $in: workspaceIds } }).session(session).select("_id");
+  const projectIds = projects.map((project) => project._id);
+  if (projectIds.length > 0) await Notification.deleteMany({ projectId: { $in: projectIds } }, { session });
+  await Task.deleteMany({ workspaceId: { $in: workspaceIds } }, { session });
+  await Note.deleteMany({ workspaceId: { $in: workspaceIds } }, { session });
+  await Whiteboard.deleteMany({ workspaceId: { $in: workspaceIds } }, { session });
+  await Activity.deleteMany({ workspaceId: { $in: workspaceIds } }, { session });
+  await Label.deleteMany({ workspaceId: { $in: workspaceIds } }, { session });
+  await Project.deleteMany({ workspaceId: { $in: workspaceIds } }, { session });
+  await Membership.deleteMany({ workspaceId: { $in: workspaceIds } }, { session });
+  await Invite.deleteMany({ workspaceId: { $in: workspaceIds } }, { session });
+  await Workspace.deleteMany({ _id: { $in: workspaceIds } }, { session });
+}
 async function deleteAccount(userId) {
   await withTransaction(async (session) => {
-    const id = new Types3.ObjectId(userId);
+    const id = new Types4.ObjectId(userId);
+    const shared = await Workspace.find({ ownerId: id, personal: false }).session(session).select("_id");
+    const sharedIds = shared.map((workspace) => workspace._id);
+    if (sharedIds.length > 0) {
+      const others = await Membership.countDocuments({ workspaceId: { $in: sharedIds }, userId: { $ne: id } }).session(session);
+      if (others > 0) {
+        throw new HttpError(409, "Transfer ownership of shared workspaces before deleting this account.");
+      }
+      await purgeWorkspaces(sharedIds, session);
+    }
     await Task.deleteMany({ userId: id }, { session });
     await Note.deleteMany({ userId: id }, { session });
     await Label.deleteMany({ userId: id }, { session });
@@ -1807,6 +2015,7 @@ import { Router as Router2 } from "express";
 import QRCode from "qrcode";
 
 // src/data/factors.ts
+import { createHash as createHash2, randomBytes as randomBytes4 } from "node:crypto";
 import {
   generateAuthenticationOptions,
   generateRegistrationOptions,
@@ -1952,14 +2161,32 @@ async function regenerateRecoveryCodes(userId) {
   return codes;
 }
 async function consumeRecoveryCode(userId, code) {
-  const user = await User.findById(userId).select("+recoveryCodes");
-  if (!user) return false;
   const hash = recoveryHash(code);
-  const match = user.recoveryCodes?.find((entry) => entry.hash === hash && !entry.usedAt);
-  if (!match) return false;
-  match.usedAt = /* @__PURE__ */ new Date();
+  const updated = await User.findOneAndUpdate(
+    { _id: userId, recoveryCodes: { $elemMatch: { hash, usedAt: null } } },
+    { $set: { "recoveryCodes.$.usedAt": /* @__PURE__ */ new Date() } }
+  );
+  return Boolean(updated);
+}
+async function clearAllFactors(userId) {
+  const user = await User.findById(userId).select("+totpSecret +recoveryCodes");
+  if (!user) return;
+  user.totpSecret = null;
+  user.totpEnabledAt = null;
+  user.set("recoveryCodes", []);
   await user.save();
-  return true;
+  await Passkey.deleteMany({ userId });
+}
+async function notifyPasskeyAdded(userId) {
+  await Notification.create({
+    userId,
+    kind: "passkey-added",
+    title: "A passkey was added to your account",
+    projectName: "",
+    dueDate: "",
+    read: false,
+    key: `passkey-added:${randomBytes4(8).toString("hex")}`
+  });
 }
 async function userHasPasskey(userId) {
   return Boolean(await Passkey.exists({ userId }));
@@ -1991,7 +2218,7 @@ async function registrationOptions(req, userId, email2) {
       id: passkey.credentialId,
       transports: passkey.transports
     })),
-    authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" }
+    authenticatorSelection: { residentKey: "preferred", userVerification: "required" }
   });
   await storeChallenge(userId, options.challenge, "register");
   return options;
@@ -2007,7 +2234,7 @@ async function verifyRegistration(req, userId, response, name) {
     expectedChallenge: client.challenge,
     expectedOrigin: origin,
     expectedRPID: rpID,
-    requireUserVerification: false
+    requireUserVerification: true
   });
   if (!verified.verified) throw new HttpError(400, "Passkey could not be verified.");
   const credential = verified.registrationInfo.credential;
@@ -2025,7 +2252,7 @@ async function authenticationOptions(req, userId) {
   const existing = userId ? await Passkey.find({ userId }).select("credentialId transports") : [];
   const options = await generateAuthenticationOptions({
     rpID,
-    userVerification: userId ? "discouraged" : "preferred",
+    userVerification: userId ? "discouraged" : "required",
     allowCredentials: existing.map((passkey) => ({
       id: passkey.credentialId,
       transports: passkey.transports
@@ -2046,7 +2273,7 @@ async function verifyPasskey(req, response, kind) {
     expectedChallenge: client.challenge,
     expectedOrigin: origin,
     expectedRPID: rpID,
-    requireUserVerification: false,
+    requireUserVerification: kind === "login",
     credential: {
       id: passkey.credentialId,
       publicKey: new Uint8Array(passkey.publicKey),
@@ -2510,13 +2737,27 @@ async function requireSensitiveCredential(userId, body) {
   if (code && await consumeRecoveryCode(userId, code)) return;
   throw new HttpError(400, code ? "That code is not valid." : "Current password is incorrect.");
 }
+async function requireAccountPassword(req, userId) {
+  const password2 = typeof req.body?.password === "string" ? req.body.password : "";
+  if (!password2.trim()) throw new HttpError(400, "Enter your current password.");
+  await requireFreshStepUp(req.sessionId);
+  const user = await users.byIdSecret(userId);
+  if (!user?.passwordHash || !await checkPassword(password2, user.passwordHash)) {
+    throw new HttpError(400, "Current password is incorrect.");
+  }
+}
+function clientIp(req) {
+  return req.ip || req.socket.remoteAddress || "unknown";
+}
 function mfaRouter() {
   const router = Router2();
   router.post(
     "/totp/setup",
     requireAuth,
     asyncHandler(async (req, res) => {
-      const user = await users.byId(currentUserId(req));
+      const userId = currentUserId(req);
+      await requireAccountPassword(req, userId);
+      const user = await users.byId(userId);
       if (!user) throw new HttpError(401, "Sign in to continue.");
       const started = await beginTotp(user.id, user.email);
       const qr = await QRCode.toDataURL(started.otpauth);
@@ -2528,10 +2769,11 @@ function mfaRouter() {
     requireAuth,
     asyncHandler(async (req, res) => {
       const input = parseBody(totpCodeSchema, req.body);
-      const codes = await confirmTotp(currentUserId(req), input.code);
-      if (req.sessionId) await markStepUp(req.sessionId);
+      const userId = currentUserId(req);
+      await requireAccountPassword(req, userId);
+      const codes = await confirmTotp(userId, input.code);
       await recordSecurity({
-        userId: currentUserId(req),
+        userId,
         type: "totp-enabled",
         summary: "Two-factor authentication was turned on.",
         ...requestAudit(req)
@@ -2580,18 +2822,23 @@ function mfaRouter() {
     asyncHandler(async (req, res) => {
       const input = parseBody(mfaSchema, req.body);
       const userId = pendingUser(req);
+      const ip = clientIp(req);
+      await guardMfa(ip, userId);
       const user = await users.byIdSecret(userId);
       if (!user) throw new HttpError(401, "Sign in to continue.");
       const ok = input.method === "totp" ? Boolean(user.totpSecret && verifyTotp(user.totpSecret, input.code)) : await consumeRecoveryCode(user.id, input.code);
       if (!ok) {
+        const failures = await recordMfaFailure(ip, user.id);
         await recordSecurity({
           userId: user.id,
           type: "mfa-failed",
           summary: "A two-factor code was rejected.",
           ...requestAudit(req)
         });
+        await delayFailedAttempt(failures);
         throw new HttpError(401, "That code is not valid.");
       }
+      await clearMfaFailures(user.id);
       res.clearCookie("pending", { path: "/" });
       await ensurePersonalWorkspace(user.id);
       const fresh = await users.byId(user.id) ?? user;
@@ -2666,6 +2913,7 @@ function mfaRouter() {
     "/passkeys/register/options",
     requireAuth,
     asyncHandler(async (req, res) => {
+      await requireFreshStepUp(req.sessionId);
       const user = await users.byId(currentUserId(req));
       if (!user) throw new HttpError(401, "Sign in to continue.");
       res.json(await registrationOptions(req, user.id, user.email));
@@ -2675,14 +2923,17 @@ function mfaRouter() {
     "/passkeys/register/verify",
     requireAuth,
     asyncHandler(async (req, res) => {
+      await requireFreshStepUp(req.sessionId);
+      const userId = currentUserId(req);
       const name = typeof req.body?.name === "string" ? req.body.name : "Passkey";
-      await verifyRegistration(req, currentUserId(req), req.body, name);
+      await verifyRegistration(req, userId, req.body, name);
       await recordSecurity({
-        userId: currentUserId(req),
+        userId,
         type: "passkey-added",
         summary: "A passkey was added.",
         ...requestAudit(req)
       });
+      await notifyPasskeyAdded(userId);
       res.status(204).send();
     })
   );
@@ -2776,12 +3027,12 @@ function mfaRouter() {
 }
 
 // src/hibp.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 var RANGE = "https://api.pwnedpasswords.com/range/";
 var HIBP_TIMEOUT_MS = 1500;
 async function passwordIsBreached(password2, fetchImpl = fetch, timeoutMs = HIBP_TIMEOUT_MS) {
   if (process.env.NODE_ENV === "test" && fetchImpl === fetch) return false;
-  const digest = createHash2("sha1").update(password2).digest("hex").toUpperCase();
+  const digest = createHash3("sha1").update(password2).digest("hex").toUpperCase();
   const prefix = digest.slice(0, 5);
   const suffix = digest.slice(5);
   try {
@@ -2820,8 +3071,8 @@ function watchBreachedPassword(userId, password2, fetchImpl = fetch) {
 }
 
 // src/mailPolicy.ts
-import { randomBytes as randomBytes5 } from "node:crypto";
-import { Types as Types5 } from "mongoose";
+import { randomBytes as randomBytes6 } from "node:crypto";
+import { Types as Types6 } from "mongoose";
 
 // src/mail.ts
 async function deliverMail(input) {
@@ -2850,10 +3101,10 @@ async function deliverMail(input) {
 }
 
 // src/tokens.ts
-import { randomBytes as randomBytes4 } from "node:crypto";
+import { randomBytes as randomBytes5 } from "node:crypto";
 var HOUR_MS = 60 * 60 * 1e3;
 async function issueAuthToken(userId, type) {
-  const token = randomBytes4(32).toString("hex");
+  const token = randomBytes5(32).toString("hex");
   const ttl = type === "verify" ? 24 * HOUR_MS : HOUR_MS;
   await AuthToken.deleteMany({ userId, type, usedAt: null });
   await AuthToken.create({
@@ -2865,16 +3116,16 @@ async function issueAuthToken(userId, type) {
   return token;
 }
 async function consumeAuthToken(token, type) {
-  const found = await AuthToken.findOne({
-    tokenHash: hashToken(token),
-    type,
-    usedAt: null,
-    expiresAt: { $gt: /* @__PURE__ */ new Date() }
-  });
-  if (!found) return null;
-  found.usedAt = /* @__PURE__ */ new Date();
-  await found.save();
-  return found.userId.toString();
+  const found = await AuthToken.findOneAndUpdate(
+    {
+      tokenHash: hashToken(token),
+      type,
+      usedAt: null,
+      expiresAt: { $gt: /* @__PURE__ */ new Date() }
+    },
+    { $set: { usedAt: /* @__PURE__ */ new Date() } }
+  );
+  return found ? found.userId.toString() : null;
 }
 
 // src/mailPolicy.ts
@@ -2891,9 +3142,9 @@ function mailConfigured() {
   return Boolean(process.env.RESEND_API_KEY && process.env.MAIL_FROM);
 }
 async function burnAuthTokenWork(type) {
-  const token = randomBytes5(32).toString("hex");
+  const token = randomBytes6(32).toString("hex");
   hashToken(token);
-  await AuthToken.deleteMany({ userId: new Types5.ObjectId(), type, usedAt: null });
+  await AuthToken.deleteMany({ userId: new Types6.ObjectId(), type, usedAt: null });
 }
 function logMailRequest(kind, email2) {
   if (exposeDevTokens() || mailConfigured()) return;
@@ -2959,103 +3210,8 @@ ${link}`,
   });
 }
 
-// src/rateLimit.ts
-var WINDOW_MS = 15 * 60 * 1e3;
-var SUCCESS_WINDOW_MS = 60 * 1e3;
-var SUCCESS_MAX = 30;
-var PRODUCTION_MAX = {
-  login: 10,
-  register: 5,
-  forgot: 5,
-  reset: 10
-};
-function duplicateKey(error) {
-  return typeof error === "object" && error !== null && "code" in error && error.code === 11e3;
-}
-function loginFailureMax() {
-  return process.env.NODE_ENV === "production" ? PRODUCTION_MAX.login : 1e3;
-}
-function loginSuccessMax() {
-  return process.env.NODE_ENV === "production" ? SUCCESS_MAX : 1e3;
-}
-function failureKeys(ip, email2) {
-  return [`login:fail:ip:${ip || "unknown"}`, `login:fail:email:${email2}`];
-}
-function successKeys(ip, email2) {
-  return [`login:ok:ip:${ip || "unknown"}`, `login:ok:email:${email2}`];
-}
-async function hit(key, windowMs = WINDOW_MS) {
-  const now = Date.now();
-  const expiresAt = new Date(now + windowMs);
-  let doc;
-  try {
-    doc = await RateLimit.findOneAndUpdate(
-      { key },
-      { $inc: { count: 1 }, $setOnInsert: { expiresAt } },
-      { upsert: true, new: true }
-    );
-  } catch (error) {
-    if (!duplicateKey(error)) throw error;
-    doc = await RateLimit.findOneAndUpdate({ key }, { $inc: { count: 1 } }, { new: true });
-  }
-  if (doc && doc.expiresAt.getTime() <= now) {
-    doc = await RateLimit.findOneAndUpdate({ key }, { $set: { count: 1, expiresAt } }, { new: true });
-  }
-  return { count: doc?.count ?? 1, expiresAt: doc?.expiresAt ?? expiresAt };
-}
-async function readActive(key) {
-  const doc = await RateLimit.findOne({ key }).lean();
-  if (!doc || doc.expiresAt.getTime() <= Date.now()) return null;
-  return { count: doc.count, expiresAt: doc.expiresAt };
-}
-function rejectIfAtLeast(hits, max) {
-  const now = Date.now();
-  const blocked = hits.filter((entry) => entry !== null && entry.count >= max);
-  if (blocked.length === 0) return;
-  const remainingMs = Math.max(...blocked.map((entry) => entry.expiresAt.getTime() - now));
-  const seconds = Math.max(1, Math.ceil(remainingMs / 1e3));
-  throw new HttpError(429, "Too many attempts. Try again later.", { headers: { "Retry-After": String(seconds) } });
-}
-async function guardLogin(ip, email2) {
-  const keys = [...failureKeys(ip, email2), ...successKeys(ip, email2)];
-  const [failIp, failEmail, okIp, okEmail] = await Promise.all(keys.map((key) => readActive(key)));
-  rejectIfAtLeast([failIp ?? null, failEmail ?? null], loginFailureMax());
-  rejectIfAtLeast([okIp ?? null, okEmail ?? null], loginSuccessMax());
-}
-async function recordLoginFailure(ip, email2) {
-  const [, emailHit] = await Promise.all(failureKeys(ip, email2).map((key) => hit(key)));
-  return emailHit?.count ?? 1;
-}
-async function clearLoginFailures(email2) {
-  await RateLimit.deleteOne({ key: `login:fail:email:${email2}` });
-}
-async function recordLoginSuccess(ip, email2) {
-  await Promise.all(successKeys(ip, email2).map((key) => hit(key, SUCCESS_WINDOW_MS)));
-}
-async function delayFailedAttempt(count) {
-  if (process.env.NODE_ENV === "test" || count <= 2) return;
-  const delay = Math.min(5e3, (count - 2) * 250);
-  await new Promise((resolve) => setTimeout(resolve, delay));
-}
-async function enforceAuthLimit(route, ip, email2) {
-  const max = process.env.NODE_ENV === "production" ? PRODUCTION_MAX[route] : 1e3;
-  const keys = [`${route}:ip:${ip || "unknown"}`];
-  if (email2) keys.push(`${route}:email:${email2}`);
-  const hits = await Promise.all(keys.map((key) => hit(key)));
-  const count = Math.max(0, ...hits.map((entry) => entry.count));
-  if (count > max) {
-    const now = Date.now();
-    const remainingMs = Math.max(
-      ...hits.filter((entry) => entry.count > max).map((entry) => entry.expiresAt.getTime() - now)
-    );
-    const seconds = Math.max(1, Math.ceil(remainingMs / 1e3));
-    throw new HttpError(429, "Too many attempts. Try again later.", { headers: { "Retry-After": String(seconds) } });
-  }
-  return count;
-}
-
 // src/routes/auth.ts
-function clientIp(req) {
+function clientIp2(req) {
   return req.ip || req.socket.remoteAddress || "unknown";
 }
 function appOrigin(req) {
@@ -3065,6 +3221,35 @@ function appOrigin(req) {
 }
 function googleConfigured() {
   return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+}
+function googleRedirectUri(req) {
+  return `${appOrigin(req)}/api/auth/google/callback`;
+}
+function googleAuthUrl(req, state) {
+  const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  url.searchParams.set("client_id", process.env.GOOGLE_CLIENT_ID ?? "");
+  url.searchParams.set("redirect_uri", googleRedirectUri(req));
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", "openid email profile");
+  url.searchParams.set("state", state);
+  url.searchParams.set("prompt", "select_account");
+  return url.toString();
+}
+async function linkGoogleFromSession(req, userId, googleSub, email2) {
+  const access = accessFromRequest(req);
+  if (!access || !userId || access.userId !== userId) return null;
+  const session = await loadSession(access.sid);
+  if (!session || session.revokedAt || session.replacedBy || sessionExpired(session)) return null;
+  if (session.userId.toString() !== userId || !stepUpFresh(session.stepUpAt)) return null;
+  const account = await users.byId(userId);
+  if (!account || account.email !== email2) return null;
+  if (account.googleId && account.googleId !== googleSub) return null;
+  const taken = await users.byGoogle(googleSub);
+  if (taken && taken.id !== account.id) return null;
+  account.googleId = googleSub;
+  if (!account.emailVerifiedAt) account.emailVerifiedAt = /* @__PURE__ */ new Date();
+  await account.save();
+  return account;
 }
 function authRouter(limiter) {
   const router = Router3();
@@ -3076,10 +3261,13 @@ function authRouter(limiter) {
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(registerSchema, req.body);
-      await enforceAuthLimit("register", clientIp(req), input.email);
+      await enforceAuthLimit("register", clientIp2(req), input.email);
       await assertPasswordNotBreached(input.password);
       const existing = await users.byEmail(input.email);
-      if (existing) throw new HttpError(409, "An account with this email already exists.");
+      if (existing) {
+        await hashPassword(input.password);
+        throw new HttpError(409, "We couldn't create an account with those details.");
+      }
       const user = await users.create({
         name: input.name,
         email: input.email,
@@ -3087,6 +3275,7 @@ function authRouter(limiter) {
         emailVerifiedAt: null
       });
       await ensurePersonalWorkspace(user.id);
+      await claimInvites(user.id, user.email);
       const verifyToken = await issueMailedToken({
         userId: user.id,
         email: user.email,
@@ -3111,7 +3300,7 @@ ${link}`,
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(loginSchema, req.body);
-      const ip = clientIp(req);
+      const ip = clientIp2(req);
       const lookupStarted = performance.now();
       let user;
       try {
@@ -3216,7 +3405,7 @@ ${link}`,
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(forgotSchema, req.body);
-      await enforceAuthLimit("forgot", clientIp(req), input.email);
+      await enforceAuthLimit("forgot", clientIp2(req), input.email);
       const started = performance.now();
       const resetToken = await preparePasswordReset(input.email, appOrigin(req));
       await settleMailResponse(started);
@@ -3228,7 +3417,7 @@ ${link}`,
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(resetSchema, req.body);
-      await enforceAuthLimit("reset", clientIp(req));
+      await enforceAuthLimit("reset", clientIp2(req));
       const userId = await consumeAuthToken(input.token, "reset");
       await assertPasswordNotBreached(input.password);
       const user = userId ? await users.byIdSecret(userId) : null;
@@ -3237,10 +3426,16 @@ ${link}`,
       user.failedLogins = 0;
       user.lockUntil = null;
       await user.save();
+      await clearAllFactors(user.id);
       await revokeSessions(user.id);
       await ensurePersonalWorkspace(user.id);
       await startSession(req, res, user.id);
-      await recordSecurity({ userId: user.id, type: "password-reset", summary: "Password was reset.", ...requestAudit(req) });
+      await recordSecurity({
+        userId: user.id,
+        type: "password-reset",
+        summary: "Password was reset. Two-factor authentication, recovery codes, and passkeys were removed and must be set up again.",
+        ...requestAudit(req)
+      });
       res.json(publicUser(user));
     })
   );
@@ -3373,16 +3568,16 @@ ${link}`,
     "/google",
     asyncHandler(async (req, res) => {
       if (!googleConfigured()) throw new HttpError(404, "Google sign-in is not configured.");
-      const state = signJwt({ typ: "google" }, "10m");
-      const redirect = `${appOrigin(req)}/api/auth/google/callback`;
-      const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-      url.searchParams.set("client_id", process.env.GOOGLE_CLIENT_ID ?? "");
-      url.searchParams.set("redirect_uri", redirect);
-      url.searchParams.set("response_type", "code");
-      url.searchParams.set("scope", "openid email profile");
-      url.searchParams.set("state", state);
-      url.searchParams.set("prompt", "select_account");
-      res.redirect(url.toString());
+      res.redirect(googleAuthUrl(req, signJwt({ typ: "google" }, "10m")));
+    })
+  );
+  router.get(
+    "/google/link",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      if (!googleConfigured()) throw new HttpError(404, "Google sign-in is not configured.");
+      await requireFreshStepUp(req.sessionId);
+      res.redirect(googleAuthUrl(req, signJwt({ typ: "google-link", sub: currentUserId(req) }, "10m")));
     })
   );
   router.get(
@@ -3394,17 +3589,11 @@ ${link}`,
       const fail = () => {
         res.redirect("/login?error=google");
       };
-      try {
-        const payload = verifyJwt(state);
-        if (!payload || payload.typ !== "google" || !code) {
-          fail();
-          return;
-        }
-      } catch {
+      const payload = verifyJwt(state);
+      if (!payload || payload.typ !== "google" && payload.typ !== "google-link" || !code) {
         fail();
         return;
       }
-      const redirect = `${appOrigin(req)}/api/auth/google/callback`;
       const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -3412,7 +3601,7 @@ ${link}`,
           code,
           client_id: process.env.GOOGLE_CLIENT_ID ?? "",
           client_secret: process.env.GOOGLE_CLIENT_SECRET ?? "",
-          redirect_uri: redirect,
+          redirect_uri: googleRedirectUri(req),
           grant_type: "authorization_code"
         }),
         signal: AbortSignal.timeout(8e3)
@@ -3440,17 +3629,35 @@ ${link}`,
         fail();
         return;
       }
+      if (payload.typ === "google-link") {
+        const linked = await linkGoogleFromSession(req, typeof payload.sub === "string" ? payload.sub : "", profile.sub, email2);
+        if (!linked) {
+          fail();
+          return;
+        }
+        res.redirect("/settings");
+        return;
+      }
       let user = await users.byGoogle(profile.sub);
-      if (!user) user = await users.byEmail(email2);
-      if (user) {
-        if (!user.googleId) user.googleId = profile.sub;
-        if (!user.emailVerifiedAt) user.emailVerifiedAt = /* @__PURE__ */ new Date();
-        await user.save();
-      } else {
+      if (!user) {
+        const existing = await users.byEmail(email2);
+        if (existing) {
+          if (!existing.emailVerifiedAt || existing.googleId && existing.googleId !== profile.sub) {
+            fail();
+            return;
+          }
+          if (!existing.googleId) {
+            existing.googleId = profile.sub;
+            await existing.save();
+          }
+          user = existing;
+        }
+      }
+      if (!user) {
         user = await users.create({
           name: (profile.name || email2.split("@")[0] || "Align").slice(0, 80),
           email: email2,
-          passwordHash: await hashPassword(randomBytes6(32).toString("hex")),
+          passwordHash: await hashPassword(randomBytes7(32).toString("hex")),
           emailVerifiedAt: /* @__PURE__ */ new Date(),
           googleId: profile.sub
         });
@@ -3773,7 +3980,7 @@ function notesRouter() {
 
 // src/routes/notifications.ts
 import { Router as Router6 } from "express";
-import { Types as Types7 } from "mongoose";
+import { Types as Types8 } from "mongoose";
 
 // src/dates.ts
 function shiftISODate(iso, days) {
@@ -3784,7 +3991,7 @@ function shiftISODate(iso, days) {
 }
 
 // src/page.ts
-import { Types as Types6 } from "mongoose";
+import { Types as Types7 } from "mongoose";
 var PAGE_SIZE = 50;
 function pageLimit(value, fallback = PAGE_SIZE) {
   const parsed = typeof value === "string" ? Number(value) : fallback;
@@ -3806,7 +4013,7 @@ function decodeCursor(value) {
 }
 function objectIdFromCursor(value) {
   if (!/^[a-f\d]{24}$/i.test(value)) return null;
-  return new Types6.ObjectId(value);
+  return new Types7.ObjectId(value);
 }
 function beforeCursor(value) {
   const parts = decodeCursor(value);
@@ -3924,7 +4131,7 @@ function notificationsRouter() {
       const tenant = currentTenant(req);
       const [rows, devices] = await Promise.all([
         dueRows(tenant, today),
-        bind(tenant).notifications.find({ kind: "new-device" }).sort({ createdAt: -1 }).limit(20).lean()
+        bind(tenant).notifications.find({ kind: { $in: ["new-device", "passkey-added"] } }).sort({ createdAt: -1 }).limit(20).lean()
       ]);
       const listed = [
         ...rows.map(present),
@@ -3932,7 +4139,7 @@ function notificationsRouter() {
           id: item._id.toString(),
           projectId: "",
           taskId: "",
-          kind: "new-device",
+          kind: item.kind === "passkey-added" ? "passkey-added" : "new-device",
           title: item.title,
           projectName: item.projectName ?? "",
           dueDate: "",
@@ -3959,7 +4166,7 @@ function notificationsRouter() {
       const today = typeof req.query.today === "string" && req.query.today ? requireToday(req.query.today) : null;
       if (today) {
         const rows = await dueRows(tenant, today);
-        const userObjectId = new Types7.ObjectId(userId);
+        const userObjectId = new Types8.ObjectId(userId);
         const expireAt = new Date(Date.now() + NINETY_DAYS_MS2);
         if (rows.length > 0) {
           await db.notifications.bulkWrite(
@@ -4662,15 +4869,12 @@ function createApp(options = {}) {
       const db = mongoose5.connection.db;
       if (!db) throw new Error("Database is not connected.");
       await db.command({ ping: 1 });
-      const migration = await db.collection("migrations").findOne({ id: "001_personal_workspaces" });
-      return migration?.counts ? { id: migration.id, counts: migration.counts } : void 0;
-    }).then((migration) => {
-      const dbMs = Date.now() - started;
-      markTiming(res, "db", dbMs);
-      const body = { ok: true, db: "up", latencyMs: dbMs, ...migration ? { migration } : {} };
+    }).then(() => {
+      markTiming(res, "db", Date.now() - started);
+      const body = { ok: true, db: "up" };
       res.json(body);
     }).catch(() => {
-      const body = { ok: false, db: "down", latencyMs: Date.now() - started };
+      const body = { ok: false, db: "down" };
       res.setHeader("Retry-After", "5");
       res.status(503).json(body);
     });
@@ -4692,7 +4896,7 @@ function createApp(options = {}) {
   });
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1e3,
-    max: options.authRateLimitMax ?? 1e3,
+    max: options.authRateLimitMax ?? (process.env.NODE_ENV === "production" ? AUTH_ROUTE_LIMIT : 1e3),
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "Too many attempts. Try again later." }

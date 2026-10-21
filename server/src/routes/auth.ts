@@ -3,7 +3,8 @@ import { Router, type Request, type RequestHandler } from 'express'
 import { deleteAccount } from '../data/content.ts'
 import { dashboardForUser } from './dashboard.ts'
 import { assertCredentialPresent, requireSensitiveCredential } from './mfa.ts'
-import { ensurePersonalWorkspace, ownerClaims } from '../data/workspaces.ts'
+import { clearAllFactors } from '../data/factors.ts'
+import { claimInvites, ensurePersonalWorkspace, ownerClaims } from '../data/workspaces.ts'
 import { users } from '../data/users.ts'
 import { recordSecurity } from '../data/securityLog.ts'
 import { HttpError } from '../errors.ts'
@@ -33,6 +34,7 @@ import {
   renameSession,
   requestAudit,
   requireFreshStepUp,
+  stepUpFresh,
   revokeRefreshCookie,
   revokeSessionById,
   revokeSessions,
@@ -70,6 +72,39 @@ function googleConfigured(): boolean {
   return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET)
 }
 
+function googleRedirectUri(req: Request): string {
+  return `${appOrigin(req)}/api/auth/google/callback`
+}
+
+function googleAuthUrl(req: Request, state: string): string {
+  const url = new URL('https://accounts.google.com/o/oauth2/v2/auth')
+  url.searchParams.set('client_id', process.env.GOOGLE_CLIENT_ID ?? '')
+  url.searchParams.set('redirect_uri', googleRedirectUri(req))
+  url.searchParams.set('response_type', 'code')
+  url.searchParams.set('scope', 'openid email profile')
+  url.searchParams.set('state', state)
+  url.searchParams.set('prompt', 'select_account')
+  return url.toString()
+}
+
+/** Explicit link from the signed-in session. A stolen Google profile cannot attach itself. */
+async function linkGoogleFromSession(req: Request, userId: string, googleSub: string, email: string) {
+  const access = accessFromRequest(req)
+  if (!access || !userId || access.userId !== userId) return null
+  const session = await loadSession(access.sid)
+  if (!session || session.revokedAt || session.replacedBy || sessionExpired(session)) return null
+  if (session.userId.toString() !== userId || !stepUpFresh(session.stepUpAt)) return null
+  const account = await users.byId(userId)
+  if (!account || account.email !== email) return null
+  if (account.googleId && account.googleId !== googleSub) return null
+  const taken = await users.byGoogle(googleSub)
+  if (taken && taken.id !== account.id) return null
+  account.googleId = googleSub
+  if (!account.emailVerifiedAt) account.emailVerifiedAt = new Date()
+  await account.save()
+  return account
+}
+
 export function authRouter(limiter: RequestHandler): Router {
   const router = Router()
 
@@ -85,7 +120,10 @@ export function authRouter(limiter: RequestHandler): Router {
       await enforceAuthLimit('register', clientIp(req), input.email)
       await assertPasswordNotBreached(input.password)
       const existing = await users.byEmail(input.email)
-      if (existing) throw new HttpError(409, 'An account with this email already exists.')
+      if (existing) {
+        await hashPassword(input.password)
+        throw new HttpError(409, "We couldn't create an account with those details.")
+      }
       const user = await users.create({
         name: input.name,
         email: input.email,
@@ -93,6 +131,7 @@ export function authRouter(limiter: RequestHandler): Router {
         emailVerifiedAt: null,
       })
       await ensurePersonalWorkspace(user.id)
+      await claimInvites(user.id, user.email)
       const verifyToken = await issueMailedToken({
         userId: user.id,
         email: user.email,
@@ -251,10 +290,16 @@ export function authRouter(limiter: RequestHandler): Router {
       user.failedLogins = 0
       user.lockUntil = null
       await user.save()
+      await clearAllFactors(user.id)
       await revokeSessions(user.id)
       await ensurePersonalWorkspace(user.id)
       await startSession(req, res, user.id)
-      await recordSecurity({ userId: user.id, type: 'password-reset', summary: 'Password was reset.', ...requestAudit(req) })
+      await recordSecurity({
+        userId: user.id,
+        type: 'password-reset',
+        summary: 'Password was reset. Two-factor authentication, recovery codes, and passkeys were removed and must be set up again.',
+        ...requestAudit(req),
+      })
       res.json(publicUser(user))
     }),
   )
@@ -395,16 +440,17 @@ export function authRouter(limiter: RequestHandler): Router {
     '/google',
     asyncHandler(async (req, res) => {
       if (!googleConfigured()) throw new HttpError(404, 'Google sign-in is not configured.')
-      const state = signJwt({ typ: 'google' }, '10m')
-      const redirect = `${appOrigin(req)}/api/auth/google/callback`
-      const url = new URL('https://accounts.google.com/o/oauth2/v2/auth')
-      url.searchParams.set('client_id', process.env.GOOGLE_CLIENT_ID ?? '')
-      url.searchParams.set('redirect_uri', redirect)
-      url.searchParams.set('response_type', 'code')
-      url.searchParams.set('scope', 'openid email profile')
-      url.searchParams.set('state', state)
-      url.searchParams.set('prompt', 'select_account')
-      res.redirect(url.toString())
+      res.redirect(googleAuthUrl(req, signJwt({ typ: 'google' }, '10m')))
+    }),
+  )
+
+  router.get(
+    '/google/link',
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      if (!googleConfigured()) throw new HttpError(404, 'Google sign-in is not configured.')
+      await requireFreshStepUp(req.sessionId)
+      res.redirect(googleAuthUrl(req, signJwt({ typ: 'google-link', sub: currentUserId(req) }, '10m')))
     }),
   )
 
@@ -417,17 +463,11 @@ export function authRouter(limiter: RequestHandler): Router {
       const fail = () => {
         res.redirect('/login?error=google')
       }
-      try {
-        const payload = verifyJwt(state)
-        if (!payload || payload.typ !== 'google' || !code) {
-          fail()
-          return
-        }
-      } catch {
+      const payload = verifyJwt(state)
+      if (!payload || (payload.typ !== 'google' && payload.typ !== 'google-link') || !code) {
         fail()
         return
       }
-      const redirect = `${appOrigin(req)}/api/auth/google/callback`
       const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -435,7 +475,7 @@ export function authRouter(limiter: RequestHandler): Router {
           code,
           client_id: process.env.GOOGLE_CLIENT_ID ?? '',
           client_secret: process.env.GOOGLE_CLIENT_SECRET ?? '',
-          redirect_uri: redirect,
+          redirect_uri: googleRedirectUri(req),
           grant_type: 'authorization_code',
         }),
         signal: AbortSignal.timeout(8_000),
@@ -468,13 +508,31 @@ export function authRouter(limiter: RequestHandler): Router {
         fail()
         return
       }
+      if (payload.typ === 'google-link') {
+        const linked = await linkGoogleFromSession(req, typeof payload.sub === 'string' ? payload.sub : '', profile.sub, email)
+        if (!linked) {
+          fail()
+          return
+        }
+        res.redirect('/settings')
+        return
+      }
       let user = await users.byGoogle(profile.sub)
-      if (!user) user = await users.byEmail(email)
-      if (user) {
-        if (!user.googleId) user.googleId = profile.sub
-        if (!user.emailVerifiedAt) user.emailVerifiedAt = new Date()
-        await user.save()
-      } else {
+      if (!user) {
+        const existing = await users.byEmail(email)
+        if (existing) {
+          if (!existing.emailVerifiedAt || (existing.googleId && existing.googleId !== profile.sub)) {
+            fail()
+            return
+          }
+          if (!existing.googleId) {
+            existing.googleId = profile.sub
+            await existing.save()
+          }
+          user = existing
+        }
+      }
+      if (!user) {
         user = await users.create({
           name: (profile.name || email.split('@')[0] || 'Align').slice(0, 80),
           email,

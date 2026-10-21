@@ -120,8 +120,8 @@ export const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
   }
   if (isRecord(error) && error.code === 11000) {
     const pattern = isRecord(error.keyPattern) ? error.keyPattern : null
-    if (!pattern || 'email' in pattern) {
-      res.status(409).json({ error: 'An account with this email already exists.' })
+    if (!pattern || ('email' in pattern && !('workspaceId' in pattern))) {
+      res.status(409).json({ error: "We couldn't create an account with those details." })
       return
     }
     res.status(409).json({ error: 'That record already exists.' })

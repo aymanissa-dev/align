@@ -1,6 +1,6 @@
 import { Types } from 'mongoose'
 import { HttpError } from '../errors.ts'
-import { Membership, User, Workspace } from '../models.ts'
+import { Invite, Membership, User, Workspace } from '../models.ts'
 import { isRole, type Role } from '../authz.ts'
 import type { Tenant } from './tenant.ts'
 import { withTransaction } from './txn.ts'
@@ -146,12 +146,29 @@ export async function createSharedWorkspace(userId: string, name: string) {
 
 export async function addMember(actor: Tenant, email: string, role: Role) {
   if (!isRole(role) || role === 'owner') throw new HttpError(400, 'Choose admin, member, or viewer.')
-  const user = await User.findOne({ email })
-  if (!user) throw new HttpError(404, 'No account uses that email.')
+  const normalized = email.trim().toLowerCase()
+  const user = await User.findOne({ email: normalized })
+  if (!user) {
+    await Invite.findOneAndUpdate(
+      { workspaceId: actor.workspaceId, email: normalized },
+      { $set: { role }, $setOnInsert: { workspaceId: actor.workspaceId, email: normalized } },
+      { upsert: true },
+    )
+    return { email: normalized, role }
+  }
   const existing = await Membership.findOne({ workspaceId: actor.workspaceId, userId: user._id })
-  if (existing) throw new HttpError(409, 'That person is already in this workspace.')
-  await Membership.create({ workspaceId: actor.workspaceId, userId: user._id, role })
-  return { userId: user.id, email: user.email, name: user.name, role }
+  if (!existing) await Membership.create({ workspaceId: actor.workspaceId, userId: user._id, role })
+  return { email: user.email, role: existing?.role ?? role }
+}
+
+/** Turn pending invites into memberships once the address has an account. */
+export async function claimInvites(userId: string, email: string): Promise<void> {
+  const invites = await Invite.find({ email: email.trim().toLowerCase() })
+  for (const invite of invites) {
+    const existing = await Membership.findOne({ workspaceId: invite.workspaceId, userId })
+    if (!existing) await Membership.create({ workspaceId: invite.workspaceId, userId, role: invite.role })
+    await invite.deleteOne()
+  }
 }
 
 export async function changeMemberRole(actor: Tenant, memberId: string, role: Role) {

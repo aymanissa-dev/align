@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/auth-context.ts'
 import { api } from '../api/index.ts'
-import type { AuthSession } from '../api/types.ts'
+import type { AuthSession, Passkey } from '../api/types.ts'
 import { useToast } from '../components/toast-context.ts'
 import { PageHeader } from '../components/chrome.tsx'
 import { AccentPicker, ThemeToggle } from '../components/ThemeControls.tsx'
@@ -35,6 +35,7 @@ export function SettingsPage() {
   const [emailError, setEmailError] = useState('')
   const [savingEmail, setSavingEmail] = useState(false)
   const [revokeMode, setRevokeMode] = useState<'all' | 'others' | null>(null)
+  const [accountPasskeys, setAccountPasskeys] = useState<Passkey[]>([])
   const [revokePassword, setRevokePassword] = useState('')
   const [revoking, setRevoking] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -81,6 +82,22 @@ export function SettingsPage() {
       document.removeEventListener('visibilitychange', onVisible)
     }
   }, [])
+
+  useEffect(() => {
+    if (revokeMode !== 'all') return
+    let cancelled = false
+    void api
+      .listPasskeys()
+      .then((next) => {
+        if (!cancelled) setAccountPasskeys(next)
+      })
+      .catch(() => {
+        if (!cancelled) setAccountPasskeys([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [revokeMode])
 
   if (!user) return null
 
@@ -475,7 +492,7 @@ export function SettingsPage() {
         body={
           revokeMode === 'others'
             ? 'Enter your password to sign out every other device. This browser stays signed in.'
-            : 'Enter your password to sign out every device, including this one.'
+            : 'Enter your password to sign out every device, including this one. Signing out does not remove authenticator codes or passkeys.'
         }
         confirmLabel={revokeMode === 'others' ? 'Sign out other sessions' : 'Sign out everywhere'}
         pending={revoking}
@@ -484,6 +501,20 @@ export function SettingsPage() {
           if (!revoking) setRevokeMode(null)
         }}
       >
+        {revokeMode === 'all' ? (
+          <div className="mt-4 text-sm leading-6 text-neutral-800">
+            <p>Review the factors on this account before you continue.</p>
+            {accountPasskeys.length === 0 ? (
+              <p className="mt-2 text-neutral-500">No passkeys on this account. Authenticator codes, if any, stay until you turn them off.</p>
+            ) : (
+              <ul className="mt-2 list-disc pl-5" aria-label="Passkeys to review">
+                {accountPasskeys.map((passkey) => (
+                  <li key={passkey.id}>{passkey.name}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ) : null}
         <div className="mt-4">
           <Field label="Password" htmlFor="revoke-password">
             <Input

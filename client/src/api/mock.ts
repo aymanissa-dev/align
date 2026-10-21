@@ -489,7 +489,7 @@ export const mockApi = {
     if (!validEmail(email)) throw new ApiError(400, 'Enter a valid email.')
     requirePassword(input.password ?? '')
     if (state.users.some((user) => user.email === email)) {
-      throw new ApiError(409, 'An account with this email already exists.')
+      throw new ApiError(409, "We couldn't create an account with those details.")
     }
     const user: StoredUser = {
       id: uid('usr'),
@@ -1145,10 +1145,10 @@ export const mockApi = {
       }
     })
   },
-  async totpSetup() {
+  async totpSetup(_password: string) {
     return { secret: 'MOCKSECRET', otpauth: 'otpauth://totp/Align:mock', qr: '' }
   },
-  async totpConfirm() {
+  async totpConfirm(_code: string, _password: string) {
     return { recoveryCodes: ['abcde-fghij'] }
   },
   async totpDisable() {},

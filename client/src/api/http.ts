@@ -295,13 +295,16 @@ export const httpApi = {
   async deleteAccount(input) {
     await request<void>('/api/auth/me', { method: 'DELETE', body: JSON.stringify(input ?? {}) })
   },
-  totpSetup() {
-    return request<{ secret: string; otpauth: string; qr: string }>('/api/auth/totp/setup', { method: 'POST' })
+  totpSetup(password) {
+    return request<{ secret: string; otpauth: string; qr: string }>('/api/auth/totp/setup', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    })
   },
-  totpConfirm(code) {
+  totpConfirm(code, password) {
     return request<{ recoveryCodes: string[] }>('/api/auth/totp/confirm', {
       method: 'POST',
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, password }),
     })
   },
   async totpDisable(input) {

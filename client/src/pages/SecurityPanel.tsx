@@ -24,6 +24,7 @@ export function SecurityPanel() {
   const [passkeys, setPasskeys] = useState<Passkey[]>([])
   const [busy, setBusy] = useState(false)
   const [stepUpOpen, setStepUpOpen] = useState(false)
+  const [reviewSessions, setReviewSessions] = useState(false)
   const retryRef = useRef<(() => Promise<void>) | null>(null)
 
   useEffect(() => {
@@ -40,11 +41,22 @@ export function SecurityPanel() {
   }, [])
 
   async function onSetup() {
+    if (!password.trim()) {
+      toast('Enter your current password.')
+      return
+    }
     setBusy(true)
-    try {
-      const next = await api.totpSetup()
+    const save = async () => {
+      const next = await api.totpSetup(password)
       setSetup({ secret: next.secret, qr: next.qr })
+    }
+    try {
+      await save()
     } catch (caught) {
+      if (stepUpRequired(caught)) {
+        askStepUp(save)
+        return
+      }
       toast(errorMessage(caught))
     } finally {
       setBusy(false)
@@ -53,14 +65,25 @@ export function SecurityPanel() {
 
   async function onConfirm(event: FormEvent) {
     event.preventDefault()
+    if (!password.trim()) {
+      toast('Enter your current password.')
+      return
+    }
     setBusy(true)
-    try {
-      const next = await api.totpConfirm(code.trim())
+    const save = async () => {
+      const next = await api.totpConfirm(code.trim(), password)
       setCodes(next.recoveryCodes)
       setSetup(null)
       await invalidateSecurityLog()
       toast('Two-factor authentication is on')
+    }
+    try {
+      await save()
     } catch (caught) {
+      if (stepUpRequired(caught)) {
+        askStepUp(save)
+        return
+      }
       toast(errorMessage(caught))
     } finally {
       setBusy(false)
@@ -117,14 +140,47 @@ export function SecurityPanel() {
 
   async function onPasskey() {
     setBusy(true)
-    try {
+    const save = async () => {
       const options = await api.passkeyRegisterOptions()
       const credential = await startRegistration({ optionsJSON: options as never })
       await api.passkeyRegisterVerify({ ...credential, name: 'This device' })
       setPasskeys(await api.listPasskeys())
+      setReviewSessions(true)
       await invalidateSecurityLog()
       toast('Passkey saved')
+    }
+    try {
+      await save()
     } catch (caught) {
+      if (stepUpRequired(caught)) {
+        askStepUp(save)
+        return
+      }
+      toast(errorMessage(caught))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function onRevokeOthers() {
+    if (!password.trim()) {
+      toast('Enter your current password.')
+      return
+    }
+    setBusy(true)
+    const save = async () => {
+      await api.revokeOtherSessions(password)
+      setReviewSessions(false)
+      await invalidateSecurityLog()
+      toast('Other sessions were signed out')
+    }
+    try {
+      await save()
+    } catch (caught) {
+      if (stepUpRequired(caught)) {
+        askStepUp(save)
+        return
+      }
       toast(errorMessage(caught))
     } finally {
       setBusy(false)
@@ -172,7 +228,7 @@ export function SecurityPanel() {
       ) : null}
       <div className="mt-4 space-y-3">
         <p className="text-sm leading-6 text-neutral-500">
-          Enter your current password to turn off the authenticator or replace recovery codes. A recent sign-in is not enough.
+          Enter your current password to set up an authenticator, add a passkey, turn off the authenticator, or replace recovery codes. A recent sign-in is not enough.
         </p>
         <Field label="Current password" htmlFor="security-password">
           <Input
@@ -192,8 +248,11 @@ export function SecurityPanel() {
           </Button>
         </div>
       </div>
-      {passkeys.length > 0 ? (
-        <ul className="mt-4 divide-y divide-neutral-200 border border-neutral-200">
+      <h3 className="mt-6 font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Passkeys</h3>
+      {passkeys.length === 0 ? (
+        <p className="mt-2 text-sm text-neutral-500">No passkeys on this account.</p>
+      ) : (
+        <ul className="mt-2 divide-y divide-neutral-200 border border-neutral-200" aria-label="Passkeys">
           {passkeys.map((passkey) => (
             <li key={passkey.id} className="flex items-center justify-between px-3 py-2 text-sm">
               <span>{passkey.name}</span>
@@ -220,6 +279,16 @@ export function SecurityPanel() {
             </li>
           ))}
         </ul>
+      )}
+      {reviewSessions ? (
+        <div className="mt-4 border border-neutral-200 p-3">
+          <p className="text-sm leading-6 text-neutral-800">
+            A passkey was added. Signing out other sessions does not remove it. If you do not recognize a passkey above, remove it, then sign out the other sessions.
+          </p>
+          <Button className="mt-3" variant="secondary" disabled={busy} onClick={() => void onRevokeOthers()}>
+            Sign out other sessions
+          </Button>
+        </div>
       ) : null}
       <h3 className="mt-6 font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Activity</h3>
       {eventsQuery.isPending ? null : events.length === 0 ? (
