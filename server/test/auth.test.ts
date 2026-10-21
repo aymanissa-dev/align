@@ -322,17 +322,25 @@ describe('auth', () => {
     expect((await request(app).post('/api/auth/login').send({ email, password: 'password12' })).status).toBe(200)
   })
 
-  it('locks an account after repeated failed logins', async () => {
+  it('returns 401 for the first ten failures and 429 only on the eleventh', async () => {
     const email = `lock-${crypto.randomUUID()}@align.test`
     await registerUser('Lock', email)
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      expect((await request(app).post('/api/auth/login').send({ email, password: 'wrong-password' })).status).toBe(401)
+    const previous = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    try {
+      for (let attempt = 1; attempt <= 10; attempt += 1) {
+        const response = await request(app).post('/api/auth/login').send({ email, password: 'wrong-password' })
+        expect(response.status, `failure ${attempt}`).toBe(401)
+        expect(response.body).toEqual({ error: 'Email or password is incorrect.' })
+      }
+      const locked = await request(app).post('/api/auth/login').send({ email, password: 'wrong-password' })
+      expect(locked.status).toBe(429)
+      expect(locked.body).toEqual({ error: 'Too many attempts. Try again later.' })
+      const retryAfter = Number(locked.headers['retry-after'])
+      expect(retryAfter).toBeGreaterThan(10 * 60)
+      expect(retryAfter).toBeLessThanOrEqual(15 * 60)
+    } finally {
+      process.env.NODE_ENV = previous
     }
-    const locked = await request(app).post('/api/auth/login').send({ email, password: 'password12' })
-    expect(locked.status).toBe(429)
-    expect(locked.body).toEqual({ error: 'Too many attempts. Try again later.' })
-    const retryAfter = Number(locked.headers['retry-after'])
-    expect(retryAfter).toBeGreaterThan(0)
-    expect(retryAfter).toBeLessThanOrEqual(120)
-  })
+  }, 30_000)
 })

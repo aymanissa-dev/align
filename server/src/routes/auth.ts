@@ -48,8 +48,6 @@ import {
   verifySchema,
 } from '../validate.ts'
 
-const LOCK_AFTER = 5
-
 function clientIp(req: Request): string {
   return req.ip || req.socket.remoteAddress || 'unknown'
 }
@@ -70,11 +68,6 @@ async function sendOrReveal(
   text: string,
 ): Promise<boolean> {
   return deliverMail({ to: email, subject, text })
-}
-
-function lockDelay(failures: number): number {
-  const steps = Math.min(6, Math.max(1, failures - LOCK_AFTER + 1))
-  return Math.min(60, 2 ** steps) * 60 * 1000
 }
 
 export function authRouter(limiter: RequestHandler): Router {
@@ -127,12 +120,6 @@ export function authRouter(limiter: RequestHandler): Router {
         throw error
       }
       markTiming(res, 'user', performance.now() - lookupStarted)
-      if (user?.lockUntil && user.lockUntil.getTime() > Date.now()) {
-        const seconds = Math.max(1, Math.ceil((user.lockUntil.getTime() - Date.now()) / 1000))
-        throw new HttpError(429, 'Too many attempts. Try again later.', {
-          headers: { 'Retry-After': String(seconds) },
-        })
-      }
       const dashboardPromise = (user ? dashboardForUser(user) : Promise.resolve(null)).catch(() => null)
       const deviceCheck = user ? prepareNewDevice(req, user.id) : undefined
       const bcryptStarted = performance.now()
@@ -142,9 +129,6 @@ export function authRouter(limiter: RequestHandler): Router {
       if (!user || !matches) {
         const failures = await recordLoginFailure(ip, input.email)
         if (user) {
-          user.failedLogins = (user.failedLogins ?? 0) + 1
-          if (user.failedLogins >= LOCK_AFTER) user.lockUntil = new Date(Date.now() + lockDelay(user.failedLogins))
-          await user.save()
           await recordSecurity({
             userId: user.id,
             type: 'sign-in-failed',

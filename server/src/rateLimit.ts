@@ -5,6 +5,12 @@ const WINDOW_MS = 15 * 60 * 1000
 const SUCCESS_WINDOW_MS = 60 * 1000
 const SUCCESS_MAX = 30
 
+/**
+ * Sign-in has one failure policy. A wrong password increments per-email and
+ * per-IP counters for 15 minutes. Counts of 3 through 10 only delay the 401.
+ * The 11th attempt in that window is the 429. A correct password clears the
+ * per-email counter. There is no second lock at five failures.
+ */
 const PRODUCTION_MAX: Record<'login' | 'register' | 'forgot' | 'reset', number> = {
   login: 10,
   register: 5,
@@ -96,7 +102,11 @@ export async function recordLoginSuccess(ip: string, email: string): Promise<voi
   await Promise.all(successKeys(ip, email).map((key) => hit(key, SUCCESS_WINDOW_MS)))
 }
 
-/** Back off a failed attempt. Successful sign-in does not wait. */
+/**
+ * Progressive delay for a wrong password, before the 15-minute window locks.
+ * The third failure waits 250ms and each later one adds another 250ms, up to 5s.
+ * Successful sign-in does not wait.
+ */
 export async function delayFailedAttempt(count: number): Promise<void> {
   if (process.env.NODE_ENV === 'test' || count <= 2) return
   const delay = Math.min(5_000, (count - 2) * 250)

@@ -2949,7 +2949,6 @@ async function consumeAuthToken(token, type) {
 }
 
 // src/routes/auth.ts
-var LOCK_AFTER = 5;
 function clientIp(req) {
   return req.ip || req.socket.remoteAddress || "unknown";
 }
@@ -2963,10 +2962,6 @@ function googleConfigured() {
 }
 async function sendOrReveal(email2, subject, text2) {
   return deliverMail({ to: email2, subject, text: text2 });
-}
-function lockDelay(failures) {
-  const steps = Math.min(6, Math.max(1, failures - LOCK_AFTER + 1));
-  return Math.min(60, 2 ** steps) * 60 * 1e3;
 }
 function authRouter(limiter) {
   const router = Router3();
@@ -3017,12 +3012,6 @@ ${link}`
         throw error;
       }
       markTiming(res, "user", performance.now() - lookupStarted);
-      if (user?.lockUntil && user.lockUntil.getTime() > Date.now()) {
-        const seconds = Math.max(1, Math.ceil((user.lockUntil.getTime() - Date.now()) / 1e3));
-        throw new HttpError(429, "Too many attempts. Try again later.", {
-          headers: { "Retry-After": String(seconds) }
-        });
-      }
       const dashboardPromise = (user ? dashboardForUser(user) : Promise.resolve(null)).catch(() => null);
       const deviceCheck = user ? prepareNewDevice(req, user.id) : void 0;
       const bcryptStarted = performance.now();
@@ -3032,9 +3021,6 @@ ${link}`
       if (!user || !matches) {
         const failures = await recordLoginFailure(ip, input.email);
         if (user) {
-          user.failedLogins = (user.failedLogins ?? 0) + 1;
-          if (user.failedLogins >= LOCK_AFTER) user.lockUntil = new Date(Date.now() + lockDelay(user.failedLogins));
-          await user.save();
           await recordSecurity({
             userId: user.id,
             type: "sign-in-failed",
