@@ -1,4 +1,4 @@
-import { lookup } from 'node:dns/promises'
+import { lookup, resolveTxt } from 'node:dns/promises'
 import mongoose from 'mongoose'
 
 type Prefix = { ip_prefix?: string; region?: string; service?: string }
@@ -69,7 +69,37 @@ async function detect(): Promise<string> {
       best = { bits, region: prefix.region, ec2 }
     }
   }
-  return best?.region ?? 'unmatched'
+  if (best) return best.region
+  const gcp = await matchGcp(ip).catch(() => null)
+  if (gcp) return gcp
+  return asnLabel(address)
+}
+
+async function matchGcp(ip: number): Promise<string | null> {
+  const response = await fetch('https://www.gstatic.com/ipranges/cloud.json', { signal: AbortSignal.timeout(4_000) })
+  if (!response.ok) return null
+  const body = (await response.json()) as { prefixes?: { ipv4Prefix?: string; scope?: string }[] }
+  let best: { bits: number; scope: string } | null = null
+  for (const prefix of body.prefixes ?? []) {
+    if (!prefix.ipv4Prefix || !prefix.scope || prefix.scope === 'global' || !inCidr(ip, prefix.ipv4Prefix)) continue
+    const bits = Number(prefix.ipv4Prefix.split('/')[1])
+    if (!best || bits > best.bits) best = { bits, scope: prefix.scope }
+  }
+  return best ? `gcp:${best.scope}` : null
+}
+
+async function asnLabel(address: string): Promise<string> {
+  try {
+    const reversed = address.split('.').reverse().join('.')
+    const records = await resolveTxt(`${reversed}.origin.asn.cymru.com`)
+    const text = records[0]?.join('') ?? ''
+    const asn = text.split('|')[0]?.trim()
+    const country = text.split('|')[2]?.trim()
+    if (!asn) return 'unmatched'
+    return `asn:${asn}:${country || 'unknown'}`
+  } catch {
+    return 'unmatched'
+  }
 }
 
 /** AWS region of the connected Atlas primary, or a short error code. The host is never returned. */

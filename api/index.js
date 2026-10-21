@@ -922,7 +922,7 @@ var csrfProtection = (req, res, next) => {
 };
 
 // src/dbRegion.ts
-import { lookup } from "node:dns/promises";
+import { lookup, resolveTxt } from "node:dns/promises";
 import mongoose3 from "mongoose";
 var cached = null;
 var pending = null;
@@ -986,7 +986,35 @@ async function detect() {
       best = { bits, region: prefix.region, ec2 };
     }
   }
-  return best?.region ?? "unmatched";
+  if (best) return best.region;
+  const gcp = await matchGcp(ip).catch(() => null);
+  if (gcp) return gcp;
+  return asnLabel(address);
+}
+async function matchGcp(ip) {
+  const response = await fetch("https://www.gstatic.com/ipranges/cloud.json", { signal: AbortSignal.timeout(4e3) });
+  if (!response.ok) return null;
+  const body = await response.json();
+  let best = null;
+  for (const prefix of body.prefixes ?? []) {
+    if (!prefix.ipv4Prefix || !prefix.scope || prefix.scope === "global" || !inCidr(ip, prefix.ipv4Prefix)) continue;
+    const bits = Number(prefix.ipv4Prefix.split("/")[1]);
+    if (!best || bits > best.bits) best = { bits, scope: prefix.scope };
+  }
+  return best ? `gcp:${best.scope}` : null;
+}
+async function asnLabel(address) {
+  try {
+    const reversed = address.split(".").reverse().join(".");
+    const records = await resolveTxt(`${reversed}.origin.asn.cymru.com`);
+    const text2 = records[0]?.join("") ?? "";
+    const asn = text2.split("|")[0]?.trim();
+    const country = text2.split("|")[2]?.trim();
+    if (!asn) return "unmatched";
+    return `asn:${asn}:${country || "unknown"}`;
+  } catch {
+    return "unmatched";
+  }
 }
 function atlasCloudRegion() {
   if (cached) return Promise.resolve(cached);
