@@ -1,4 +1,4 @@
-import { Router, type Request } from 'express'
+import { Router, type Request, type RequestHandler } from 'express'
 import QRCode from 'qrcode'
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server'
 import {
@@ -97,7 +97,7 @@ async function requireAccountPassword(req: Request, userId: string): Promise<voi
   }
 }
 
-export function mfaRouter(): Router {
+export function mfaRouter(limiter?: RequestHandler): Router {
   const router = Router()
 
   router.post(
@@ -172,6 +172,7 @@ export function mfaRouter(): Router {
 
   router.post(
     '/login/mfa',
+    ...(limiter ? [limiter] : []),
     asyncHandler(async (req, res) => {
       const input = parseBody(mfaSchema, req.body)
       const userId = pendingUser(req)

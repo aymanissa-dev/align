@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
 import jwt from 'jsonwebtoken'
+import request from 'supertest'
 import { describe, expect, it } from 'vitest'
+import { createApp } from '../src/app.ts'
 import { isRole, roleAtLeast } from '../src/authz.ts'
 import { csrfProtection } from '../src/csrf.ts'
 import { assertPasswordNotBreached, HIBP_TIMEOUT_MS, noteBreachedPassword, passwordIsBreached } from '../src/hibp.ts'
@@ -8,7 +10,7 @@ import { signJwt, verifyJwt } from '../src/keys.ts'
 import { isMediumPassword } from '../src/passwordPolicy.ts'
 import { HttpError } from '../src/errors.ts'
 import { clientIp } from '../src/clientIp.ts'
-import { authRouteStore, clearLoginFailures, enforceAuthLimit, guardLogin, recordLoginFailure, recordLoginSuccess } from '../src/rateLimit.ts'
+import { authRouteStore, bucketStart, clearLoginFailures, enforceAuthLimit, guardLogin, recordLoginFailure, recordLoginSuccess, REGISTER_DAY_MS, WINDOW_MS } from '../src/rateLimit.ts'
 import { RateLimit, SecurityEvent } from '../src/models.ts'
 import { accessFromRequest, coarseIp, deviceLabel, sessionExpired, stepUpFresh } from '../src/session.ts'
 import { generateRecoveryCodes, generateTotpSecret, totpAt, verifyTotp } from '../src/totp.ts'
@@ -206,8 +208,9 @@ describe('auth units', () => {
 
       await RateLimit.create({
         key: `register:ip:${dayIp}:day`,
+        windowStart: bucketStart(REGISTER_DAY_MS),
         count: 20,
-        expiresAt: new Date(Date.now() + 60_000),
+        expiresAt: new Date(bucketStart(REGISTER_DAY_MS) + REGISTER_DAY_MS),
       })
       await expect(enforceAuthLimit('register', dayIp, 'day@align.test')).rejects.toMatchObject({ status: 429 })
       expect(await RateLimit.findOne({ key: 'register:email:day@align.test' })).toBeNull()
@@ -220,8 +223,9 @@ describe('auth units', () => {
     const ip = `203.0.113.${Math.floor(Math.random() * 200) + 1}`
     await RateLimit.create({
       key: `login:ip:${ip}`,
+      windowStart: bucketStart(WINDOW_MS),
       count: 10,
-      expiresAt: new Date(Date.now() + 60_000),
+      expiresAt: new Date(bucketStart(WINDOW_MS) + WINDOW_MS),
     })
     const previous = process.env.NODE_ENV
     process.env.NODE_ENV = 'production'
@@ -278,7 +282,7 @@ describe('auth units', () => {
         const locked = error as HttpError
         expect(locked.status).toBe(429)
         const retryAfter = Number(locked.headers['Retry-After'])
-        expect(retryAfter).toBeGreaterThan(10 * 60)
+        expect(retryAfter).toBeGreaterThan(0)
         expect(retryAfter).toBeLessThanOrEqual(15 * 60)
       }
     } finally {
@@ -316,8 +320,9 @@ describe('auth units', () => {
     const email = `window-${crypto.randomUUID()}@align.test`
     await RateLimit.create({
       key: `login:email:${email}`,
+      windowStart: bucketStart(WINDOW_MS),
       count: 10,
-      expiresAt: new Date(Date.now() + 6 * 60 * 1000),
+      expiresAt: new Date(bucketStart(WINDOW_MS) + WINDOW_MS),
     })
     const previous = process.env.NODE_ENV
     process.env.NODE_ENV = 'production'
@@ -329,10 +334,66 @@ describe('auth units', () => {
       const locked = error as HttpError
       expect(locked.status).toBe(429)
       const retryAfter = Number(locked.headers['Retry-After'])
-      expect(retryAfter).toBeGreaterThan(5 * 60)
-      expect(retryAfter).toBeLessThanOrEqual(6 * 60)
+      expect(retryAfter).toBeGreaterThan(0)
+      expect(retryAfter).toBeLessThanOrEqual(15 * 60)
     } finally {
       process.env.NODE_ENV = previous
+    }
+  })
+
+  it('shares the register cap across two app instances', async () => {
+    const previous = process.env.NODE_ENV
+    const previousVercel = process.env.VERCEL
+    process.env.NODE_ENV = 'production'
+    process.env.VERCEL = '1'
+    const original = globalThis.fetch
+    globalThis.fetch = (async () => new Response('', { status: 200 })) as typeof fetch
+    try {
+      const first = createApp()
+      const second = createApp()
+      const ip = '203.0.113.77'
+      let remaining = 60
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const created = await request(attempt % 2 === 0 ? first : second)
+          .post('/api/auth/register')
+          .set('x-real-ip', ip)
+          .set('x-forwarded-for', '198.51.100.77')
+          .send({
+            name: 'Cap',
+            email: `cap-${attempt}-${crypto.randomUUID()}@align.test`,
+            password: 'password12',
+          })
+        expect(created.status).toBe(201)
+        const nextRemaining = Number(created.headers['ratelimit-remaining'])
+        expect(nextRemaining).toBe(remaining - 1)
+        remaining = nextRemaining
+      }
+      const blocked = await request(second)
+        .post('/api/auth/register')
+        .set('x-real-ip', ip)
+        .set('x-forwarded-for', '198.51.100.77')
+        .send({
+          name: 'Cap',
+          email: `cap-blocked-${crypto.randomUUID()}@align.test`,
+          password: 'password12',
+        })
+      expect(blocked.status).toBe(429)
+      expect(blocked.body).toEqual({ error: 'Too many attempts. Try again later.' })
+      expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0)
+      const other = await request(first)
+        .post('/api/auth/register')
+        .set('x-real-ip', '198.51.100.77')
+        .send({
+          name: 'Other',
+          email: `cap-other-${crypto.randomUUID()}@align.test`,
+          password: 'password12',
+        })
+      expect(other.status).toBe(201)
+    } finally {
+      globalThis.fetch = original
+      process.env.NODE_ENV = previous
+      if (previousVercel === undefined) delete process.env.VERCEL
+      else process.env.VERCEL = previousVercel
     }
   })
 })

@@ -1,6 +1,5 @@
 import compression from 'compression'
 import express, { type Express } from 'express'
-import rateLimit from 'express-rate-limit'
 import helmet from 'helmet'
 import mongoose from 'mongoose'
 import type { HealthReport } from '../../shared/contract.ts'
@@ -26,8 +25,7 @@ import { privateRevalidate } from './httpCache.ts'
 import { errorHandler } from './middleware.ts'
 import { guardOrigin } from './security.ts'
 import { APP_VERSION, MINIMUM_CLIENT_VERSION } from './version.ts'
-import { clientIp } from './clientIp.ts'
-import { AUTH_ROUTE_LIMIT, authRouteStore } from './rateLimit.ts'
+import { AUTH_ROUTE_LIMIT, authRouteLimiter } from './rateLimit.ts'
 import { authRouter } from './routes/auth.ts'
 import { dashboardRouter } from './routes/dashboard.ts'
 import { labelsRouter } from './routes/labels.ts'
@@ -142,18 +140,12 @@ export function createApp(options: AppOptions = {}): Express {
     )
   })
 
-  const authLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: options.authRateLimitMax ?? (process.env.NODE_ENV === 'production' ? AUTH_ROUTE_LIMIT : 1000),
-    standardHeaders: true,
-    legacyHeaders: false,
-    keyGenerator: (req) => clientIp(req),
-    store: authRouteStore(),
-    message: { error: 'Too many attempts. Try again later.' },
-  })
+  const authLimiter = authRouteLimiter(
+    options.authRateLimitMax ?? (process.env.NODE_ENV === 'production' ? AUTH_ROUTE_LIMIT : 1000),
+  )
 
   const auth = authRouter(authLimiter)
-  auth.use(mfaRouter())
+  auth.use(mfaRouter(authLimiter))
   app.use('/api/auth', auth)
   app.use('/api/workspaces', workspacesRouter())
   app.use('/api/trash', trashRouter())

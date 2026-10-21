@@ -1,9 +1,11 @@
+import type { RequestHandler } from 'express'
+import { clientIp } from './clientIp.ts'
 import { HttpError } from './errors.ts'
 import { RateLimit } from './models.ts'
 
-const WINDOW_MS = 15 * 60 * 1000
-const REGISTER_WINDOW_MS = 60 * 60 * 1000
-const REGISTER_DAY_MS = 24 * 60 * 60 * 1000
+export const WINDOW_MS = 15 * 60 * 1000
+export const REGISTER_WINDOW_MS = 60 * 60 * 1000
+export const REGISTER_DAY_MS = 24 * 60 * 60 * 1000
 const REGISTER_HOUR_MAX = 5
 const REGISTER_DAY_MAX = 20
 const SUCCESS_WINDOW_MS = 60 * 1000
@@ -25,6 +27,32 @@ const PRODUCTION_MAX: Record<'login' | 'reset', number> = {
 }
 
 type Bucket = { count: number; expiresAt: Date }
+
+/** Start of the fixed window that contains `now`, aligned to the epoch. */
+export function bucketStart(windowMs: number, now = Date.now()): number {
+  return Math.floor(now / windowMs) * windowMs
+}
+
+let indexesReady: Promise<void> | null = null
+
+/** Unique key+window and a TTL on expiry, created before the first increment. */
+export function ensureRateLimitIndexes(): Promise<void> {
+  indexesReady ??= (async () => {
+    const collection = RateLimit.collection
+    const indexes = await collection.indexes()
+    if (indexes.some((index) => index.name === 'RateLimitKey')) await collection.dropIndex('RateLimitKey')
+    if (!indexes.some((index) => index.name === 'RateLimitWindow')) {
+      await collection.createIndex({ key: 1, windowStart: 1 }, { unique: true, name: 'RateLimitWindow' })
+    }
+    if (!indexes.some((index) => index.expireAfterSeconds === 0 && index.key?.expiresAt === 1)) {
+      await collection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0, name: 'RateLimitExpire' })
+    }
+  })().catch((error: unknown) => {
+    indexesReady = null
+    throw error
+  })
+  return indexesReady
+}
 
 function duplicateKey(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 11000
@@ -63,38 +91,69 @@ export function authRouteStore() {
       return { totalHits: bucket.count, resetTime: bucket.expiresAt }
     },
     async decrement(key: string) {
-      await RateLimit.updateOne({ key: storageKey(key), count: { $gt: 0 } }, { $inc: { count: -1 } })
+      await RateLimit.updateOne(
+        { key: storageKey(key), windowStart: bucketStart(windowMs), count: { $gt: 0 } },
+        { $inc: { count: -1 } },
+      )
     },
     async resetKey(key: string) {
-      await RateLimit.deleteOne({ key: storageKey(key) })
+      await RateLimit.deleteOne({ key: storageKey(key), windowStart: bucketStart(windowMs) })
     },
   }
 }
 
+/**
+ * One Mongo document per key and window. The increment is a single upsert, so
+ * two processes cannot keep separate counts.
+ */
 async function hit(key: string, windowMs = WINDOW_MS): Promise<Bucket> {
-  const now = Date.now()
-  const expiresAt = new Date(now + windowMs)
-  let doc
+  await ensureRateLimitIndexes()
+  const start = bucketStart(windowMs)
+  const expiresAt = new Date(start + windowMs)
   try {
-    doc = await RateLimit.findOneAndUpdate(
-      { key },
+    const doc = await RateLimit.findOneAndUpdate(
+      { key, windowStart: start },
       { $inc: { count: 1 }, $setOnInsert: { expiresAt } },
       { upsert: true, new: true },
     )
+    return { count: doc?.count ?? 1, expiresAt: doc?.expiresAt ?? expiresAt }
   } catch (error) {
     if (!duplicateKey(error)) throw error
-    doc = await RateLimit.findOneAndUpdate({ key }, { $inc: { count: 1 } }, { new: true })
+    const doc = await RateLimit.findOneAndUpdate({ key, windowStart: start }, { $inc: { count: 1 } }, { new: true })
+    return { count: doc?.count ?? 1, expiresAt: doc?.expiresAt ?? expiresAt }
   }
-  if (doc && doc.expiresAt.getTime() <= now) {
-    doc = await RateLimit.findOneAndUpdate({ key }, { $set: { count: 1, expiresAt } }, { new: true })
-  }
-  return { count: doc?.count ?? 1, expiresAt: doc?.expiresAt ?? expiresAt }
 }
 
-async function readActive(key: string): Promise<Bucket | null> {
-  const doc = await RateLimit.findOne({ key }).lean<{ count: number; expiresAt: Date } | null>()
+async function readActive(key: string, windowMs: number): Promise<Bucket | null> {
+  const doc = await RateLimit.findOne({ key, windowStart: bucketStart(windowMs) }).lean<{
+    count: number
+    expiresAt: Date
+  } | null>()
   if (!doc || doc.expiresAt.getTime() <= Date.now()) return null
   return { count: doc.count, expiresAt: doc.expiresAt }
+}
+
+/** Shared cap in front of auth routes. There is no in-memory store. */
+export function authRouteLimiter(max: number): RequestHandler {
+  const store = authRouteStore()
+  store.init({ windowMs: WINDOW_MS })
+  return (req, res, next) => {
+    store
+      .increment(clientIp(req) || 'unknown')
+      .then((bucket) => {
+        const resetSeconds = Math.max(1, Math.ceil((bucket.resetTime.getTime() - Date.now()) / 1000))
+        res.setHeader('RateLimit-Limit', String(max))
+        res.setHeader('RateLimit-Remaining', String(Math.max(0, max - bucket.totalHits)))
+        res.setHeader('RateLimit-Reset', String(resetSeconds))
+        if (bucket.totalHits > max) {
+          res.setHeader('Retry-After', String(resetSeconds))
+          res.status(429).json({ error: 'Too many attempts. Try again later.' })
+          return
+        }
+        next()
+      })
+      .catch(next)
+  }
 }
 
 function rejectIfAtLeast(hits: Array<Bucket | null>, max: number): void {
@@ -111,10 +170,15 @@ function rejectIfAtLeast(hits: Array<Bucket | null>, max: number): void {
  * Reading does not increment either counter.
  */
 export async function guardLogin(ip: string, email: string): Promise<void> {
-  const keys = [...failureKeys(ip, email), ...successKeys(ip, email)]
-  const [failIp, failEmail, okIp, okEmail] = await Promise.all(keys.map((key) => readActive(key)))
-  rejectIfAtLeast([failIp ?? null, failEmail ?? null], loginFailureMax())
-  rejectIfAtLeast([okIp ?? null, okEmail ?? null], loginSuccessMax())
+  const safeIp = ip || 'unknown'
+  const [failIp, failEmail, okIp, okEmail] = await Promise.all([
+    readActive(`login:fail:ip:${safeIp}`, WINDOW_MS),
+    readActive(`login:fail:email:${email}`, WINDOW_MS),
+    readActive(`login:ok:ip:${safeIp}`, SUCCESS_WINDOW_MS),
+    readActive(`login:ok:email:${email}`, SUCCESS_WINDOW_MS),
+  ])
+  rejectIfAtLeast([failIp, failEmail], loginFailureMax())
+  rejectIfAtLeast([okIp, okEmail], loginSuccessMax())
 }
 
 /** Count one wrong password toward the per-email and per-IP failure windows. */
@@ -125,7 +189,7 @@ export async function recordLoginFailure(ip: string, email: string): Promise<num
 
 /** A correct password clears the per-email failure window. The shared IP counter stays. */
 export async function clearLoginFailures(email: string): Promise<void> {
-  await RateLimit.deleteOne({ key: `login:fail:email:${email}` })
+  await RateLimit.deleteOne({ key: `login:fail:email:${email}`, windowStart: bucketStart(WINDOW_MS) })
 }
 
 /** Count a correct password against the separate per-minute success budget. */
@@ -205,7 +269,7 @@ function mfaMax(): number {
 
 /** Refuse a two-factor attempt that already used its failure budget. */
 export async function guardMfa(ip: string, userId: string): Promise<void> {
-  const hits = await Promise.all(mfaKeys(ip, userId).map((key) => readActive(key)))
+  const hits = await Promise.all(mfaKeys(ip, userId).map((key) => readActive(key, WINDOW_MS)))
   rejectIfAtLeast(hits, mfaMax())
 }
 
@@ -216,5 +280,5 @@ export async function recordMfaFailure(ip: string, userId: string): Promise<numb
 }
 
 export async function clearMfaFailures(userId: string): Promise<void> {
-  await RateLimit.deleteOne({ key: `mfa:fail:user:${userId}` })
+  await RateLimit.deleteOne({ key: `mfa:fail:user:${userId}`, windowStart: bucketStart(WINDOW_MS) })
 }

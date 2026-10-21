@@ -1040,6 +1040,7 @@ try {
   await page.locator('#password').fill(resetPassword)
   await page.locator('#confirm').fill(resetPassword)
   await page.locator('#account-recovery-key').fill(recoveryKey)
+  await page.locator('#reset-code').fill(totpCode(secret))
   await page.getByRole('button', { name: 'Reset password' }).click()
   await continuePastRecoveryKey(page)
   await page.getByLabel('Primary').getByRole('link', { name: 'Settings' }).waitFor()

@@ -91,15 +91,16 @@ export async function consumeRecoveryCode(userId: string, code: string): Promise
   return Boolean(updated)
 }
 
-/** Password reset drops every second factor so a reset cannot be held hostage. */
-export async function clearAllFactors(userId: string): Promise<void> {
-  const user = await User.findById(userId).select('+totpSecret +recoveryCodes')
-  if (!user) return
-  user.totpSecret = null
-  user.totpEnabledAt = null
-  user.set('recoveryCodes', [])
-  await user.save()
-  await Passkey.deleteMany({ userId })
+export async function notifyPasswordReset(userId: string): Promise<void> {
+  await Notification.create({
+    userId,
+    kind: 'password-reset',
+    title: 'Your password was reset',
+    projectName: '',
+    dueDate: '',
+    read: false,
+    key: `password-reset:${randomBytes(8).toString('hex')}`,
+  })
 }
 
 export async function notifyPasskeyAdded(userId: string): Promise<void> {

@@ -1,7 +1,9 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { Types } from 'mongoose'
-import { Passkey, User } from '../models.ts'
+import mongoose, { Types } from 'mongoose'
+import { recoveryHash } from './factors.ts'
+import { User } from '../models.ts'
 import { hashToken } from '../session.ts'
+import { verifyTotp } from '../totp.ts'
 
 const DUMMY_KEY = 'align-missing-recovery-key'
 
@@ -31,59 +33,70 @@ export async function rejectUnknownRecovery(presented: string): Promise<void> {
   await User.findOneAndUpdate({ _id: new Types.ObjectId(), recoveryKeyHash: hash }, { $set: { failedLogins: 0 } })
 }
 
-/**
- * Replace the stored key only when `presented` matches. The new key is the
- * only copy; the caller must show it once.
- */
-export async function consumeAccountRecoveryKey(
-  userId: string,
-  presented: string,
-  passwordHash: string,
-): Promise<string | null> {
-  const key = generateRecoveryKey()
-  const updated = await User.findOneAndUpdate(
-    { _id: userId, recoveryKeyHash: hashRecoveryKey(presented) },
-    {
-      $set: {
-        recoveryKeyHash: hashRecoveryKey(key),
-        passwordHash,
-        failedLogins: 0,
-        lockUntil: null,
-        pendingVerification: false,
-      },
-    },
-  )
-  return updated ? key : null
-}
-
-export async function saveResetPassword(userId: string, passwordHash: string): Promise<void> {
-  await User.updateOne(
-    { _id: userId },
-    { $set: { passwordHash, failedLogins: 0, lockUntil: null, pendingVerification: false } },
-  )
-}
-
 export async function issueRecoveryKey(userId: string): Promise<string> {
   const key = generateRecoveryKey()
   await User.updateOne({ _id: userId }, { $set: { recoveryKeyHash: hashRecoveryKey(key) } })
   return key
 }
 
-/** Drop every factor except the one that authorized this reset. */
-export async function clearFactorsAfterReset(
-  userId: string,
-  method: 'recovery-key' | 'totp-code' | 'passkey',
-  passkeyId?: string,
-): Promise<void> {
-  if (method !== 'totp-code') {
-    await User.updateOne(
-      { _id: userId },
-      { $set: { totpSecret: null, totpEnabledAt: null, recoveryCodes: [] } },
-    )
+class ResetRejected extends Error {}
+
+const DUMMY_TOTP = 'JBSWY3DPEHPK3PXP'
+
+/**
+ * Rotate the recovery key and save the new password only when the recovery key
+ * matches. A 2FA account also needs a current authenticator code or an unused
+ * 2FA recovery code, consumed in the same transaction. TOTP and passkeys stay.
+ */
+export async function resetWithRecoveryKey(input: {
+  userId: string
+  presentedKey: string
+  passwordHash: string
+  code: string
+}): Promise<string | null> {
+  const session = await mongoose.startSession()
+  const nextKey = generateRecoveryKey()
+  try {
+    await session.withTransaction(async () => {
+      const fresh = await User.findOne({ _id: input.userId, recoveryKeyHash: hashRecoveryKey(input.presentedKey) })
+        .select('+passwordHash +totpSecret +recoveryCodes +recoveryKeyHash')
+        .session(session)
+      if (!fresh) throw new ResetRejected()
+      if (fresh.totpEnabledAt) {
+        const totpOk = Boolean(fresh.totpSecret && verifyTotp(fresh.totpSecret, input.code))
+        if (!totpOk) {
+          const spent = await User.findOneAndUpdate(
+            {
+              _id: input.userId,
+              recoveryCodes: { $elemMatch: { hash: recoveryHash(input.code), usedAt: null } },
+            },
+            { $set: { 'recoveryCodes.$.usedAt': new Date() } },
+            { session },
+          )
+          if (!spent) throw new ResetRejected()
+        }
+      } else {
+        verifyTotp(DUMMY_TOTP, input.code || '000000')
+      }
+      await User.updateOne(
+        { _id: input.userId },
+        {
+          $set: {
+            passwordHash: input.passwordHash,
+            recoveryKeyHash: hashRecoveryKey(nextKey),
+            failedLogins: 0,
+            lockUntil: null,
+            pendingVerification: false,
+          },
+        },
+        { session },
+      )
+    })
+    return nextKey
+  } catch (error) {
+    if (error instanceof ResetRejected) return null
+    throw error
+  } finally {
+    await session.endSession()
   }
-  if (method === 'passkey' && passkeyId) {
-    await Passkey.deleteMany({ userId, _id: { $ne: passkeyId } })
-    return
-  }
-  await Passkey.deleteMany({ userId })
 }

@@ -31,7 +31,6 @@ export type User = {
   name: string
   email: string
   accent: string
-  emailVerified?: boolean
   createdAt: string
 }
 
@@ -100,7 +99,7 @@ export type Project = {
 }
 
 export type ActivityType = 'create' | 'update' | 'delete' | 'complete'
-export type NotificationKind = 'due-soon' | 'overdue' | 'new-device' | 'passkey-added'
+export type NotificationKind = 'due-soon' | 'overdue' | 'new-device' | 'passkey-added' | 'password-reset'
 
 export type ActivityEvent = {
   id: string
@@ -276,11 +275,7 @@ export interface AlignApi {
   /** GET /api/auth/session — 200 even when signed out */
   session(): Promise<User | null>
   /** POST /api/auth/reset */
-  resetPassword(input: { email: string; password: string; recoveryKey?: string; code?: string }): Promise<RecoverySession>
-  /** POST /api/auth/reset/passkey/options */
-  passkeyResetOptions(): Promise<unknown>
-  /** POST /api/auth/reset/passkey */
-  resetWithPasskey(input: { password: string; response: unknown }): Promise<RecoverySession>
+  resetPassword(input: { email: string; password: string; recoveryKey: string; code?: string }): Promise<RecoverySession>
   /** GET /api/auth/me */
   me(): Promise<User>
   /** PATCH /api/auth/me */

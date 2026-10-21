@@ -74,7 +74,7 @@ export async function auditHotQueries(): Promise<string[]> {
     ),
     check('ActivityExpire', Activity.find({ expireAt: { $lte: new Date() } }).hint('ActivityExpire')),
     check('SessionToken', Session.find({ tokenHash: 'abc' }).hint('SessionToken')),
-    check('RateLimitKey', RateLimit.find({ key: 'login:ip:203.0.113.0' }).hint('RateLimitKey')),
+    check('RateLimitWindow', RateLimit.find({ key: 'login:ip:203.0.113.0', windowStart: 0 }).hint('RateLimitWindow')),
     check('MembershipByUser', Membership.find({ userId, workspaceId }).hint('MembershipByUser')),
     check(
       'SecurityEventUser',

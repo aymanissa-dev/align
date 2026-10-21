@@ -302,12 +302,6 @@ export const httpApi = {
   resetPassword(input) {
     return request<RecoverySession>('/api/auth/reset', { method: 'POST', body: JSON.stringify(input) })
   },
-  passkeyResetOptions() {
-    return request<unknown>('/api/auth/reset/passkey/options', { method: 'POST' })
-  },
-  resetWithPasskey(input) {
-    return request<RecoverySession>('/api/auth/reset/passkey', { method: 'POST', body: JSON.stringify(input) })
-  },
   me() {
     return request<User>('/api/auth/me')
   },

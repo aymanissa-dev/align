@@ -12,7 +12,6 @@ const userSchema = new Schema(
     accent: { type: String, default: '#171717' },
     resetTokenHash: { type: String, select: false },
     resetTokenExpires: { type: Date, select: false },
-    emailVerifiedAt: { type: Date, default: null },
     pendingVerification: { type: Boolean, default: false },
     failedLogins: { type: Number, default: 0 },
     lockUntil: { type: Date, default: null },
@@ -167,7 +166,7 @@ const notificationSchema = new Schema(
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     projectId: { type: Schema.Types.ObjectId, ref: 'Project', default: null },
     taskId: { type: Schema.Types.ObjectId, ref: 'Task', default: null },
-    kind: { type: String, enum: ['due-soon', 'overdue', 'new-device', 'passkey-added'], required: true },
+    kind: { type: String, enum: ['due-soon', 'overdue', 'new-device', 'passkey-added', 'password-reset'], required: true },
     title: { type: String, required: true },
     projectName: { type: String, default: '' },
     dueDate: { type: String, default: '' },
@@ -232,13 +231,14 @@ tokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 })
 const rateLimitSchema = new Schema(
   {
     key: { type: String, required: true },
+    windowStart: { type: Number, required: true },
     count: { type: Number, required: true, default: 0 },
     expiresAt: { type: Date, required: true },
   },
   { timestamps: false },
 )
-rateLimitSchema.index({ key: 1 }, { unique: true, name: 'RateLimitKey' })
-rateLimitSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 })
+rateLimitSchema.index({ key: 1, windowStart: 1 }, { unique: true, name: 'RateLimitWindow' })
+rateLimitSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0, name: 'RateLimitExpire' })
 
 const workspaceSchema = new Schema(
   {

@@ -54,7 +54,7 @@ describe('security review', () => {
     expect((await agent.post('/api/auth/totp/confirm').send({ code, password })).status).toBe(200)
   })
 
-  it('clears every factor when a password is reset', async () => {
+  it('keeps two-factor authentication and passkeys when a recovery key and authenticator code reset the password', async () => {
     const { agent, email, password, id, recoveryKey } = await registerUser()
     expect((await agent.post('/api/auth/step-up').send({ password })).status).toBe(204)
     const setup = await agent.post('/api/auth/totp/setup').send({ password })
@@ -67,16 +67,21 @@ describe('security review', () => {
       counter: 0,
       name: 'Laptop',
     })
-    const reset = await request(app).post('/api/auth/reset').send({ email, password: 'password123', recoveryKey })
+    const keyOnly = await request(app).post('/api/auth/reset').send({ email, password: 'password123', recoveryKey })
+    expect(keyOnly.status).toBe(400)
+    expect(keyOnly.body).toEqual({ error: "Those details don't match." })
+    const reset = await request(app)
+      .post('/api/auth/reset')
+      .send({ email, password: 'password123', recoveryKey, code })
     expect(reset.status).toBe(200)
     const user = await User.findById(id).select('+totpSecret +recoveryCodes')
-    expect(user?.totpEnabledAt ?? null).toBeNull()
-    expect(user?.totpSecret ?? null).toBeNull()
-    expect(user?.recoveryCodes ?? []).toEqual([])
-    expect(await Passkey.countDocuments({ userId: id })).toBe(0)
+    expect(user?.totpEnabledAt).toBeTruthy()
+    expect(user?.totpSecret).toBeTruthy()
+    expect(user?.recoveryCodes?.length).toBeGreaterThan(0)
+    expect(await Passkey.countDocuments({ userId: id })).toBe(1)
     expect((await agent.get('/api/auth/me')).status).toBe(401)
     const event = await SecurityEvent.findOne({ userId: id, type: 'password-reset' })
-    expect(event?.summary).toMatch(/passkeys were removed/)
+    expect(event?.summary).toMatch(/new recovery key/)
     const fresh = await Session.findOne({ userId: id, revokedAt: null, replacedBy: null })
     expect(fresh?.stepUpAt ?? null).toBeNull()
   })
@@ -100,12 +105,11 @@ describe('security review', () => {
       expect(refused.headers.location).toBe('/login?error=google')
       expect((await User.findById(id))?.googleId ?? null).toBeNull()
 
-      await User.updateOne({ _id: id }, { emailVerifiedAt: new Date() })
       const again = await request(app).get('/api/auth/google')
       const verifiedState = new URL(again.headers.location as string).searchParams.get('state')
-      const linked = await request(app).get(`/api/auth/google/callback?code=abc&state=${encodeURIComponent(verifiedState ?? '')}`)
-      expect(linked.headers.location).toBe('/')
-      expect((await User.findById(id))?.googleId).toBe(profile.sub)
+      const stillRefused = await request(app).get(`/api/auth/google/callback?code=abc&state=${encodeURIComponent(verifiedState ?? '')}`)
+      expect(stillRefused.headers.location).toBe('/login?error=google')
+      expect((await User.findById(id))?.googleId ?? null).toBeNull()
 
       const other = await registerUser('Other')
       profile = { sub: `sub-${crypto.randomUUID()}`, email: other.email, email_verified: true, name: 'Other' }
@@ -118,7 +122,12 @@ describe('security review', () => {
       expect(done.headers.location).toBe('/settings')
       const saved = await User.findById(other.id)
       expect(saved?.googleId).toBe(profile.sub)
-      expect(saved?.emailVerifiedAt).toBeTruthy()
+      profile = { ...profile, email_verified: false }
+      const unverifiedStart = await other.agent.get('/api/auth/google/link')
+      const unverifiedState = new URL(unverifiedStart.headers.location as string).searchParams.get('state')
+      const unverified = await other.agent.get(`/api/auth/google/callback?code=abc&state=${encodeURIComponent(unverifiedState ?? '')}`)
+      expect(unverified.headers.location).toBe('/login?error=google')
+      expect((await User.findById(other.id))?.googleId).toBe(profile.sub)
     } finally {
       globalThis.fetch = original
       delete process.env.GOOGLE_CLIENT_ID

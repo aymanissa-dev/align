@@ -9,7 +9,6 @@ export {
   loginSchema,
   noteCreateSchema,
   notePatchSchema,
-  passkeyResetSchema,
   passwordSchema,
   priorities,
   profileSchema,

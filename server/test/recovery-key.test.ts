@@ -1,7 +1,6 @@
 import request from 'supertest'
 import { describe, expect, it } from 'vitest'
-import { clearFactorsAfterReset } from '../src/data/recoveryKey.ts'
-import { Passkey, SecurityEvent, Session, User } from '../src/models.ts'
+import { Notification, Passkey, SecurityEvent, Session, User } from '../src/models.ts'
 import { totpAt } from '../src/totp.ts'
 import { app, registerUser } from './helpers.ts'
 
@@ -23,16 +22,38 @@ describe('account recovery keys', () => {
     expect(await Session.countDocuments({ userId: id, revokedAt: null })).toBe(1)
     const fresh = await Session.findOne({ userId: id, revokedAt: null })
     expect(fresh?.stepUpAt ?? null).toBeNull()
+    expect(await SecurityEvent.findOne({ userId: id, type: 'password-reset' })).toBeTruthy()
+    expect(await Notification.findOne({ userId: id, kind: 'password-reset' })).toBeTruthy()
   })
 
-  it('keeps the authenticator when a two-factor recovery code resets the password', async () => {
+  it('resets with the recovery key alone when two-factor authentication is off and keeps passkeys', async () => {
+    const { email, id, recoveryKey } = await registerUser()
+    await Passkey.create({
+      userId: id,
+      credentialId: `cred-${crypto.randomUUID()}`,
+      publicKey: Buffer.from([1]),
+      counter: 0,
+      name: 'Phone',
+    })
+    const codeOnly = await request(app).post('/api/auth/reset').send({ email, password: 'password123', code: 'abcde-fghij' })
+    expect(codeOnly.status).toBe(400)
+    expect(codeOnly.body).toEqual({ error: "Those details don't match." })
+    const reset = await request(app).post('/api/auth/reset').send({ email, password: 'password123', recoveryKey })
+    expect(reset.status).toBe(200)
+    expect(reset.body.recoveryKey).not.toBe(recoveryKey)
+    expect(await Passkey.countDocuments({ userId: id })).toBe(1)
+    expect((await request(app).post('/api/auth/login').send({ email, password: 'password123' })).status).toBe(200)
+  })
+
+  it('requires the recovery key and a second factor when two-factor authentication is on', async () => {
     const { agent, email, password, id, recoveryKey } = await registerUser()
     expect((await agent.post('/api/auth/step-up').send({ password })).status).toBe(204)
     const setup = await agent.post('/api/auth/totp/setup').send({ password })
-    const code = totpAt(setup.body.secret as string, Math.floor(Date.now() / 1000 / 30))
-    const confirmed = await agent.post('/api/auth/totp/confirm').send({ code, password })
+    const totp = totpAt(setup.body.secret as string, Math.floor(Date.now() / 1000 / 30))
+    const confirmed = await agent.post('/api/auth/totp/confirm').send({ code: totp, password })
     expect(confirmed.status).toBe(200)
     const recoveryCode = confirmed.body.recoveryCodes[0] as string
+    const spare = confirmed.body.recoveryCodes[1] as string
     await Passkey.create({
       userId: id,
       credentialId: `cred-${crypto.randomUUID()}`,
@@ -40,45 +61,42 @@ describe('account recovery keys', () => {
       counter: 0,
       name: 'Phone',
     })
-    const reset = await request(app).post('/api/auth/reset').send({ email, password: 'password123', code: recoveryCode })
-    expect(reset.status).toBe(200)
-    expect(reset.body.recoveryKey).not.toBe(recoveryKey)
-    const user = await User.findById(id).select('+totpSecret +recoveryCodes +recoveryKeyHash')
-    expect(user?.totpEnabledAt).toBeTruthy()
-    expect(user?.totpSecret).toBeTruthy()
-    expect(user?.recoveryCodes?.some((entry) => entry.usedAt)).toBe(true)
-    expect(await Passkey.countDocuments({ userId: id })).toBe(0)
-    const reused = await request(app).post('/api/auth/reset').send({ email, password: 'password123', code: recoveryCode })
-    expect(reused.status).toBe(400)
-    expect((await request(app).post('/api/auth/reset').send({ email, password: 'password123', recoveryKey })).status).toBe(400)
-  })
 
-  it('keeps only the passkey that authorized the reset', async () => {
-    const { id } = await registerUser()
-    const kept = await Passkey.create({
-      userId: id,
-      credentialId: `keep-${crypto.randomUUID()}`,
-      publicKey: Buffer.from([1]),
-      counter: 0,
-      name: 'Kept',
-    })
-    await Passkey.create({
-      userId: id,
-      credentialId: `drop-${crypto.randomUUID()}`,
-      publicKey: Buffer.from([2]),
-      counter: 0,
-      name: 'Dropped',
-    })
-    await clearFactorsAfterReset(id, 'passkey', kept.id)
-    const remaining = await Passkey.find({ userId: id })
-    expect(remaining.map((passkey) => passkey.id)).toEqual([kept.id])
-    const garbage = await request(app).post('/api/auth/reset/passkey').send({ password: 'password123', response: { id: 'nope' } })
-    expect(garbage.status).toBe(400)
-    expect(garbage.body.error).toBe('Passkey response is invalid.')
-    const options = await request(app).post('/api/auth/reset/passkey/options').send({})
-    expect(options.status).toBe(200)
-    expect(options.body.challenge).toEqual(expect.any(String))
+    const codeAlone = await request(app).post('/api/auth/reset').send({ email, password: 'password123', code: recoveryCode })
+    expect(codeAlone.status).toBe(400)
+    const keyAlone = await request(app).post('/api/auth/reset').send({ email, password: 'password123', recoveryKey })
+    expect(keyAlone.status).toBe(400)
+    const wrongKey = await request(app)
+      .post('/api/auth/reset')
+      .send({ email, password: 'password123', recoveryKey: 'ffff-ffff-ffff-ffff-ffff-ffff-ffff-ffff', code: recoveryCode })
+    expect(wrongKey.status).toBe(400)
+    const stored = await User.findById(id).select('+recoveryCodes +recoveryKeyHash')
+    expect(stored?.recoveryCodes?.every((entry) => entry.usedAt == null)).toBe(true)
+    expect((await request(app).post('/api/auth/login').send({ email, password })).status).toBe(200)
+
+    const withCode = await request(app)
+      .post('/api/auth/reset')
+      .send({ email, password: 'password123', recoveryKey, code: recoveryCode })
+    expect(withCode.status).toBe(200)
+    expect(withCode.body.recoveryKey).not.toBe(recoveryKey)
+    const after = await User.findById(id).select('+totpSecret +recoveryCodes')
+    expect(after?.totpEnabledAt).toBeTruthy()
+    expect(after?.totpSecret).toBeTruthy()
+    expect(after?.recoveryCodes?.some((entry) => entry.usedAt)).toBe(true)
     expect(await Passkey.countDocuments({ userId: id })).toBe(1)
+    const reused = await request(app)
+      .post('/api/auth/reset')
+      .send({ email, password: 'password123', recoveryKey: withCode.body.recoveryKey, code: recoveryCode })
+    expect(reused.status).toBe(400)
+
+    const withTotp = await request(app)
+      .post('/api/auth/reset')
+      .send({ email, password: 'password1234', recoveryKey: withCode.body.recoveryKey, code: totp })
+    expect(withTotp.status).toBe(200)
+    const spareStillThere = await User.findById(id).select('+recoveryCodes')
+    expect(spareStillThere?.recoveryCodes?.filter((entry) => entry.usedAt == null).length).toBeGreaterThan(0)
+    expect(spare).toEqual(expect.any(String))
+    expect((await request(app).post('/api/auth/reset/passkey').send({ password: 'password123', response: {} })).status).toBe(404)
   })
 
   it('issues a replacement key from settings only after step-up', async () => {

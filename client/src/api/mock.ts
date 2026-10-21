@@ -154,7 +154,6 @@ function publicUser(user: StoredUser): User {
     name: user.name,
     email: user.email,
     accent: user.accent || '#171717',
-    emailVerified: true,
     createdAt: user.createdAt,
   }
 }
@@ -462,29 +461,9 @@ export const mockApi = {
     const user = state.users.find((item) => item.email === email)
     const presented = (input.recoveryKey ?? '').toLowerCase().replace(/[^a-f0-9]/g, '')
     const stored = (user?.recoveryKey ?? '').toLowerCase().replace(/[^a-f0-9]/g, '')
-    const code = (input.code ?? '').trim()
-    const matches = presented.length > 0 ? presented === stored : code.length > 0
-    if (!user || !matches) throw new ApiError(400, "Those details don't match.")
+    if (!user || !presented || presented !== stored) throw new ApiError(400, "Those details don't match.")
     user.password = password
     const recoveryKey = 'bbbb-cccc-dddd-eeee-ffff-1111-2222-3333'
-    user.recoveryKey = recoveryKey
-    state.sessionUserId = user.id
-    persist()
-    return { ...publicUser(user), recoveryKey }
-  },
-
-  async passkeyResetOptions() {
-    await wait()
-    return {}
-  },
-
-  async resetWithPasskey(input) {
-    await wait()
-    const state = load()
-    const user = state.users[0]
-    if (!user) throw new ApiError(400, "Those details don't match.")
-    user.password = requirePassword(input.password ?? '', 'New password')
-    const recoveryKey = 'cccc-dddd-eeee-ffff-1111-2222-3333-4444'
     user.recoveryKey = recoveryKey
     state.sessionUserId = user.id
     persist()

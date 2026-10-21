@@ -133,7 +133,7 @@ export function NotificationBell({ className, placement = 'down' }: { className?
             <ul className="max-h-80 overflow-y-auto">
               {items.map((item) => (
                 <li key={item.id} className="flex items-stretch border-b border-neutral-200 last:border-b-0">
-                  {item.kind === 'new-device' || item.kind === 'passkey-added' ? (
+                  {item.kind === 'new-device' || item.kind === 'passkey-added' || item.kind === 'password-reset' ? (
                     <div className={cn('min-w-0 flex-1 px-3 py-3', item.read ? 'opacity-60' : '')}>
                       <p className="text-sm text-neutral-950">{item.title}</p>
                       <p className="mt-1 text-xs text-neutral-500">Security{item.projectName ? ` · ${item.projectName}` : ''}</p>

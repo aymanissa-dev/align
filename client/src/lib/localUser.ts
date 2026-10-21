@@ -20,7 +20,6 @@ export function readLocalUser(): User | null {
       name: parsed.name,
       email: parsed.email,
       accent: typeof parsed.accent === 'string' ? parsed.accent : '#171717',
-      emailVerified: parsed.emailVerified,
       createdAt: typeof parsed.createdAt === 'string' ? parsed.createdAt : '',
     }
   } catch {

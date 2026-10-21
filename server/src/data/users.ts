@@ -22,14 +22,13 @@ export const users = {
     name: string
     email: string
     passwordHash: string
-    emailVerifiedAt?: Date | null
     googleId?: string
     pendingVerification?: boolean
     recoveryKeyHash?: string | null
   }) {
     return User.create(doc)
   },
-  update(id: string, update: { name?: string; accent?: string; email?: string; emailVerifiedAt?: Date | null }) {
+  update(id: string, update: { name?: string; accent?: string; email?: string }) {
     return User.findByIdAndUpdate(id, update, { new: true })
   },
 }

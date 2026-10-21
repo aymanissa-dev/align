@@ -291,7 +291,7 @@ describe('sessions and second factors', () => {
     const changed = await agent.post('/api/auth/email').send({ email: next })
     expect(changed.status).toBe(200)
     expect(changed.body.email).toBe(next)
-    expect(changed.body.emailVerified).toBe(false)
+    expect(changed.body.emailVerified).toBeUndefined()
     expect(changed.body.verifyToken).toBeUndefined()
     expect((await agent.get('/api/auth/me')).body.email).toBe(next)
   })
@@ -391,7 +391,7 @@ describe('sessions and second factors', () => {
     const changedEmail = await agent.post('/api/auth/email').send({ email: nextEmail })
     expect(changedEmail.status).toBe(200)
     expect(changedEmail.body.email).toBe(nextEmail)
-    expect(changedEmail.body.emailVerified).toBe(false)
+    expect(changedEmail.body.emailVerified).toBeUndefined()
     expect((await agent.post('/api/auth/password').send({ newPassword: 'password123' })).status).toBe(400)
     expect((await agent.post('/api/auth/password').send({ currentPassword: '   ', newPassword: 'password123' })).status).toBe(400)
 

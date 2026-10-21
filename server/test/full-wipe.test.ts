@@ -40,7 +40,12 @@ describe('full wipe migration', () => {
       passwordHash: await hashPassword('password12'),
       recoveryKeyHash: 'hashed-recovery-key',
     })
-    await RateLimit.create({ key: 'register:ip:203.0.113.10', count: 2, expiresAt: new Date(Date.now() + 60_000) })
+    await RateLimit.create({
+      key: 'register:ip:203.0.113.10',
+      windowStart: Date.now(),
+      count: 2,
+      expiresAt: new Date(Date.now() + 60_000),
+    })
     const indexesBefore = (await User.collection.indexes()).map((index) => index.name).sort()
     const migrationsBefore = await mongoose.connection.db!.collection('migrations').countDocuments()
 

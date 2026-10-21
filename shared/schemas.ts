@@ -39,21 +39,16 @@ export const registerSchema = z.object({
   password: password(),
 })
 
-export const passkeyResetSchema = z.object({
+export const resetSchema = z.object({
+  email,
   password: password('New password'),
-  response: z.record(z.unknown()),
+  recoveryKey: z
+    .string({ required_error: "Those details don't match.", invalid_type_error: "Those details don't match." })
+    .trim()
+    .min(1, "Those details don't match.")
+    .max(80, "Those details don't match."),
+  code: z.string().trim().max(32, "Those details don't match.").optional(),
 })
-
-export const resetSchema = z
-  .object({
-    email,
-    password: password('New password'),
-    recoveryKey: z.string().trim().max(80, 'Those details don\'t match.').optional(),
-    code: z.string().trim().max(32, 'Those details don\'t match.').optional(),
-  })
-  .refine((value) => Boolean(value.recoveryKey) !== Boolean(value.code), {
-    message: 'Use a recovery key or a two-factor recovery code.',
-  })
 
 export const loginSchema = z.object({
   email: z

@@ -1,18 +1,15 @@
 import { randomBytes } from 'node:crypto'
-import type { AuthenticationResponseJSON } from '@simplewebauthn/server'
 import { Router, type Request, type RequestHandler, type Response } from 'express'
 import { deleteAccount } from '../data/content.ts'
 import { dashboardForUser } from './dashboard.ts'
 import { assertCredentialPresent, requireSensitiveCredential } from './mfa.ts'
-import { consumeRecoveryCode, verifyPasskey, authenticationOptions } from '../data/factors.ts'
+import { consumeRecoveryCode, notifyPasswordReset } from '../data/factors.ts'
 import {
-  clearFactorsAfterReset,
-  consumeAccountRecoveryKey,
   generateRecoveryKey,
   hashRecoveryKey,
   issueRecoveryKey,
   rejectUnknownRecovery,
-  saveResetPassword,
+  resetWithRecoveryKey,
 } from '../data/recoveryKey.ts'
 import { clientIp } from '../clientIp.ts'
 import { claimInvites, ensurePersonalWorkspace, ownerClaims } from '../data/workspaces.ts'
@@ -46,11 +43,11 @@ import {
   startSession,
 } from '../session.ts'
 import { Types } from 'mongoose'
+import { verifyTotp } from '../totp.ts'
 import {
   emailChangeSchema,
   loginSchema,
   parseBody,
-  passkeyResetSchema,
   passwordSchema,
   profileSchema,
   registerSchema,
@@ -73,16 +70,7 @@ function appOrigin(req: Request): string {
 }
 
 const RECOVERY_MISMATCH = "Those details don't match."
-
-function asPasskeyAssertion(value: Record<string, unknown>): AuthenticationResponseJSON {
-  const nested = value.response
-  const clientDataJSON =
-    nested && typeof nested === 'object' && 'clientDataJSON' in nested ? nested.clientDataJSON : undefined
-  if (typeof value.id !== 'string' || typeof clientDataJSON !== 'string' || !clientDataJSON) {
-    throw new HttpError(400, 'Passkey response is invalid.')
-  }
-  return value as unknown as AuthenticationResponseJSON
-}
+const DUMMY_TOTP = 'JBSWY3DPEHPK3PXP'
 
 async function finishReset(req: Request, res: Response, userId: string, summary: string, recoveryKey: string) {
   await revokeSessions(userId)
@@ -94,6 +82,7 @@ async function finishReset(req: Request, res: Response, userId: string, summary:
     summary,
     ...requestAudit(req),
   })
+  await notifyPasswordReset(userId)
   const user = await users.byId(userId)
   if (!user) throw new HttpError(401, 'Sign in to continue.')
   res.json({ ...publicUser(user), recoveryKey, newDevice: started.newDevice })
@@ -131,7 +120,6 @@ async function linkGoogleFromSession(req: Request, userId: string, googleSub: st
   const taken = await users.byGoogle(googleSub)
   if (taken && taken.id !== account.id) return null
   account.googleId = googleSub
-  if (!account.emailVerifiedAt) account.emailVerifiedAt = new Date()
   await account.save()
   return account
 }
@@ -164,7 +152,6 @@ export function authRouter(limiter: RequestHandler): Router {
           name: input.name,
           email: input.email,
           passwordHash,
-          emailVerifiedAt: null,
           pendingVerification: false,
           recoveryKeyHash: hashRecoveryKey(recoveryKey),
         })
@@ -303,66 +290,26 @@ export function authRouter(limiter: RequestHandler): Router {
       await enforceAuthLimit('reset', clientIp(req), input.email)
       await assertPasswordNotBreached(input.password)
       const passwordHash = await hashPassword(input.password)
+      const code = input.code ?? ''
       const user = await users.byEmailSecret(input.email)
       if (!user) {
-        if (input.recoveryKey) await rejectUnknownRecovery(input.recoveryKey)
-        else await consumeRecoveryCode(new Types.ObjectId().toString(), input.code ?? '')
+        await rejectUnknownRecovery(input.recoveryKey)
+        verifyTotp(DUMMY_TOTP, code || '000000')
+        await consumeRecoveryCode(new Types.ObjectId().toString(), code || '000000')
         throw new HttpError(400, RECOVERY_MISMATCH)
       }
-      if (input.recoveryKey) {
-        const recoveryKey = await consumeAccountRecoveryKey(user.id, input.recoveryKey, passwordHash)
-        if (!recoveryKey) throw new HttpError(400, RECOVERY_MISMATCH)
-        await clearFactorsAfterReset(user.id, 'recovery-key')
-        await finishReset(
-          req,
-          res,
-          user.id,
-          'Password was reset with an account recovery key. Two-factor authentication and passkeys were removed. A new recovery key was issued.',
-          recoveryKey,
-        )
-        return
-      }
-      const spent = await consumeRecoveryCode(user.id, input.code ?? '')
-      if (!spent) throw new HttpError(400, RECOVERY_MISMATCH)
-      await saveResetPassword(user.id, passwordHash)
-      const recoveryKey = await issueRecoveryKey(user.id)
-      await clearFactorsAfterReset(user.id, 'totp-code')
+      const recoveryKey = await resetWithRecoveryKey({
+        userId: user.id,
+        presentedKey: input.recoveryKey,
+        passwordHash,
+        code,
+      })
+      if (!recoveryKey) throw new HttpError(400, RECOVERY_MISMATCH)
       await finishReset(
         req,
         res,
         user.id,
-        'Password was reset with a two-factor recovery code. Passkeys were removed. A new account recovery key was issued.',
-        recoveryKey,
-      )
-    }),
-  )
-
-  router.post(
-    '/reset/passkey/options',
-    limiter,
-    asyncHandler(async (req, res) => {
-      await enforceAuthLimit('reset', clientIp(req))
-      res.json(await authenticationOptions(req))
-    }),
-  )
-
-  router.post(
-    '/reset/passkey',
-    limiter,
-    asyncHandler(async (req, res) => {
-      const input = parseBody(passkeyResetSchema, req.body)
-      await enforceAuthLimit('reset', clientIp(req))
-      await assertPasswordNotBreached(input.password)
-      const passwordHash = await hashPassword(input.password)
-      const verified = await verifyPasskey(req, asPasskeyAssertion(input.response), 'login')
-      await saveResetPassword(verified.userId, passwordHash)
-      const recoveryKey = await issueRecoveryKey(verified.userId)
-      await clearFactorsAfterReset(verified.userId, 'passkey', verified.passkeyId)
-      await finishReset(
-        req,
-        res,
-        verified.userId,
-        'Password was reset with a passkey. Two-factor authentication and other passkeys were removed. A new recovery key was issued.',
+        'Password was reset with the account recovery key. Every session was signed out and a new recovery key was issued.',
         recoveryKey,
       )
     }),
@@ -562,23 +509,13 @@ export function authRouter(limiter: RequestHandler): Router {
       if (!user) {
         const existing = await users.byEmail(email)
         if (existing) {
-          if (!existing.emailVerifiedAt || (existing.googleId && existing.googleId !== profile.sub)) {
-            fail()
-            return
-          }
-          if (!existing.googleId) {
-            existing.googleId = profile.sub
-            await existing.save()
-          }
-          user = existing
+          fail()
+          return
         }
-      }
-      if (!user) {
         user = await users.create({
           name: (profile.name || email.split('@')[0] || 'Align').slice(0, 80),
           email,
           passwordHash: await hashPassword(randomBytes(32).toString('hex')),
-          emailVerifiedAt: new Date(),
           googleId: profile.sub,
         })
       }
@@ -622,7 +559,7 @@ export function authRouter(limiter: RequestHandler): Router {
       const next = input.email.trim().toLowerCase()
       const taken = await users.byEmail(next)
       if (taken && taken.id !== userId) throw new HttpError(409, 'An account already uses that email.')
-      const user = await users.update(userId, { email: next, emailVerifiedAt: null })
+      const user = await users.update(userId, { email: next })
       if (!user) throw new HttpError(401, 'Sign in to continue.')
       await recordSecurity({
         userId,

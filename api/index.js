@@ -1,9 +1,8 @@
 // src/app.ts
 import compression from "compression";
 import express from "express";
-import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import mongoose6 from "mongoose";
+import mongoose7 from "mongoose";
 
 // src/csrf.ts
 import { randomBytes as randomBytes2, timingSafeEqual } from "node:crypto";
@@ -116,7 +115,6 @@ var userSchema = new Schema(
     accent: { type: String, default: "#171717" },
     resetTokenHash: { type: String, select: false },
     resetTokenExpires: { type: Date, select: false },
-    emailVerifiedAt: { type: Date, default: null },
     pendingVerification: { type: Boolean, default: false },
     failedLogins: { type: Number, default: 0 },
     lockUntil: { type: Date, default: null },
@@ -264,7 +262,7 @@ var notificationSchema = new Schema(
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     projectId: { type: Schema.Types.ObjectId, ref: "Project", default: null },
     taskId: { type: Schema.Types.ObjectId, ref: "Task", default: null },
-    kind: { type: String, enum: ["due-soon", "overdue", "new-device", "passkey-added"], required: true },
+    kind: { type: String, enum: ["due-soon", "overdue", "new-device", "passkey-added", "password-reset"], required: true },
     title: { type: String, required: true },
     projectName: { type: String, default: "" },
     dueDate: { type: String, default: "" },
@@ -325,13 +323,14 @@ tokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 var rateLimitSchema = new Schema(
   {
     key: { type: String, required: true },
+    windowStart: { type: Number, required: true },
     count: { type: Number, required: true, default: 0 },
     expiresAt: { type: Date, required: true }
   },
   { timestamps: false }
 );
-rateLimitSchema.index({ key: 1 }, { unique: true, name: "RateLimitKey" });
-rateLimitSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+rateLimitSchema.index({ key: 1, windowStart: 1 }, { unique: true, name: "RateLimitWindow" });
+rateLimitSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0, name: "RateLimitExpire" });
 var workspaceSchema = new Schema(
   {
     name: { type: String, required: true },
@@ -1761,6 +1760,27 @@ var PRODUCTION_MAX = {
   login: 10,
   reset: 10
 };
+function bucketStart(windowMs, now = Date.now()) {
+  return Math.floor(now / windowMs) * windowMs;
+}
+var indexesReady2 = null;
+function ensureRateLimitIndexes() {
+  indexesReady2 ??= (async () => {
+    const collection = RateLimit.collection;
+    const indexes = await collection.indexes();
+    if (indexes.some((index) => index.name === "RateLimitKey")) await collection.dropIndex("RateLimitKey");
+    if (!indexes.some((index) => index.name === "RateLimitWindow")) {
+      await collection.createIndex({ key: 1, windowStart: 1 }, { unique: true, name: "RateLimitWindow" });
+    }
+    if (!indexes.some((index) => index.expireAfterSeconds === 0 && index.key?.expiresAt === 1)) {
+      await collection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0, name: "RateLimitExpire" });
+    }
+  })().catch((error) => {
+    indexesReady2 = null;
+    throw error;
+  });
+  return indexesReady2;
+}
 function duplicateKey2(error) {
   return typeof error === "object" && error !== null && "code" in error && error.code === 11e3;
 }
@@ -1789,36 +1809,55 @@ function authRouteStore() {
       return { totalHits: bucket.count, resetTime: bucket.expiresAt };
     },
     async decrement(key) {
-      await RateLimit.updateOne({ key: storageKey(key), count: { $gt: 0 } }, { $inc: { count: -1 } });
+      await RateLimit.updateOne(
+        { key: storageKey(key), windowStart: bucketStart(windowMs), count: { $gt: 0 } },
+        { $inc: { count: -1 } }
+      );
     },
     async resetKey(key) {
-      await RateLimit.deleteOne({ key: storageKey(key) });
+      await RateLimit.deleteOne({ key: storageKey(key), windowStart: bucketStart(windowMs) });
     }
   };
 }
 async function hit(key, windowMs = WINDOW_MS) {
-  const now = Date.now();
-  const expiresAt = new Date(now + windowMs);
-  let doc;
+  await ensureRateLimitIndexes();
+  const start = bucketStart(windowMs);
+  const expiresAt = new Date(start + windowMs);
   try {
-    doc = await RateLimit.findOneAndUpdate(
-      { key },
+    const doc = await RateLimit.findOneAndUpdate(
+      { key, windowStart: start },
       { $inc: { count: 1 }, $setOnInsert: { expiresAt } },
       { upsert: true, new: true }
     );
+    return { count: doc?.count ?? 1, expiresAt: doc?.expiresAt ?? expiresAt };
   } catch (error) {
     if (!duplicateKey2(error)) throw error;
-    doc = await RateLimit.findOneAndUpdate({ key }, { $inc: { count: 1 } }, { new: true });
+    const doc = await RateLimit.findOneAndUpdate({ key, windowStart: start }, { $inc: { count: 1 } }, { new: true });
+    return { count: doc?.count ?? 1, expiresAt: doc?.expiresAt ?? expiresAt };
   }
-  if (doc && doc.expiresAt.getTime() <= now) {
-    doc = await RateLimit.findOneAndUpdate({ key }, { $set: { count: 1, expiresAt } }, { new: true });
-  }
-  return { count: doc?.count ?? 1, expiresAt: doc?.expiresAt ?? expiresAt };
 }
-async function readActive(key) {
-  const doc = await RateLimit.findOne({ key }).lean();
+async function readActive(key, windowMs) {
+  const doc = await RateLimit.findOne({ key, windowStart: bucketStart(windowMs) }).lean();
   if (!doc || doc.expiresAt.getTime() <= Date.now()) return null;
   return { count: doc.count, expiresAt: doc.expiresAt };
+}
+function authRouteLimiter(max) {
+  const store = authRouteStore();
+  store.init({ windowMs: WINDOW_MS });
+  return (req, res, next) => {
+    store.increment(clientIp(req) || "unknown").then((bucket) => {
+      const resetSeconds = Math.max(1, Math.ceil((bucket.resetTime.getTime() - Date.now()) / 1e3));
+      res.setHeader("RateLimit-Limit", String(max));
+      res.setHeader("RateLimit-Remaining", String(Math.max(0, max - bucket.totalHits)));
+      res.setHeader("RateLimit-Reset", String(resetSeconds));
+      if (bucket.totalHits > max) {
+        res.setHeader("Retry-After", String(resetSeconds));
+        res.status(429).json({ error: "Too many attempts. Try again later." });
+        return;
+      }
+      next();
+    }).catch(next);
+  };
 }
 function rejectIfAtLeast(hits, max) {
   const now = Date.now();
@@ -1829,17 +1868,22 @@ function rejectIfAtLeast(hits, max) {
   throw new HttpError(429, "Too many attempts. Try again later.", { headers: { "Retry-After": String(seconds) } });
 }
 async function guardLogin(ip, email2) {
-  const keys = [...failureKeys(ip, email2), ...successKeys(ip, email2)];
-  const [failIp, failEmail, okIp, okEmail] = await Promise.all(keys.map((key) => readActive(key)));
-  rejectIfAtLeast([failIp ?? null, failEmail ?? null], loginFailureMax());
-  rejectIfAtLeast([okIp ?? null, okEmail ?? null], loginSuccessMax());
+  const safeIp = ip || "unknown";
+  const [failIp, failEmail, okIp, okEmail] = await Promise.all([
+    readActive(`login:fail:ip:${safeIp}`, WINDOW_MS),
+    readActive(`login:fail:email:${email2}`, WINDOW_MS),
+    readActive(`login:ok:ip:${safeIp}`, SUCCESS_WINDOW_MS),
+    readActive(`login:ok:email:${email2}`, SUCCESS_WINDOW_MS)
+  ]);
+  rejectIfAtLeast([failIp, failEmail], loginFailureMax());
+  rejectIfAtLeast([okIp, okEmail], loginSuccessMax());
 }
 async function recordLoginFailure(ip, email2) {
   const [, emailHit] = await Promise.all(failureKeys(ip, email2).map((key) => hit(key)));
   return emailHit?.count ?? 1;
 }
 async function clearLoginFailures(email2) {
-  await RateLimit.deleteOne({ key: `login:fail:email:${email2}` });
+  await RateLimit.deleteOne({ key: `login:fail:email:${email2}`, windowStart: bucketStart(WINDOW_MS) });
 }
 async function recordLoginSuccess(ip, email2) {
   await Promise.all(successKeys(ip, email2).map((key) => hit(key, SUCCESS_WINDOW_MS)));
@@ -1895,7 +1939,7 @@ function mfaMax() {
   return process.env.NODE_ENV === "production" ? MFA_MAX : 1e3;
 }
 async function guardMfa(ip, userId) {
-  const hits = await Promise.all(mfaKeys(ip, userId).map((key) => readActive(key)));
+  const hits = await Promise.all(mfaKeys(ip, userId).map((key) => readActive(key, WINDOW_MS)));
   rejectIfAtLeast(hits, mfaMax());
 }
 async function recordMfaFailure(ip, userId) {
@@ -1903,7 +1947,7 @@ async function recordMfaFailure(ip, userId) {
   return userHit?.count ?? 1;
 }
 async function clearMfaFailures(userId) {
-  await RateLimit.deleteOne({ key: `mfa:fail:user:${userId}` });
+  await RateLimit.deleteOne({ key: `mfa:fail:user:${userId}`, windowStart: bucketStart(WINDOW_MS) });
 }
 
 // src/routes/auth.ts
@@ -2456,6 +2500,17 @@ async function consumeRecoveryCode(userId, code) {
   );
   return Boolean(updated);
 }
+async function notifyPasswordReset(userId) {
+  await Notification.create({
+    userId,
+    kind: "password-reset",
+    title: "Your password was reset",
+    projectName: "",
+    dueDate: "",
+    read: false,
+    key: `password-reset:${randomBytes4(8).toString("hex")}`
+  });
+}
 async function notifyPasskeyAdded(userId) {
   await Notification.create({
     userId,
@@ -2648,7 +2703,6 @@ function publicUser(user) {
     name: user.name,
     email: user.email,
     accent: user.accent || "#171717",
-    emailVerified: user.emailVerifiedAt !== null,
     totpEnabled: Boolean(user.totpEnabledAt),
     createdAt: user.createdAt.toISOString()
   };
@@ -2803,17 +2857,11 @@ var registerSchema = z.object({
   email,
   password: password()
 });
-var passkeyResetSchema = z.object({
-  password: password("New password"),
-  response: z.record(z.unknown())
-});
 var resetSchema = z.object({
   email,
   password: password("New password"),
-  recoveryKey: z.string().trim().max(80, "Those details don't match.").optional(),
+  recoveryKey: z.string({ required_error: "Those details don't match.", invalid_type_error: "Those details don't match." }).trim().min(1, "Those details don't match.").max(80, "Those details don't match."),
   code: z.string().trim().max(32, "Those details don't match.").optional()
-}).refine((value) => Boolean(value.recoveryKey) !== Boolean(value.code), {
-  message: "Use a recovery key or a two-factor recovery code."
 });
 var loginSchema = z.object({
   email: z.string({
@@ -3026,7 +3074,7 @@ async function requireAccountPassword(req, userId) {
     throw new HttpError(400, "Current password is incorrect.");
   }
 }
-function mfaRouter() {
+function mfaRouter(limiter) {
   const router = Router2();
   router.post(
     "/totp/setup",
@@ -3096,6 +3144,7 @@ function mfaRouter() {
   );
   router.post(
     "/login/mfa",
+    ...limiter ? [limiter] : [],
     asyncHandler(async (req, res) => {
       const input = parseBody(mfaSchema, req.body);
       const userId = pendingUser(req);
@@ -3305,7 +3354,7 @@ function mfaRouter() {
 
 // src/data/recoveryKey.ts
 import { randomBytes as randomBytes5, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
-import { Types as Types6 } from "mongoose";
+import mongoose6, { Types as Types6 } from "mongoose";
 var DUMMY_KEY = "align-missing-recovery-key";
 function generateRecoveryKey() {
   const hex2 = randomBytes5(16).toString("hex");
@@ -3327,45 +3376,58 @@ async function rejectUnknownRecovery(presented) {
   sameHash(hash, hashRecoveryKey(DUMMY_KEY));
   await User.findOneAndUpdate({ _id: new Types6.ObjectId(), recoveryKeyHash: hash }, { $set: { failedLogins: 0 } });
 }
-async function consumeAccountRecoveryKey(userId, presented, passwordHash) {
-  const key = generateRecoveryKey();
-  const updated = await User.findOneAndUpdate(
-    { _id: userId, recoveryKeyHash: hashRecoveryKey(presented) },
-    {
-      $set: {
-        recoveryKeyHash: hashRecoveryKey(key),
-        passwordHash,
-        failedLogins: 0,
-        lockUntil: null,
-        pendingVerification: false
-      }
-    }
-  );
-  return updated ? key : null;
-}
-async function saveResetPassword(userId, passwordHash) {
-  await User.updateOne(
-    { _id: userId },
-    { $set: { passwordHash, failedLogins: 0, lockUntil: null, pendingVerification: false } }
-  );
-}
 async function issueRecoveryKey(userId) {
   const key = generateRecoveryKey();
   await User.updateOne({ _id: userId }, { $set: { recoveryKeyHash: hashRecoveryKey(key) } });
   return key;
 }
-async function clearFactorsAfterReset(userId, method, passkeyId) {
-  if (method !== "totp-code") {
-    await User.updateOne(
-      { _id: userId },
-      { $set: { totpSecret: null, totpEnabledAt: null, recoveryCodes: [] } }
-    );
+var ResetRejected = class extends Error {
+};
+var DUMMY_TOTP = "JBSWY3DPEHPK3PXP";
+async function resetWithRecoveryKey(input) {
+  const session = await mongoose6.startSession();
+  const nextKey = generateRecoveryKey();
+  try {
+    await session.withTransaction(async () => {
+      const fresh = await User.findOne({ _id: input.userId, recoveryKeyHash: hashRecoveryKey(input.presentedKey) }).select("+passwordHash +totpSecret +recoveryCodes +recoveryKeyHash").session(session);
+      if (!fresh) throw new ResetRejected();
+      if (fresh.totpEnabledAt) {
+        const totpOk = Boolean(fresh.totpSecret && verifyTotp(fresh.totpSecret, input.code));
+        if (!totpOk) {
+          const spent = await User.findOneAndUpdate(
+            {
+              _id: input.userId,
+              recoveryCodes: { $elemMatch: { hash: recoveryHash(input.code), usedAt: null } }
+            },
+            { $set: { "recoveryCodes.$.usedAt": /* @__PURE__ */ new Date() } },
+            { session }
+          );
+          if (!spent) throw new ResetRejected();
+        }
+      } else {
+        verifyTotp(DUMMY_TOTP, input.code || "000000");
+      }
+      await User.updateOne(
+        { _id: input.userId },
+        {
+          $set: {
+            passwordHash: input.passwordHash,
+            recoveryKeyHash: hashRecoveryKey(nextKey),
+            failedLogins: 0,
+            lockUntil: null,
+            pendingVerification: false
+          }
+        },
+        { session }
+      );
+    });
+    return nextKey;
+  } catch (error) {
+    if (error instanceof ResetRejected) return null;
+    throw error;
+  } finally {
+    await session.endSession();
   }
-  if (method === "passkey" && passkeyId) {
-    await Passkey.deleteMany({ userId, _id: { $ne: passkeyId } });
-    return;
-  }
-  await Passkey.deleteMany({ userId });
 }
 
 // src/hibp.ts
@@ -3426,14 +3488,7 @@ function appOrigin(req) {
   return `${req.protocol}://${req.get("host")}`;
 }
 var RECOVERY_MISMATCH = "Those details don't match.";
-function asPasskeyAssertion(value) {
-  const nested = value.response;
-  const clientDataJSON = nested && typeof nested === "object" && "clientDataJSON" in nested ? nested.clientDataJSON : void 0;
-  if (typeof value.id !== "string" || typeof clientDataJSON !== "string" || !clientDataJSON) {
-    throw new HttpError(400, "Passkey response is invalid.");
-  }
-  return value;
-}
+var DUMMY_TOTP2 = "JBSWY3DPEHPK3PXP";
 async function finishReset(req, res, userId, summary, recoveryKey) {
   await revokeSessions(userId);
   await ensurePersonalWorkspace(userId);
@@ -3444,6 +3499,7 @@ async function finishReset(req, res, userId, summary, recoveryKey) {
     summary,
     ...requestAudit(req)
   });
+  await notifyPasswordReset(userId);
   const user = await users.byId(userId);
   if (!user) throw new HttpError(401, "Sign in to continue.");
   res.json({ ...publicUser(user), recoveryKey, newDevice: started.newDevice });
@@ -3476,7 +3532,6 @@ async function linkGoogleFromSession(req, userId, googleSub, email2) {
   const taken = await users.byGoogle(googleSub);
   if (taken && taken.id !== account.id) return null;
   account.googleId = googleSub;
-  if (!account.emailVerifiedAt) account.emailVerifiedAt = /* @__PURE__ */ new Date();
   await account.save();
   return account;
 }
@@ -3505,7 +3560,6 @@ function authRouter(limiter) {
           name: input.name,
           email: input.email,
           passwordHash,
-          emailVerifiedAt: null,
           pendingVerification: false,
           recoveryKeyHash: hashRecoveryKey(recoveryKey)
         });
@@ -3636,64 +3690,26 @@ function authRouter(limiter) {
       await enforceAuthLimit("reset", clientIp(req), input.email);
       await assertPasswordNotBreached(input.password);
       const passwordHash = await hashPassword(input.password);
+      const code = input.code ?? "";
       const user = await users.byEmailSecret(input.email);
       if (!user) {
-        if (input.recoveryKey) await rejectUnknownRecovery(input.recoveryKey);
-        else await consumeRecoveryCode(new Types7.ObjectId().toString(), input.code ?? "");
+        await rejectUnknownRecovery(input.recoveryKey);
+        verifyTotp(DUMMY_TOTP2, code || "000000");
+        await consumeRecoveryCode(new Types7.ObjectId().toString(), code || "000000");
         throw new HttpError(400, RECOVERY_MISMATCH);
       }
-      if (input.recoveryKey) {
-        const recoveryKey2 = await consumeAccountRecoveryKey(user.id, input.recoveryKey, passwordHash);
-        if (!recoveryKey2) throw new HttpError(400, RECOVERY_MISMATCH);
-        await clearFactorsAfterReset(user.id, "recovery-key");
-        await finishReset(
-          req,
-          res,
-          user.id,
-          "Password was reset with an account recovery key. Two-factor authentication and passkeys were removed. A new recovery key was issued.",
-          recoveryKey2
-        );
-        return;
-      }
-      const spent = await consumeRecoveryCode(user.id, input.code ?? "");
-      if (!spent) throw new HttpError(400, RECOVERY_MISMATCH);
-      await saveResetPassword(user.id, passwordHash);
-      const recoveryKey = await issueRecoveryKey(user.id);
-      await clearFactorsAfterReset(user.id, "totp-code");
+      const recoveryKey = await resetWithRecoveryKey({
+        userId: user.id,
+        presentedKey: input.recoveryKey,
+        passwordHash,
+        code
+      });
+      if (!recoveryKey) throw new HttpError(400, RECOVERY_MISMATCH);
       await finishReset(
         req,
         res,
         user.id,
-        "Password was reset with a two-factor recovery code. Passkeys were removed. A new account recovery key was issued.",
-        recoveryKey
-      );
-    })
-  );
-  router.post(
-    "/reset/passkey/options",
-    limiter,
-    asyncHandler(async (req, res) => {
-      await enforceAuthLimit("reset", clientIp(req));
-      res.json(await authenticationOptions(req));
-    })
-  );
-  router.post(
-    "/reset/passkey",
-    limiter,
-    asyncHandler(async (req, res) => {
-      const input = parseBody(passkeyResetSchema, req.body);
-      await enforceAuthLimit("reset", clientIp(req));
-      await assertPasswordNotBreached(input.password);
-      const passwordHash = await hashPassword(input.password);
-      const verified = await verifyPasskey(req, asPasskeyAssertion(input.response), "login");
-      await saveResetPassword(verified.userId, passwordHash);
-      const recoveryKey = await issueRecoveryKey(verified.userId);
-      await clearFactorsAfterReset(verified.userId, "passkey", verified.passkeyId);
-      await finishReset(
-        req,
-        res,
-        verified.userId,
-        "Password was reset with a passkey. Two-factor authentication and other passkeys were removed. A new recovery key was issued.",
+        "Password was reset with the account recovery key. Every session was signed out and a new recovery key was issued.",
         recoveryKey
       );
     })
@@ -3878,23 +3894,13 @@ function authRouter(limiter) {
       if (!user) {
         const existing = await users.byEmail(email2);
         if (existing) {
-          if (!existing.emailVerifiedAt || existing.googleId && existing.googleId !== profile.sub) {
-            fail();
-            return;
-          }
-          if (!existing.googleId) {
-            existing.googleId = profile.sub;
-            await existing.save();
-          }
-          user = existing;
+          fail();
+          return;
         }
-      }
-      if (!user) {
         user = await users.create({
           name: (profile.name || email2.split("@")[0] || "Align").slice(0, 80),
           email: email2,
           passwordHash: await hashPassword(randomBytes6(32).toString("hex")),
-          emailVerifiedAt: /* @__PURE__ */ new Date(),
           googleId: profile.sub
         });
       }
@@ -3935,7 +3941,7 @@ function authRouter(limiter) {
       const next = input.email.trim().toLowerCase();
       const taken = await users.byEmail(next);
       if (taken && taken.id !== userId) throw new HttpError(409, "An account already uses that email.");
-      const user = await users.update(userId, { email: next, emailVerifiedAt: null });
+      const user = await users.update(userId, { email: next });
       if (!user) throw new HttpError(401, "Sign in to continue.");
       await recordSecurity({
         userId,
@@ -4349,7 +4355,7 @@ function notificationsRouter() {
       const tenant = currentTenant(req);
       const [rows, devices] = await Promise.all([
         dueRows(tenant, today),
-        bind(tenant).notifications.find({ kind: { $in: ["new-device", "passkey-added"] } }).sort({ createdAt: -1 }).limit(20).lean()
+        bind(tenant).notifications.find({ kind: { $in: ["new-device", "passkey-added", "password-reset"] } }).sort({ createdAt: -1 }).limit(20).lean()
       ]);
       const listed = [
         ...rows.map(present),
@@ -4357,7 +4363,7 @@ function notificationsRouter() {
           id: item._id.toString(),
           projectId: "",
           taskId: "",
-          kind: item.kind === "passkey-added" ? "passkey-added" : "new-device",
+          kind: item.kind === "passkey-added" ? "passkey-added" : item.kind === "password-reset" ? "password-reset" : "new-device",
           title: item.title,
           projectName: item.projectName ?? "",
           dueDate: "",
@@ -5093,7 +5099,7 @@ function createApp(options = {}) {
   app2.get("/api/health", (_req, res) => {
     const started = Date.now();
     connectDb().then(async () => {
-      const db = mongoose6.connection.db;
+      const db = mongoose7.connection.db;
       if (!db) throw new Error("Database is not connected.");
       await db.command({ ping: 1 });
     }).then(() => {
@@ -5108,7 +5114,7 @@ function createApp(options = {}) {
   });
   app2.get("/api/maintenance/wipe", (_req, res) => {
     connectDb().then(async () => {
-      const db = mongoose6.connection.db;
+      const db = mongoose7.connection.db;
       if (!db) throw new Error("Database is not connected.");
       const record = await db.collection("migrations").findOne(
         { id: FULL_WIPE },
@@ -5150,17 +5156,11 @@ function createApp(options = {}) {
       }
     );
   });
-  const authLimiter = rateLimit({
-    windowMs: 15 * 60 * 1e3,
-    max: options.authRateLimitMax ?? (process.env.NODE_ENV === "production" ? AUTH_ROUTE_LIMIT : 1e3),
-    standardHeaders: true,
-    legacyHeaders: false,
-    keyGenerator: (req) => clientIp(req),
-    store: authRouteStore(),
-    message: { error: "Too many attempts. Try again later." }
-  });
+  const authLimiter = authRouteLimiter(
+    options.authRateLimitMax ?? (process.env.NODE_ENV === "production" ? AUTH_ROUTE_LIMIT : 1e3)
+  );
   const auth = authRouter(authLimiter);
-  auth.use(mfaRouter());
+  auth.use(mfaRouter(authLimiter));
   app2.use("/api/auth", auth);
   app2.use("/api/workspaces", workspacesRouter());
   app2.use("/api/trash", trashRouter());

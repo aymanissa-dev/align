@@ -1,4 +1,3 @@
-import { startAuthentication } from '@simplewebauthn/browser'
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api/index.ts'
@@ -45,10 +44,8 @@ export function ForgotPasswordPage() {
       return
     }
     if (!validatePassword()) return
-    const key = recoveryKey.trim()
-    const recoveryCode = code.trim()
-    if (Boolean(key) === Boolean(recoveryCode)) {
-      setError('Use a recovery key or a two-factor recovery code.')
+    if (!recoveryKey.trim()) {
+      setError('Enter your account recovery key.')
       return
     }
     setPending(true)
@@ -56,26 +53,9 @@ export function ForgotPasswordPage() {
       const result = await api.resetPassword({
         email: email.trim(),
         password,
-        ...(key ? { recoveryKey: key } : { code: recoveryCode }),
+        recoveryKey: recoveryKey.trim(),
+        ...(code.trim() ? { code: code.trim() } : {}),
       })
-      const { recoveryKey: nextKey, ...user } = result
-      setIssuedKey(nextKey)
-      setSignedIn(user)
-    } catch (caught) {
-      setError(errorMessage(caught))
-    } finally {
-      setPending(false)
-    }
-  }
-
-  async function onPasskey() {
-    setError('')
-    if (!validatePassword()) return
-    setPending(true)
-    try {
-      const options = await api.passkeyResetOptions()
-      const credential = await startAuthentication({ optionsJSON: options as never })
-      const result = await api.resetWithPasskey({ password, response: credential })
       const { recoveryKey: nextKey, ...user } = result
       setIssuedKey(nextKey)
       setSignedIn(user)
@@ -97,7 +77,7 @@ export function ForgotPasswordPage() {
   return (
     <AuthFrame
       title="Reset password"
-      lede="Align does not send email. Reset with the account recovery key from signup, a two-factor recovery code, or a passkey on this device."
+      lede="A reset always needs the account recovery key from signup. If two-factor authentication is on, it also needs a current authenticator code or a two-factor recovery code. A code by itself cannot reset the password. Align does not send email. To change the password with a passkey, sign in with that passkey and confirm it is you in Settings."
     >
       <form onSubmit={onSubmit} className="space-y-4" noValidate>
         <Field label="Email" htmlFor="email">
@@ -143,11 +123,16 @@ export function ForgotPasswordPage() {
             spellCheck={false}
             value={recoveryKey}
             onChange={(event) => setRecoveryKey(event.target.value)}
+            required
           />
         </Field>
-        <Field label="Two-factor recovery code" htmlFor="recovery-code" hint="Fill either the account key or a two-factor code.">
+        <Field
+          label="Authenticator or two-factor recovery code"
+          htmlFor="reset-code"
+          hint="Required when two-factor authentication is on. Leave this blank otherwise."
+        >
           <Input
-            id="recovery-code"
+            id="reset-code"
             name="one-time-code"
             autoComplete="one-time-code"
             value={code}
@@ -161,9 +146,6 @@ export function ForgotPasswordPage() {
         ) : null}
         <Button type="submit" className="w-full" disabled={pending}>
           {pending ? 'Resetting…' : 'Reset password'}
-        </Button>
-        <Button type="button" variant="secondary" className="w-full" disabled={pending} onClick={() => void onPasskey()}>
-          Use a passkey
         </Button>
       </form>
       <p className="mt-6 text-sm text-neutral-500">

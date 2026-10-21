@@ -15,7 +15,6 @@ export function publicUser(user: UserDoc) {
     name: user.name,
     email: user.email,
     accent: user.accent || '#171717',
-    emailVerified: user.emailVerifiedAt !== null,
     totpEnabled: Boolean(user.totpEnabledAt),
     createdAt: user.createdAt.toISOString(),
   }
