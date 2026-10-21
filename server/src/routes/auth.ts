@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { Router, type Request, type RequestHandler } from 'express'
 import { deleteAccount } from '../data/content.ts'
+import { dashboardForUser } from './dashboard.ts'
 import { ensurePersonalWorkspace, ownerClaims } from '../data/workspaces.ts'
 import { users } from '../data/users.ts'
 import { recordSecurity } from '../data/securityLog.ts'
@@ -16,19 +17,18 @@ import {
   IDLE_MS,
   accessFromRequest,
   clearSession,
-  coarseIp,
   deviceLabel,
   listActiveSessions,
   loadSession,
-  markStepUp,
   renameSession,
+  requestAudit,
+  requireFreshStepUp,
   revokeRefreshCookie,
   revokeSessionById,
   revokeSessions,
   rotateRefresh,
   sessionExpired,
   startSession,
-  stepUpFresh,
 } from '../session.ts'
 import { consumeAuthToken, issueAuthToken } from '../tokens.ts'
 import {
@@ -48,21 +48,6 @@ const LOCK_AFTER = 5
 
 function clientIp(req: Request): string {
   return req.ip || req.socket.remoteAddress || 'unknown'
-}
-
-async function assertStepUp(req: Request, password?: string): Promise<void> {
-  const sessionId = req.sessionId
-  if (!sessionId) throw new HttpError(401, 'Sign in to continue.')
-  const session = await loadSession(sessionId)
-  if (session && stepUpFresh(session.stepUpAt)) return
-  if (password) {
-    const user = await users.byIdSecret(currentUserId(req))
-    if (user?.passwordHash && (await checkPassword(password, user.passwordHash))) {
-      await markStepUp(sessionId)
-      return
-    }
-  }
-  throw new HttpError(403, 'Confirm it is you to continue.', { code: 'step_up_required' })
 }
 
 function appOrigin(req: Request): string {
@@ -146,7 +131,7 @@ export function authRouter(limiter: RequestHandler): Router {
             userId: user.id,
             type: 'sign-in-failed',
             summary: 'A sign-in attempt used the wrong password.',
-            ipCoarse: coarseIp(req.ip),
+            ...requestAudit(req),
           }).catch(() => undefined)
         }
         await delayFailedAttempt(attempts)
@@ -170,13 +155,20 @@ export function authRouter(limiter: RequestHandler): Router {
         user.lockUntil = null
         await user.save()
       }
-      const started = await startSession(req, res, user.id, ownerClaims(user))
-      res.json({ ...publicUser(user), newDevice: started.newDevice })
+      const [started, dashboard] = await Promise.all([
+        startSession(req, res, user.id, ownerClaims(user)),
+        dashboardForUser(user),
+      ])
+      res.json({
+        ...publicUser(user),
+        newDevice: started.newDevice,
+        ...(dashboard ? { dashboard } : {}),
+      })
       void recordSecurity({
         userId: user.id,
         type: 'sign-in',
         summary: 'Signed in with a password.',
-        ipCoarse: coarseIp(req.ip),
+        ...requestAudit(req),
       })
       void watchBreachedPassword(user.id, input.password)
     }),
@@ -255,7 +247,7 @@ export function authRouter(limiter: RequestHandler): Router {
       await revokeSessions(user.id)
       await ensurePersonalWorkspace(user.id)
       await startSession(req, res, user.id)
-      await recordSecurity({ userId: user.id, type: 'password-reset', summary: 'Password was reset.', ipCoarse: coarseIp(req.ip) })
+      await recordSecurity({ userId: user.id, type: 'password-reset', summary: 'Password was reset.', ...requestAudit(req) })
       res.json(publicUser(user))
     }),
   )
@@ -340,7 +332,7 @@ export function authRouter(limiter: RequestHandler): Router {
         userId: currentUserId(req),
         type: 'session-revoked',
         summary: 'A session was revoked.',
-        ipCoarse: coarseIp(req.ip),
+        ...requestAudit(req),
       })
       if (session.id === req.sessionId) clearSession(res)
       res.status(204).send()
@@ -351,14 +343,13 @@ export function authRouter(limiter: RequestHandler): Router {
     '/sessions/revoke-all',
     requireAuth,
     asyncHandler(async (req, res) => {
-      const body = req.body as { password?: string } | undefined
-      await assertStepUp(req, typeof body?.password === 'string' ? body.password : undefined)
+      await requireFreshStepUp(req.sessionId)
       await revokeSessions(currentUserId(req))
       await recordSecurity({
         userId: currentUserId(req),
         type: 'sessions-revoked',
         summary: 'Every session was revoked.',
-        ipCoarse: coarseIp(req.ip),
+        ...requestAudit(req),
       })
       clearSession(res)
       res.status(204).send()
@@ -493,7 +484,11 @@ export function authRouter(limiter: RequestHandler): Router {
     asyncHandler(async (req, res) => {
       const input = parseBody(emailChangeSchema, req.body)
       const userId = currentUserId(req)
-      await assertStepUp(req, input.password)
+      await requireFreshStepUp(req.sessionId)
+      const secret = await users.byIdSecret(userId)
+      if (!secret?.passwordHash || !(await checkPassword(input.password, secret.passwordHash))) {
+        throw new HttpError(400, 'Current password is incorrect.')
+      }
       const next = input.email.trim().toLowerCase()
       const taken = await users.byEmail(next)
       if (taken && taken.id !== userId) throw new HttpError(409, 'An account already uses that email.')
@@ -503,7 +498,7 @@ export function authRouter(limiter: RequestHandler): Router {
         userId,
         type: 'email-changed',
         summary: 'The account email was changed.',
-        ipCoarse: coarseIp(req.ip),
+        ...requestAudit(req),
       })
       const token = await issueAuthToken(user.id, 'verify')
       const link = `${appOrigin(req)}/verify?token=${encodeURIComponent(token)}`
@@ -522,6 +517,7 @@ export function authRouter(limiter: RequestHandler): Router {
     requireAuth,
     asyncHandler(async (req, res) => {
       const input = parseBody(passwordSchema, req.body)
+      await requireFreshStepUp(req.sessionId)
       const user = await users.byIdSecret(currentUserId(req))
       if (!user?.passwordHash) throw new HttpError(401, 'Sign in to continue.')
       const matches = await checkPassword(input.currentPassword, user.passwordHash)
@@ -529,13 +525,12 @@ export function authRouter(limiter: RequestHandler): Router {
       await assertPasswordNotBreached(input.newPassword)
       user.passwordHash = await hashPassword(input.newPassword)
       await user.save()
-      if (req.sessionId) await markStepUp(req.sessionId)
       await revokeSessions(user.id, req.sessionId)
       await recordSecurity({
         userId: user.id,
         type: 'password-changed',
         summary: 'Password was changed.',
-        ipCoarse: coarseIp(req.ip),
+        ...requestAudit(req),
       })
       await rotateRefresh(req, res)
       res.status(204).send()
@@ -547,8 +542,7 @@ export function authRouter(limiter: RequestHandler): Router {
     requireAuth,
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req)
-      const body = req.body as { password?: string } | undefined
-      await assertStepUp(req, typeof body?.password === 'string' ? body.password : undefined)
+      await requireFreshStepUp(req.sessionId)
       await deleteAccount(userId)
       clearSession(res)
       res.status(204).send()
@@ -562,6 +556,12 @@ export function authRouter(limiter: RequestHandler): Router {
       const input = parseBody(sessionRenameSchema, req.body)
       const session = await renameSession(currentUserId(req), req.params.id, input.name)
       if (!session) throw new HttpError(404, 'Session not found.')
+      await recordSecurity({
+        userId: currentUserId(req),
+        type: 'session-renamed',
+        summary: `A session was renamed to ${input.name}.`,
+        ...requestAudit(req),
+      })
       res.json({ id: session.id, device: session.deviceName })
     }),
   )

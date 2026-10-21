@@ -230,12 +230,12 @@ activitySchema.index({ expireAt: 1 }, { name: "ActivityExpire", expireAfterSecon
 var notificationSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
-    projectId: { type: Schema.Types.ObjectId, ref: "Project", required: true },
-    taskId: { type: Schema.Types.ObjectId, ref: "Task", required: true },
-    kind: { type: String, enum: ["due-soon", "overdue"], required: true },
+    projectId: { type: Schema.Types.ObjectId, ref: "Project", default: null },
+    taskId: { type: Schema.Types.ObjectId, ref: "Task", default: null },
+    kind: { type: String, enum: ["due-soon", "overdue", "new-device"], required: true },
     title: { type: String, required: true },
-    projectName: { type: String, required: true },
-    dueDate: { type: String, required: true },
+    projectName: { type: String, default: "" },
+    dueDate: { type: String, default: "" },
     read: { type: Boolean, default: false, required: true },
     key: { type: String, required: true },
     expireAt: { type: Date, default: () => new Date(Date.now() + NINETY_DAYS_MS) }
@@ -339,6 +339,9 @@ var securityEventSchema = new Schema(
     type: { type: String, required: true },
     summary: { type: String, required: true },
     ipCoarse: { type: String, default: "" },
+    device: { type: String, default: "" },
+    deviceType: { type: String, default: "" },
+    location: { type: String, default: "" },
     read: { type: Boolean, default: false, required: true },
     expireAt: { type: Date, default: () => new Date(Date.now() + YEAR_SECONDS * 1e3) }
   },
@@ -402,6 +405,9 @@ async function recordSecurity(input) {
     type: input.type,
     summary: input.summary.slice(0, 240),
     ipCoarse: input.ipCoarse ?? "",
+    device: (input.device ?? "").slice(0, 120),
+    deviceType: (input.deviceType ?? "").slice(0, 16),
+    location: (input.location ?? "").slice(0, 80),
     read: false
   });
 }
@@ -708,15 +714,24 @@ async function startSession(req, res, userId, knownClaims) {
   const before = /* @__PURE__ */ new Date();
   const noticed = noticeNewDevice(req, userId, before);
   const claims = await claimsFor(userId, knownClaims);
-  await issueSession(req, res, userId, randomBytes(16).toString("hex"), claims);
+  const sessionId = await issueSession(req, res, userId, randomBytes(16).toString("hex"), claims);
   const newDevice = await noticed;
   if (newDevice) {
-    const ip = coarseIp(req.ip);
+    const audit = requestAudit(req);
     await recordSecurity({
       userId,
       type: "new-device",
-      summary: `New sign-in from ${deviceLabel(req.get("user-agent") ?? "")}${ip ? ` (${ip})` : ""}.`,
-      ipCoarse: ip
+      summary: `New sign-in from ${audit.device}.`,
+      ...audit
+    });
+    await Notification.create({
+      userId,
+      kind: "new-device",
+      title: `New sign-in from ${audit.device}`,
+      projectName: [audit.deviceType, audit.location].filter(Boolean).join(" \xB7 "),
+      dueDate: "",
+      key: `new-device:${sessionId}`,
+      read: false
     });
   }
   return { newDevice };
@@ -741,6 +756,7 @@ async function issueSession(req, res, userId, familyId, claims, previous) {
     await Session.updateOne({ _id: previous._id }, { replacedBy: session._id, rotatedAt: now });
   }
   writeCookies(res, userId, session.id, refresh, claims);
+  return session.id;
 }
 function accessFromRequest(req) {
   const token = readCookie(req.headers.cookie);
@@ -781,7 +797,7 @@ async function rotateRefresh(req, res) {
         userId: current.userId.toString(),
         type: "refresh-reuse",
         summary: "A refresh token was reused. That session family was signed out.",
-        ipCoarse: coarseIp(req.ip)
+        ...requestAudit(req)
       });
       clearSession(res);
     }
@@ -831,6 +847,21 @@ async function revokeSessions(userId, exceptId) {
 async function markStepUp(sessionId) {
   await Session.updateOne({ _id: sessionId }, { stepUpAt: /* @__PURE__ */ new Date() });
 }
+async function requireFreshStepUp(sessionId) {
+  if (!sessionId) throw new HttpError(401, "Sign in to continue.");
+  const session = await loadSession(sessionId);
+  if (session && stepUpFresh(session.stepUpAt)) return;
+  throw new HttpError(403, "Confirm it is you to continue.", { code: "step_up_required" });
+}
+function requestAudit(req) {
+  const userAgent = req.get("user-agent") ?? "";
+  return {
+    ipCoarse: coarseIp(req.ip),
+    device: deviceLabel(userAgent),
+    deviceType: deviceKind(userAgent),
+    location: coarseLocation(req)
+  };
+}
 async function revokeRefreshCookie(req) {
   const raw = readCookie(req.headers.cookie, REFRESH_COOKIE);
   if (!raw) return;
@@ -838,8 +869,13 @@ async function revokeRefreshCookie(req) {
 }
 function deviceLabel(userAgent) {
   const browser = /Edg\//.test(userAgent) ? "Edge" : /Chrome\//.test(userAgent) ? "Chrome" : /Firefox\//.test(userAgent) ? "Firefox" : /Safari\//.test(userAgent) ? "Safari" : "Browser";
-  const os = /Windows/.test(userAgent) ? "Windows" : /Mac OS/.test(userAgent) ? "macOS" : /Android/.test(userAgent) ? "Android" : /iPhone|iPad/.test(userAgent) ? "iOS" : /Linux/.test(userAgent) ? "Linux" : "Unknown device";
+  const os = /Windows/.test(userAgent) ? "Windows" : /iPhone|iPad/.test(userAgent) ? "iOS" : /Mac OS|Macintosh/.test(userAgent) ? "macOS" : /Android/.test(userAgent) ? "Android" : /Linux/.test(userAgent) ? "Linux" : "Unknown device";
   return `${browser} on ${os}`;
+}
+function deviceKind(userAgent) {
+  if (/iPad|Tablet/i.test(userAgent)) return "tablet";
+  if (/Mobile|iPhone|Android/i.test(userAgent)) return "phone";
+  return "desktop";
 }
 
 // src/csrf.ts
@@ -1351,7 +1387,7 @@ var MINIMUM_CLIENT_VERSION = 2;
 
 // src/routes/auth.ts
 import { randomBytes as randomBytes4 } from "node:crypto";
-import { Router } from "express";
+import { Router as Router2 } from "express";
 
 // src/data/content.ts
 import { Types as Types3 } from "mongoose";
@@ -1551,6 +1587,50 @@ function bind(tenant) {
       task.deletedWithProject = false;
       await task.save();
       return task;
+    },
+    async purgeProject(id) {
+      const projectId = objectId(id);
+      if (!projectId) throw new HttpError(404, "Project not found.");
+      const project = await Project.findOne({ _id: projectId, workspaceId, deletedAt: { $ne: null } }).select("_id");
+      if (!project) throw new HttpError(404, "Project not found.");
+      await withTransaction(async (session) => {
+        const taskIds = await Task.find({ workspaceId, projectId }).session(session).distinct("_id");
+        await Notification.deleteMany({ userId, taskId: { $in: taskIds } }, { session });
+        await Task.deleteMany({ workspaceId, projectId }, { session });
+        await Note.deleteMany({ workspaceId, projectId }, { session });
+        await Whiteboard.deleteMany({ workspaceId, projectId }, { session });
+        await Activity.deleteMany({ workspaceId, projectId }, { session });
+        await Project.deleteOne({ _id: projectId, workspaceId }, { session });
+      });
+    },
+    async purgeTask(id) {
+      const taskId = objectId(id);
+      if (!taskId) throw new HttpError(404, "Task not found.");
+      const task = await Task.findOne({ _id: taskId, workspaceId, deletedAt: { $ne: null } }).select("_id");
+      if (!task) throw new HttpError(404, "Task not found.");
+      await withTransaction(async (session) => {
+        await Notification.deleteMany({ userId, taskId }, { session });
+        await Task.deleteOne({ _id: taskId, workspaceId }, { session });
+      });
+    },
+    async emptyTrash() {
+      await withTransaction(async (session) => {
+        const projects = await Project.find({ workspaceId, deletedAt: { $ne: null } }).session(session).select("_id");
+        const projectIds = projects.map((project) => project._id);
+        const tasks = await Task.find({
+          workspaceId,
+          $or: [{ deletedAt: { $ne: null } }, { projectId: { $in: projectIds } }]
+        }).session(session).select("_id");
+        const taskIds = tasks.map((task) => task._id);
+        if (taskIds.length > 0) await Notification.deleteMany({ userId, taskId: { $in: taskIds } }, { session });
+        if (taskIds.length > 0) await Task.deleteMany({ _id: { $in: taskIds }, workspaceId }, { session });
+        if (projectIds.length > 0) {
+          await Note.deleteMany({ workspaceId, projectId: { $in: projectIds } }, { session });
+          await Whiteboard.deleteMany({ workspaceId, projectId: { $in: projectIds } }, { session });
+          await Activity.deleteMany({ workspaceId, projectId: { $in: projectIds } }, { session });
+          await Project.deleteMany({ _id: { $in: projectIds }, workspaceId }, { session });
+        }
+      });
     }
   };
 }
@@ -1575,6 +1655,103 @@ async function deleteAccount(userId) {
     await Workspace.deleteMany({ _id: { $in: ids } }, { session });
     await User.deleteOne({ _id: id }, { session });
   });
+}
+
+// src/routes/dashboard.ts
+import { Router } from "express";
+import "mongoose";
+
+// src/data/tenant.ts
+function currentTenant(req) {
+  if (!req.tenant) throw new HttpError(401, "Sign in to continue.");
+  return req.tenant;
+}
+function assertRole(tenant, minimum) {
+  if (!roleAtLeast(tenant.role, minimum)) {
+    throw new HttpError(403, "You do not have permission to change this workspace.");
+  }
+}
+
+// src/routes/dashboard.ts
+var OPEN_LIMIT = 40;
+async function dashboardPayload(tenant) {
+  const db = bind(tenant);
+  const projects = await db.projects.find({ status: "active" }).select("name description").sort({ updatedAt: -1 }).lean();
+  const activeIds = projects.map((project) => project._id);
+  const datedFilter = {
+    completed: false,
+    projectId: { $in: activeIds },
+    dueDate: { $gte: "0000-01-01" }
+  };
+  const [counts, dated, undated, datedOpenCount] = await Promise.all([
+    db.tasks.aggregate([
+      { $group: { _id: { projectId: "$projectId", completed: "$completed" }, n: { $sum: 1 } } }
+    ]),
+    db.tasks.find(datedFilter).select("title dueDate priority projectId").sort({ dueDate: 1, title: 1 }).limit(OPEN_LIMIT * 2).lean(),
+    db.tasks.find({ completed: false, projectId: { $in: activeIds }, dueDate: null }).select("title dueDate priority projectId").sort({ title: 1 }).limit(OPEN_LIMIT).lean(),
+    db.tasks.find(datedFilter).countDocuments()
+  ]);
+  const names = new Map(projects.map((project) => [project._id.toString(), project.name]));
+  const tally = /* @__PURE__ */ new Map();
+  for (const row of counts) {
+    const id = row._id.projectId.toString();
+    const bucket = tally.get(id) ?? { total: 0, done: 0 };
+    bucket.total += row.n;
+    if (row._id.completed) bucket.done += row.n;
+    tally.set(id, bucket);
+  }
+  let openTaskCount = 0;
+  for (const [id, bucket] of tally) {
+    if (!names.has(id)) continue;
+    openTaskCount += bucket.total - bucket.done;
+  }
+  const open = [...dated, ...undated].flatMap((task) => {
+    const projectName = names.get(task.projectId.toString());
+    if (!projectName) return [];
+    return [
+      {
+        id: task._id.toString(),
+        projectId: task.projectId.toString(),
+        projectName,
+        title: task.title,
+        dueDate: task.dueDate,
+        priority: task.priority,
+        completed: false
+      }
+    ];
+  });
+  return {
+    projects: projects.map((project) => {
+      const bucket = tally.get(project._id.toString()) ?? { total: 0, done: 0 };
+      return {
+        id: project._id.toString(),
+        name: project.name,
+        description: project.description,
+        percentComplete: bucket.total === 0 ? 0 : Math.round(bucket.done / bucket.total * 100),
+        completedCount: bucket.done,
+        taskCount: bucket.total
+      };
+    }),
+    openTasks: open,
+    openTaskCount,
+    datedOpenCount
+  };
+}
+function dashboardForUser(user) {
+  const claims = ownerClaims(user);
+  if (!claims || !user.id) return Promise.resolve(null);
+  return dashboardPayload({ userId: user.id, workspaceId: claims.workspaceId, role: claims.role });
+}
+function dashboardRouter() {
+  const router = Router();
+  router.use(requireAuth);
+  router.get(
+    "/",
+    asyncHandler(async (req, res) => {
+      res.json(await dashboardPayload(currentTenant(req)));
+    })
+  );
+  return router;
 }
 
 // src/data/users.ts
@@ -1820,8 +1997,8 @@ function publicActivity(item) {
 function publicNotification(item) {
   return {
     id: docId(item),
-    projectId: item.projectId.toString(),
-    taskId: item.taskId.toString(),
+    projectId: item.projectId ? item.projectId.toString() : "",
+    taskId: item.taskId ? item.taskId.toString() : "",
     kind: item.kind,
     title: item.title,
     projectName: item.projectName,
@@ -2131,20 +2308,6 @@ var LOCK_AFTER = 5;
 function clientIp(req) {
   return req.ip || req.socket.remoteAddress || "unknown";
 }
-async function assertStepUp(req, password2) {
-  const sessionId = req.sessionId;
-  if (!sessionId) throw new HttpError(401, "Sign in to continue.");
-  const session = await loadSession(sessionId);
-  if (session && stepUpFresh(session.stepUpAt)) return;
-  if (password2) {
-    const user = await users.byIdSecret(currentUserId(req));
-    if (user?.passwordHash && await checkPassword(password2, user.passwordHash)) {
-      await markStepUp(sessionId);
-      return;
-    }
-  }
-  throw new HttpError(403, "Confirm it is you to continue.", { code: "step_up_required" });
-}
 function appOrigin(req) {
   const configured = process.env.APP_ORIGIN?.replace(/\/$/, "");
   if (configured) return configured;
@@ -2161,7 +2324,7 @@ function lockDelay(failures) {
   return Math.min(60, 2 ** steps) * 60 * 1e3;
 }
 function authRouter(limiter) {
-  const router = Router();
+  const router = Router2();
   router.get("/providers", (_req, res) => {
     res.json({ google: googleConfigured() });
   });
@@ -2216,7 +2379,7 @@ ${link}`
             userId: user.id,
             type: "sign-in-failed",
             summary: "A sign-in attempt used the wrong password.",
-            ipCoarse: coarseIp(req.ip)
+            ...requestAudit(req)
           }).catch(() => void 0);
         }
         await delayFailedAttempt(attempts);
@@ -2240,13 +2403,20 @@ ${link}`
         user.lockUntil = null;
         await user.save();
       }
-      const started = await startSession(req, res, user.id, ownerClaims(user));
-      res.json({ ...publicUser(user), newDevice: started.newDevice });
+      const [started, dashboard] = await Promise.all([
+        startSession(req, res, user.id, ownerClaims(user)),
+        dashboardForUser(user)
+      ]);
+      res.json({
+        ...publicUser(user),
+        newDevice: started.newDevice,
+        ...dashboard ? { dashboard } : {}
+      });
       void recordSecurity({
         userId: user.id,
         type: "sign-in",
         summary: "Signed in with a password.",
-        ipCoarse: coarseIp(req.ip)
+        ...requestAudit(req)
       });
       void watchBreachedPassword(user.id, input.password);
     })
@@ -2317,7 +2487,7 @@ ${link}`
       await revokeSessions(user.id);
       await ensurePersonalWorkspace(user.id);
       await startSession(req, res, user.id);
-      await recordSecurity({ userId: user.id, type: "password-reset", summary: "Password was reset.", ipCoarse: coarseIp(req.ip) });
+      await recordSecurity({ userId: user.id, type: "password-reset", summary: "Password was reset.", ...requestAudit(req) });
       res.json(publicUser(user));
     })
   );
@@ -2397,7 +2567,7 @@ ${link}`
         userId: currentUserId(req),
         type: "session-revoked",
         summary: "A session was revoked.",
-        ipCoarse: coarseIp(req.ip)
+        ...requestAudit(req)
       });
       if (session.id === req.sessionId) clearSession(res);
       res.status(204).send();
@@ -2407,14 +2577,13 @@ ${link}`
     "/sessions/revoke-all",
     requireAuth,
     asyncHandler(async (req, res) => {
-      const body = req.body;
-      await assertStepUp(req, typeof body?.password === "string" ? body.password : void 0);
+      await requireFreshStepUp(req.sessionId);
       await revokeSessions(currentUserId(req));
       await recordSecurity({
         userId: currentUserId(req),
         type: "sessions-revoked",
         summary: "Every session was revoked.",
-        ipCoarse: coarseIp(req.ip)
+        ...requestAudit(req)
       });
       clearSession(res);
       res.status(204).send();
@@ -2539,7 +2708,11 @@ ${link}`
     asyncHandler(async (req, res) => {
       const input = parseBody(emailChangeSchema, req.body);
       const userId = currentUserId(req);
-      await assertStepUp(req, input.password);
+      await requireFreshStepUp(req.sessionId);
+      const secret = await users.byIdSecret(userId);
+      if (!secret?.passwordHash || !await checkPassword(input.password, secret.passwordHash)) {
+        throw new HttpError(400, "Current password is incorrect.");
+      }
       const next = input.email.trim().toLowerCase();
       const taken = await users.byEmail(next);
       if (taken && taken.id !== userId) throw new HttpError(409, "An account already uses that email.");
@@ -2549,7 +2722,7 @@ ${link}`
         userId,
         type: "email-changed",
         summary: "The account email was changed.",
-        ipCoarse: coarseIp(req.ip)
+        ...requestAudit(req)
       });
       const token = await issueAuthToken(user.id, "verify");
       const link = `${appOrigin(req)}/verify?token=${encodeURIComponent(token)}`;
@@ -2568,6 +2741,7 @@ ${link}`
     requireAuth,
     asyncHandler(async (req, res) => {
       const input = parseBody(passwordSchema, req.body);
+      await requireFreshStepUp(req.sessionId);
       const user = await users.byIdSecret(currentUserId(req));
       if (!user?.passwordHash) throw new HttpError(401, "Sign in to continue.");
       const matches = await checkPassword(input.currentPassword, user.passwordHash);
@@ -2575,13 +2749,12 @@ ${link}`
       await assertPasswordNotBreached(input.newPassword);
       user.passwordHash = await hashPassword(input.newPassword);
       await user.save();
-      if (req.sessionId) await markStepUp(req.sessionId);
       await revokeSessions(user.id, req.sessionId);
       await recordSecurity({
         userId: user.id,
         type: "password-changed",
         summary: "Password was changed.",
-        ipCoarse: coarseIp(req.ip)
+        ...requestAudit(req)
       });
       await rotateRefresh(req, res);
       res.status(204).send();
@@ -2592,8 +2765,7 @@ ${link}`
     requireAuth,
     asyncHandler(async (req, res) => {
       const userId = currentUserId(req);
-      const body = req.body;
-      await assertStepUp(req, typeof body?.password === "string" ? body.password : void 0);
+      await requireFreshStepUp(req.sessionId);
       await deleteAccount(userId);
       clearSession(res);
       res.status(204).send();
@@ -2606,96 +2778,13 @@ ${link}`
       const input = parseBody(sessionRenameSchema, req.body);
       const session = await renameSession(currentUserId(req), req.params.id, input.name);
       if (!session) throw new HttpError(404, "Session not found.");
+      await recordSecurity({
+        userId: currentUserId(req),
+        type: "session-renamed",
+        summary: `A session was renamed to ${input.name}.`,
+        ...requestAudit(req)
+      });
       res.json({ id: session.id, device: session.deviceName });
-    })
-  );
-  return router;
-}
-
-// src/routes/dashboard.ts
-import { Router as Router2 } from "express";
-import "mongoose";
-
-// src/data/tenant.ts
-function currentTenant(req) {
-  if (!req.tenant) throw new HttpError(401, "Sign in to continue.");
-  return req.tenant;
-}
-function assertRole(tenant, minimum) {
-  if (!roleAtLeast(tenant.role, minimum)) {
-    throw new HttpError(403, "You do not have permission to change this workspace.");
-  }
-}
-
-// src/routes/dashboard.ts
-var OPEN_LIMIT = 40;
-function dashboardRouter() {
-  const router = Router2();
-  router.use(requireAuth);
-  router.get(
-    "/",
-    asyncHandler(async (req, res) => {
-      const db = bind(currentTenant(req));
-      const projects = await db.projects.find({ status: "active" }).select("name description").sort({ updatedAt: -1 }).lean();
-      const activeIds = projects.map((project) => project._id);
-      const datedFilter = {
-        completed: false,
-        projectId: { $in: activeIds },
-        dueDate: { $gte: "0000-01-01" }
-      };
-      const [counts, dated, undated, datedOpenCount] = await Promise.all([
-        db.tasks.aggregate([
-          { $group: { _id: { projectId: "$projectId", completed: "$completed" }, n: { $sum: 1 } } }
-        ]),
-        db.tasks.find(datedFilter).select("title dueDate priority projectId").sort({ dueDate: 1, title: 1 }).limit(OPEN_LIMIT * 2).lean(),
-        db.tasks.find({ completed: false, projectId: { $in: activeIds }, dueDate: null }).select("title dueDate priority projectId").sort({ title: 1 }).limit(OPEN_LIMIT).lean(),
-        db.tasks.find(datedFilter).countDocuments()
-      ]);
-      const names = new Map(projects.map((project) => [project._id.toString(), project.name]));
-      const tally = /* @__PURE__ */ new Map();
-      for (const row of counts) {
-        const id = row._id.projectId.toString();
-        const bucket = tally.get(id) ?? { total: 0, done: 0 };
-        bucket.total += row.n;
-        if (row._id.completed) bucket.done += row.n;
-        tally.set(id, bucket);
-      }
-      let openTaskCount = 0;
-      for (const [id, bucket] of tally) {
-        if (!names.has(id)) continue;
-        openTaskCount += bucket.total - bucket.done;
-      }
-      const open = [...dated, ...undated].flatMap((task) => {
-        const projectName = names.get(task.projectId.toString());
-        if (!projectName) return [];
-        return [
-          {
-            id: task._id.toString(),
-            projectId: task.projectId.toString(),
-            projectName,
-            title: task.title,
-            dueDate: task.dueDate,
-            priority: task.priority,
-            completed: false
-          }
-        ];
-      });
-      res.json({
-        projects: projects.map((project) => {
-          const bucket = tally.get(project._id.toString()) ?? { total: 0, done: 0 };
-          return {
-            id: project._id.toString(),
-            name: project.name,
-            description: project.description,
-            percentComplete: bucket.total === 0 ? 0 : Math.round(bucket.done / bucket.total * 100),
-            completedCount: bucket.done,
-            taskCount: bucket.total
-          };
-        }),
-        openTasks: open,
-        openTaskCount,
-        datedOpenCount
-      });
     })
   );
   return router;
@@ -3040,15 +3129,33 @@ function notificationsRouter() {
     "/",
     asyncHandler(async (req, res) => {
       const today = requireToday(req.query.today);
-      const rows = await dueRows(currentTenant(req), today);
-      rows.sort((a, b) => a.createdAt === b.createdAt ? a.key < b.key ? 1 : -1 : a.createdAt < b.createdAt ? 1 : -1);
+      const tenant = currentTenant(req);
+      const [rows, devices] = await Promise.all([
+        dueRows(tenant, today),
+        bind(tenant).notifications.find({ kind: "new-device" }).sort({ createdAt: -1 }).limit(20).lean()
+      ]);
+      const listed = [
+        ...rows.map(present),
+        ...devices.map((item) => ({
+          id: item._id.toString(),
+          projectId: "",
+          taskId: "",
+          kind: "new-device",
+          title: item.title,
+          projectName: item.projectName ?? "",
+          dueDate: "",
+          read: item.read,
+          createdAt: item.createdAt.toISOString()
+        }))
+      ];
+      listed.sort((a, b) => a.createdAt === b.createdAt ? a.id < b.id ? 1 : -1 : a.createdAt < b.createdAt ? 1 : -1);
       const cursor = decodeCursor(req.query.cursor);
-      const filtered = cursor && cursor.length === 2 ? rows.filter((row) => row.createdAt < cursor[0] || row.createdAt === cursor[0] && row.key < cursor[1]) : rows;
+      const filtered = cursor && cursor.length === 2 ? listed.filter((row) => row.createdAt < cursor[0] || row.createdAt === cursor[0] && row.id < cursor[1]) : listed;
       const limit = pageLimit(req.query.limit);
       const page = filtered.slice(0, limit);
       const last = page[limit - 1];
-      if (filtered.length > limit && last) res.set("X-Next-Cursor", encodeCursor([last.createdAt, last.key]));
-      res.json(page.map(present));
+      if (filtered.length > limit && last) res.set("X-Next-Cursor", encodeCursor([last.createdAt, last.id]));
+      res.json(page);
     })
   );
   router.post(
@@ -3825,19 +3932,14 @@ function pendingUser(req) {
   }
   return payload.sub;
 }
-async function assertStepUp2(req, password2, userId) {
-  if (req.sessionId) {
-    const session = await loadSession(req.sessionId);
-    if (session && stepUpFresh(session.stepUpAt)) return;
-  }
-  if (password2 && userId) {
-    const user = await users.byIdSecret(userId);
-    if (user?.passwordHash && await checkPassword(password2, user.passwordHash)) {
-      if (req.sessionId) await markStepUp(req.sessionId);
-      return;
-    }
-  }
-  throw new HttpError(403, "Confirm it is you to continue.", { code: "step_up_required" });
+async function noteStepUp(req, userId, summary) {
+  if (req.sessionId) await markStepUp(req.sessionId);
+  await recordSecurity({
+    userId,
+    type: "step-up",
+    summary,
+    ...requestAudit(req)
+  });
 }
 function mfaRouter() {
   const router = Router9();
@@ -3863,7 +3965,7 @@ function mfaRouter() {
         userId: currentUserId(req),
         type: "totp-enabled",
         summary: "Two-factor authentication was turned on.",
-        ipCoarse: coarseIp(req.ip)
+        ...requestAudit(req)
       });
       res.json({ recoveryCodes: codes });
     })
@@ -3873,7 +3975,7 @@ function mfaRouter() {
     requireAuth,
     asyncHandler(async (req, res) => {
       const body = parseBody(stepUpSchema, req.body);
-      await assertStepUp2(req, body.password, currentUserId(req));
+      await requireFreshStepUp(req.sessionId);
       if (body.code) {
         const user = await users.byIdSecret(currentUserId(req));
         if (!user?.totpSecret || !verifyTotp(user.totpSecret, body.code)) {
@@ -3885,7 +3987,7 @@ function mfaRouter() {
         userId: currentUserId(req),
         type: "totp-disabled",
         summary: "Two-factor authentication was turned off.",
-        ipCoarse: coarseIp(req.ip)
+        ...requestAudit(req)
       });
       res.status(204).send();
     })
@@ -3894,14 +3996,14 @@ function mfaRouter() {
     "/recovery/regenerate",
     requireAuth,
     asyncHandler(async (req, res) => {
-      const body = parseBody(stepUpSchema, req.body);
-      await assertStepUp2(req, body.password, currentUserId(req));
+      parseBody(stepUpSchema, req.body);
+      await requireFreshStepUp(req.sessionId);
       const codes = await regenerateRecoveryCodes(currentUserId(req));
       await recordSecurity({
         userId: currentUserId(req),
         type: "recovery-regenerated",
         summary: "Recovery codes were replaced.",
-        ipCoarse: coarseIp(req.ip)
+        ...requestAudit(req)
       });
       res.json({ recoveryCodes: codes });
     })
@@ -3919,20 +4021,24 @@ function mfaRouter() {
           userId: user.id,
           type: "mfa-failed",
           summary: "A two-factor code was rejected.",
-          ipCoarse: coarseIp(req.ip)
+          ...requestAudit(req)
         });
         throw new HttpError(401, "That code is not valid.");
       }
       res.clearCookie("pending", { path: "/" });
       await ensurePersonalWorkspace(user.id);
-      const started = await startSession(req, res, user.id);
+      const fresh = await users.byId(user.id) ?? user;
+      const [started, dashboard] = await Promise.all([
+        startSession(req, res, user.id),
+        dashboardForUser(fresh)
+      ]);
       await recordSecurity({
         userId: user.id,
         type: "sign-in",
         summary: input.method === "totp" ? "Signed in with an authenticator code." : "Signed in with a recovery code.",
-        ipCoarse: coarseIp(req.ip)
+        ...requestAudit(req)
       });
-      res.json({ ...publicUser(user), newDevice: started.newDevice });
+      res.json({ ...publicUser(user), newDevice: started.newDevice, ...dashboard ? { dashboard } : {} });
     })
   );
   router.post(
@@ -3940,24 +4046,30 @@ function mfaRouter() {
     requireAuth,
     asyncHandler(async (req, res) => {
       const body = parseBody(stepUpSchema, req.body);
+      const userId = currentUserId(req);
+      if (!req.sessionId) throw new HttpError(401, "Sign in to continue.");
       if (body.password) {
-        await assertStepUp2(req, body.password, currentUserId(req));
+        const user = await users.byIdSecret(userId);
+        if (!user?.passwordHash || !await checkPassword(body.password, user.passwordHash)) {
+          throw new HttpError(403, "That password is not valid.");
+        }
+        await noteStepUp(req, userId, "Confirmed this session with a password.");
         res.status(204).send();
         return;
       }
       if (body.code && body.method !== "recovery") {
-        const user = await users.byIdSecret(currentUserId(req));
+        const user = await users.byIdSecret(userId);
         if (!user?.totpSecret || !verifyTotp(user.totpSecret, body.code)) {
           throw new HttpError(400, "That code is not valid.");
         }
-        if (req.sessionId) await markStepUp(req.sessionId);
+        await noteStepUp(req, userId, "Confirmed this session with an authenticator code.");
         res.status(204).send();
         return;
       }
       if (body.code) {
-        const ok = await consumeRecoveryCode(currentUserId(req), body.code);
+        const ok = await consumeRecoveryCode(userId, body.code);
         if (!ok) throw new HttpError(400, "That code is not valid.");
-        if (req.sessionId) await markStepUp(req.sessionId);
+        await noteStepUp(req, userId, "Confirmed this session with a recovery code.");
         res.status(204).send();
         return;
       }
@@ -3975,6 +4087,9 @@ function mfaRouter() {
           type: event.type,
           summary: event.summary,
           ip: event.ipCoarse,
+          device: event.device ?? "",
+          deviceType: event.deviceType ?? "",
+          location: event.location ?? "",
           createdAt: event.createdAt.toISOString()
         }))
       );
@@ -3999,7 +4114,7 @@ function mfaRouter() {
         userId: currentUserId(req),
         type: "passkey-added",
         summary: "A passkey was added.",
-        ipCoarse: coarseIp(req.ip)
+        ...requestAudit(req)
       });
       res.status(204).send();
     })
@@ -4022,15 +4137,15 @@ function mfaRouter() {
     "/passkeys/:id",
     requireAuth,
     asyncHandler(async (req, res) => {
-      const body = parseBody(stepUpSchema, req.body ?? {});
-      await assertStepUp2(req, body.password, currentUserId(req));
+      parseBody(stepUpSchema, req.body ?? {});
+      await requireFreshStepUp(req.sessionId);
       const removed = await deletePasskey(currentUserId(req), req.params.id);
       if (!removed) throw new HttpError(404, "Passkey not found.");
       await recordSecurity({
         userId: currentUserId(req),
         type: "passkey-removed",
         summary: "A passkey was removed.",
-        ipCoarse: coarseIp(req.ip)
+        ...requestAudit(req)
       });
       res.status(204).send();
     })
@@ -4048,14 +4163,18 @@ function mfaRouter() {
       const user = await users.byId(verified.userId);
       if (!user) throw new HttpError(401, "Sign in to continue.");
       await ensurePersonalWorkspace(user.id);
-      const started = await startSession(req, res, user.id);
+      const fresh = await users.byId(user.id) ?? user;
+      const [started, dashboard] = await Promise.all([
+        startSession(req, res, user.id),
+        dashboardForUser(fresh)
+      ]);
       await recordSecurity({
         userId: user.id,
         type: "sign-in",
         summary: "Signed in with a passkey.",
-        ipCoarse: coarseIp(req.ip)
+        ...requestAudit(req)
       });
-      res.json({ ...publicUser(user), newDevice: started.newDevice });
+      res.json({ ...publicUser(user), newDevice: started.newDevice, ...dashboard ? { dashboard } : {} });
     })
   );
   router.post(
@@ -4071,7 +4190,7 @@ function mfaRouter() {
     asyncHandler(async (req, res) => {
       const verified = await verifyPasskey(req, req.body, "stepup");
       if (verified.userId !== currentUserId(req)) throw new HttpError(401, "Passkey not recognized.");
-      if (req.sessionId) await markStepUp(req.sessionId);
+      await noteStepUp(req, currentUserId(req), "Confirmed this session with a passkey.");
       res.status(204).send();
     })
   );
@@ -4192,6 +4311,27 @@ function trashRouter() {
     asyncHandler(async (req, res) => {
       const task = await bind(currentTenant(req)).restoreTask(req.params.id);
       res.json({ id: task.id, title: task.title });
+    })
+  );
+  router.delete(
+    "/projects/:id",
+    asyncHandler(async (req, res) => {
+      await bind(currentTenant(req)).purgeProject(req.params.id);
+      res.status(204).send();
+    })
+  );
+  router.delete(
+    "/tasks/:id",
+    asyncHandler(async (req, res) => {
+      await bind(currentTenant(req)).purgeTask(req.params.id);
+      res.status(204).send();
+    })
+  );
+  router.post(
+    "/empty",
+    asyncHandler(async (req, res) => {
+      await bind(currentTenant(req)).emptyTrash();
+      res.status(204).send();
     })
   );
   return router;

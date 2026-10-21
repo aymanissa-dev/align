@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ApiError } from '../api/errors.ts'
 import { api } from '../api/index.ts'
-import type { LoginInput, RegisterInput, User } from '../api/types.ts'
+import type { DashboardData, LoginInput, RegisterInput, User } from '../api/types.ts'
 import { broadcastSignedOut } from '../lib/authChannel.ts'
 import { setForceSignOutHandler } from '../lib/forceSignOut.ts'
 import { clearLocalUser, readLocalUser, writeLocalUser } from '../lib/localUser.ts'
@@ -74,16 +74,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const adopt = useCallback((next: User & { dashboard?: DashboardData }) => {
+    epoch.current += 1
+    allowPersistedCache(next.id)
+    const { dashboard, ...user } = next
+    writeLocalUser(user)
+    queryClient.clear()
+    if (dashboard) queryClient.setQueryData(['dashboard'], dashboard)
+    setUser(user)
+    return user
+  }, [])
+
   const login = useCallback(async (input: LoginInput) => {
     const next = await api.login(input)
     if ('mfaRequired' in next) return next
-    epoch.current += 1
-    allowPersistedCache(next.id)
-    writeLocalUser(next)
-    queryClient.clear()
-    setUser(next)
-    return next
-  }, [])
+    return adopt(next)
+  }, [adopt])
 
   const register = useCallback(async (input: RegisterInput) => {
     const next = await api.register(input)
@@ -94,13 +100,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(next)
   }, [])
 
-  const acceptSession = useCallback((next: User) => {
-    epoch.current += 1
-    allowPersistedCache(next.id)
-    writeLocalUser(next)
-    queryClient.clear()
-    setUser(next)
-  }, [])
+  const acceptSession = useCallback((next: User & { dashboard?: DashboardData }) => {
+    adopt(next)
+  }, [adopt])
 
   const logout = useCallback(async () => {
     const id = ownerRef.current ?? user?.id ?? null

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/auth-context.ts'
@@ -9,8 +9,10 @@ import { PageHeader } from '../components/chrome.tsx'
 import { AccentPicker, ThemeToggle } from '../components/ThemeControls.tsx'
 import { PasswordMeter } from '../components/PasswordMeter.tsx'
 import { SecurityPanel } from './SecurityPanel.tsx'
+import { StepUpDialog } from '../components/StepUpDialog.tsx'
 import { Button, ConfirmDialog, Field, Input, ListSkeleton } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
+import { stepUpRequired } from '../lib/stepUp.ts'
 import { isMediumPassword, MEDIUM_PASSWORD_HINT, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
 import { clearSignedOut, markSignedOut } from '../lib/signedOut.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
@@ -37,6 +39,8 @@ export function SettingsPage() {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deletePassword, setDeletePassword] = useState('')
   const [deleting, setDeleting] = useState(false)
+  const [stepUpOpen, setStepUpOpen] = useState(false)
+  const retryRef = useRef<(() => Promise<void>) | null>(null)
   const [sessions, setSessions] = useState<AuthSession[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(true)
   const [sessionsError, setSessionsError] = useState('')
@@ -100,13 +104,21 @@ export function SettingsPage() {
     }
     setPasswordError('')
     setSavingPassword(true)
-    try {
+    const save = async () => {
       await api.changePassword({ currentPassword, newPassword })
       setCurrentPassword('')
       setNewPassword('')
       setConfirmPassword('')
       toast('Password updated')
+    }
+    try {
+      await save()
     } catch (caught) {
+      if (stepUpRequired(caught)) {
+        retryRef.current = save
+        setStepUpOpen(true)
+        return
+      }
       setPasswordError(errorMessage(caught))
     } finally {
       setSavingPassword(false)
@@ -145,7 +157,7 @@ export function SettingsPage() {
     event.preventDefault()
     setEmailError('')
     setSavingEmail(true)
-    try {
+    const save = async () => {
       const updated = await api.changeEmail({ email: nextEmail.trim(), password: emailPassword })
       acceptSession(updated)
       setVerifyToken(updated.verifyToken ?? '')
@@ -153,7 +165,15 @@ export function SettingsPage() {
       setNextEmail('')
       setEmailPassword('')
       toast('Email updated')
+    }
+    try {
+      await save()
     } catch (caught) {
+      if (stepUpRequired(caught)) {
+        retryRef.current = save
+        setStepUpOpen(true)
+        return
+      }
       setEmailError(errorMessage(caught))
     } finally {
       setSavingEmail(false)
@@ -162,14 +182,22 @@ export function SettingsPage() {
 
   async function onSignOutEverywhere() {
     setRevoking(true)
-    markSignedOut()
-    try {
+    const save = async () => {
+      markSignedOut()
       await api.revokeAllSessions(revokePassword)
       await logout()
       navigate('/', { replace: true })
+    }
+    try {
+      await save()
     } catch (caught) {
       clearSignedOut()
       setRevoking(false)
+      if (stepUpRequired(caught)) {
+        retryRef.current = save
+        setStepUpOpen(true)
+        return
+      }
       toast(errorMessage(caught))
     }
   }
@@ -187,13 +215,21 @@ export function SettingsPage() {
 
   async function onDelete() {
     setDeleting(true)
-    markSignedOut()
-    try {
+    const save = async () => {
+      markSignedOut()
       await deleteAccount(deletePassword)
       navigate('/', { replace: true })
+    }
+    try {
+      await save()
     } catch (caught) {
       clearSignedOut()
       setDeleting(false)
+      if (stepUpRequired(caught)) {
+        retryRef.current = save
+        setStepUpOpen(true)
+        return
+      }
       toast(errorMessage(caught))
     }
   }
@@ -442,6 +478,16 @@ export function SettingsPage() {
           </Field>
         </div>
       </ConfirmDialog>
+      <StepUpDialog
+        open={stepUpOpen}
+        onClose={() => setStepUpOpen(false)}
+        onConfirmed={async () => {
+          const action = retryRef.current
+          if (!action) return
+          await action()
+          retryRef.current = null
+        }}
+      />
     </div>
   )
 }

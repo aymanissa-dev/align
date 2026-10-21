@@ -4,8 +4,9 @@ import { Types } from 'mongoose'
 import { isRole, type Role } from './authz.ts'
 import { recordSecurity } from './data/securityLog.ts'
 import { ensurePersonalWorkspace, ownerClaims, type AccessClaims } from './data/workspaces.ts'
+import { HttpError } from './errors.ts'
 import { signJwt, verifyJwt } from './keys.ts'
-import { Session, User } from './models.ts'
+import { Notification, Session, User } from './models.ts'
 
 const ACCESS_COOKIE = 'token'
 const REFRESH_COOKIE = 'refresh'
@@ -106,15 +107,24 @@ export async function startSession(
   const before = new Date()
   const noticed = noticeNewDevice(req, userId, before)
   const claims = await claimsFor(userId, knownClaims)
-  await issueSession(req, res, userId, randomBytes(16).toString('hex'), claims)
+  const sessionId = await issueSession(req, res, userId, randomBytes(16).toString('hex'), claims)
   const newDevice = await noticed
   if (newDevice) {
-    const ip = coarseIp(req.ip)
+    const audit = requestAudit(req)
     await recordSecurity({
       userId,
       type: 'new-device',
-      summary: `New sign-in from ${deviceLabel(req.get('user-agent') ?? '')}${ip ? ` (${ip})` : ''}.`,
-      ipCoarse: ip,
+      summary: `New sign-in from ${audit.device}.`,
+      ...audit,
+    })
+    await Notification.create({
+      userId,
+      kind: 'new-device',
+      title: `New sign-in from ${audit.device}`,
+      projectName: [audit.deviceType, audit.location].filter(Boolean).join(' · '),
+      dueDate: '',
+      key: `new-device:${sessionId}`,
+      read: false,
     })
   }
   return { newDevice }
@@ -133,7 +143,7 @@ async function issueSession(
   familyId: string,
   claims: AccessClaims,
   previous?: PreviousSession,
-): Promise<void> {
+): Promise<string> {
   const refresh = randomBytes(32).toString('hex')
   const userAgent = previous ? (previous.userAgent ?? '') : (req.get('user-agent') ?? '')
   const now = new Date()
@@ -153,6 +163,7 @@ async function issueSession(
     await Session.updateOne({ _id: previous._id }, { replacedBy: session._id, rotatedAt: now })
   }
   writeCookies(res, userId, session.id, refresh, claims)
+  return session.id
 }
 
 export type Access = {
@@ -206,7 +217,7 @@ export async function rotateRefresh(req: Request, res: Response) {
         userId: current.userId.toString(),
         type: 'refresh-reuse',
         summary: 'A refresh token was reused. That session family was signed out.',
-        ipCoarse: coarseIp(req.ip),
+        ...requestAudit(req),
       })
       clearSession(res)
     }
@@ -266,6 +277,24 @@ export async function markStepUp(sessionId: string): Promise<void> {
   await Session.updateOne({ _id: sessionId }, { stepUpAt: new Date() })
 }
 
+/** A sensitive change needs a re-auth recorded on this session within the last 10 minutes. */
+export async function requireFreshStepUp(sessionId: string | undefined): Promise<void> {
+  if (!sessionId) throw new HttpError(401, 'Sign in to continue.')
+  const session = await loadSession(sessionId)
+  if (session && stepUpFresh(session.stepUpAt)) return
+  throw new HttpError(403, 'Confirm it is you to continue.', { code: 'step_up_required' })
+}
+
+export function requestAudit(req: Request): { ipCoarse: string; device: string; deviceType: string; location: string } {
+  const userAgent = req.get('user-agent') ?? ''
+  return {
+    ipCoarse: coarseIp(req.ip),
+    device: deviceLabel(userAgent),
+    deviceType: deviceKind(userAgent),
+    location: coarseLocation(req),
+  }
+}
+
 export async function revokeRefreshCookie(req: Request): Promise<void> {
   const raw = readCookie(req.headers.cookie, REFRESH_COOKIE)
   if (!raw) return
@@ -284,14 +313,20 @@ export function deviceLabel(userAgent: string): string {
           : 'Browser'
   const os = /Windows/.test(userAgent)
     ? 'Windows'
-    : /Mac OS/.test(userAgent)
-      ? 'macOS'
-      : /Android/.test(userAgent)
-        ? 'Android'
-        : /iPhone|iPad/.test(userAgent)
-          ? 'iOS'
+    : /iPhone|iPad/.test(userAgent)
+      ? 'iOS'
+      : /Mac OS|Macintosh/.test(userAgent)
+        ? 'macOS'
+        : /Android/.test(userAgent)
+          ? 'Android'
           : /Linux/.test(userAgent)
             ? 'Linux'
             : 'Unknown device'
   return `${browser} on ${os}`
+}
+
+export function deviceKind(userAgent: string): 'phone' | 'tablet' | 'desktop' {
+  if (/iPad|Tablet/i.test(userAgent)) return 'tablet'
+  if (/Mobile|iPhone|Android/i.test(userAgent)) return 'phone'
+  return 'desktop'
 }

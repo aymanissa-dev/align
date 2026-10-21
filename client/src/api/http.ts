@@ -320,6 +320,12 @@ export const httpApi = {
   async passkeyDelete(id, input) {
     await request<void>(`/api/auth/passkeys/${id}`, { method: 'DELETE', body: JSON.stringify(input ?? {}) })
   },
+  passkeyStepUpOptions() {
+    return request<unknown>('/api/auth/passkeys/step-up/options', { method: 'POST' })
+  },
+  async passkeyStepUpVerify(body) {
+    await request<void>('/api/auth/passkeys/step-up/verify', { method: 'POST', body: JSON.stringify(body) })
+  },
   passkeyLoginOptions() {
     return request<unknown>('/api/auth/passkeys/login/options', { method: 'POST' })
   },
@@ -334,6 +340,15 @@ export const httpApi = {
   },
   restoreTask(id) {
     return request<{ id: string; title: string }>(`/api/trash/tasks/${id}/restore`, { method: 'POST' })
+  },
+  async purgeProject(id) {
+    await request<void>(`/api/trash/projects/${id}`, { method: 'DELETE' })
+  },
+  async purgeTask(id) {
+    await request<void>(`/api/trash/tasks/${id}`, { method: 'DELETE' })
+  },
+  async emptyTrash() {
+    await request<void>('/api/trash/empty', { method: 'POST' })
   },
   listProjects(params?) {
     return request<Project[]>(withQuery('/api/projects', { status: params?.status }))

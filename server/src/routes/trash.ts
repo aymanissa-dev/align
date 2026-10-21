@@ -45,5 +45,29 @@ export function trashRouter(): Router {
     }),
   )
 
+  router.delete(
+    '/projects/:id',
+    asyncHandler(async (req, res) => {
+      await bind(currentTenant(req)).purgeProject(req.params.id)
+      res.status(204).send()
+    }),
+  )
+
+  router.delete(
+    '/tasks/:id',
+    asyncHandler(async (req, res) => {
+      await bind(currentTenant(req)).purgeTask(req.params.id)
+      res.status(204).send()
+    }),
+  )
+
+  router.post(
+    '/empty',
+    asyncHandler(async (req, res) => {
+      await bind(currentTenant(req)).emptyTrash()
+      res.status(204).send()
+    }),
+  )
+
   return router
 }

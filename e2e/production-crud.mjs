@@ -845,7 +845,7 @@ try {
   const upcoming = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Upcoming', exact: true }) })
   await upcoming.getByText(renamedTask).waitFor()
   await upcoming.getByText(laterTitle).waitFor({ state: 'hidden' })
-  const viewAll = upcoming.getByRole('button', { name: /View all dated \(\d+\)/ })
+  const viewAll = upcoming.getByRole('link', { name: /View all dated \(\d+\)/ })
   const viewAllLabel = await viewAll.innerText()
   const datedCount = Number(viewAllLabel.match(/\((\d+)\)/)?.[1])
   const badgeCount = Number((await upcoming.locator('div').first().locator('span').innerText()).trim())
@@ -907,14 +907,20 @@ try {
     timezoneId: 'Asia/Riyadh',
     serviceWorkers: 'block',
     viewport: { width: 1280, height: 800 },
+    userAgent:
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
   })
+  await page.goto(`${base}/settings`)
+  await page.getByText('This device').waitFor()
+  await page.getByRole('button', { name: /Notifications/ }).click()
   const secondLogin = await other.request.post(`${base}/api/auth/login`, {
     data: { email, password },
     headers: await apiHeaders(other),
   })
   if (!secondLogin.ok()) throw new Error(`second login ${secondLogin.status()}`)
-  await page.goto(`${base}/settings`)
-  await page.getByText('This device').waitFor()
+  await page.getByRole('dialog', { name: 'Notifications' }).getByText(/New sign-in from Safari on iOS/).waitFor({ timeout: 15_000 })
+  pass('new device notification')
+  await page.keyboard.press('Escape')
   const otherRow = page.getByRole('listitem').filter({ has: page.getByRole('button', { name: 'Revoke' }) }).filter({ hasNotText: 'This device' })
   const revoked = page.waitForResponse(
     (response) => response.url().includes('/api/auth/sessions/') && response.request().method() === 'DELETE',

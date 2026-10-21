@@ -22,7 +22,7 @@ export function NotificationBell({ className, placement = 'down' }: { className?
   const inbox = useQuery({
     queryKey,
     queryFn: () => api.listNotifications(today),
-    refetchInterval: 60_000,
+    refetchInterval: 5_000,
   })
 
   function markRead(id?: string) {
@@ -128,11 +128,17 @@ export function NotificationBell({ className, placement = 'down' }: { className?
             </button>
           </div>
           {items.length === 0 ? (
-            <p className="px-3 py-4 text-sm text-neutral-500">No due or overdue tasks.</p>
+            <p className="px-3 py-4 text-sm text-neutral-500">No notifications.</p>
           ) : (
             <ul className="max-h-80 overflow-y-auto">
               {items.map((item) => (
                 <li key={item.id} className="flex items-stretch border-b border-neutral-200 last:border-b-0">
+                  {item.kind === 'new-device' ? (
+                    <div className={cn('min-w-0 flex-1 px-3 py-3', item.read ? 'opacity-60' : '')}>
+                      <p className="text-sm text-neutral-950">{item.title}</p>
+                      <p className="mt-1 text-xs text-neutral-500">Security{item.projectName ? ` · ${item.projectName}` : ''}</p>
+                    </div>
+                  ) : (
                   <Link
                     to={`/projects/${item.projectId}`}
                     className={cn('focus-ring block min-w-0 flex-1 px-3 py-3 hover:bg-neutral-50', item.read ? 'opacity-60' : '')}
@@ -146,6 +152,7 @@ export function NotificationBell({ className, placement = 'down' }: { className?
                       {item.dueDate === today ? 'Today' : item.kind === 'overdue' ? 'Overdue' : 'Due soon'} · {item.projectName} · {formatDate(item.dueDate)}
                     </p>
                   </Link>
+                  )}
                   {item.read ? null : (
                     <button
                       type="button"

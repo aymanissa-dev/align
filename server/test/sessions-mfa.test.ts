@@ -46,6 +46,11 @@ describe('sessions and second factors', () => {
     expect(listed.body[0].current).toBe(true)
     const renamed = await agent.patch(`/api/auth/sessions/${listed.body[0].id}`).send({ name: 'Desk' })
     expect(renamed.body.device).toBe('Desk')
+    const renamedEvents = await agent.get('/api/auth/security-events')
+    const renameEvent = renamedEvents.body.find((event: { type: string }) => event.type === 'session-renamed')
+    expect(renameEvent?.summary).toContain('Desk')
+    expect(renameEvent?.device).toEqual(expect.any(String))
+    expect(renameEvent?.deviceType).toEqual(expect.any(String))
 
     await Session.updateOne({ userId: id }, { lastSeenAt: new Date(Date.now() - IDLE_MS - 1000) })
     expect((await agent.get('/api/auth/me')).status).toBe(401)
@@ -68,8 +73,11 @@ describe('sessions and second factors', () => {
     const lastToken = csrfToken(last.headers['set-cookie'])
     if (lastToken) fourth.set('x-csrf-token', lastToken)
     await Session.updateMany({ userId: id }, { stepUpAt: new Date(Date.now() - 11 * 60 * 1000) })
-    expect((await fourth.post('/api/auth/sessions/revoke-all').send({})).status).toBe(403)
-    expect((await fourth.post('/api/auth/sessions/revoke-all').send({ password })).status).toBe(204)
+    const stale = await fourth.post('/api/auth/sessions/revoke-all').send({ password })
+    expect(stale.status).toBe(403)
+    expect(stale.body.code).toBe('step_up_required')
+    expect((await fourth.post('/api/auth/step-up').send({ password })).status).toBe(204)
+    expect((await fourth.post('/api/auth/sessions/revoke-all').send({})).status).toBe(204)
     expect((await fourth.get('/api/auth/me')).status).toBe(401)
   })
 
@@ -132,11 +140,14 @@ describe('sessions and second factors', () => {
     const code = totpAt(setup.body.secret as string, Math.floor(Date.now() / 1000 / 30))
     await agent.post('/api/auth/totp/confirm').send({ code })
     await Session.updateOne({ userId: id, revokedAt: null, replacedBy: null }, { stepUpAt: new Date(Date.now() - 11 * 60 * 1000) })
-    expect((await agent.post('/api/auth/totp/disable').send({})).status).toBe(403)
-    expect((await agent.delete('/api/auth/me').send({})).status).toBe(403)
-    expect((await agent.post('/api/auth/totp/disable').send({ password })).status).toBe(204)
+    const staleDisable = await agent.post('/api/auth/totp/disable').send({ password })
+    expect(staleDisable.status).toBe(403)
+    expect(staleDisable.body.code).toBe('step_up_required')
+    expect((await agent.delete('/api/auth/me').send({ password })).status).toBe(403)
+    expect((await agent.post('/api/auth/step-up').send({ password })).status).toBe(204)
+    expect((await agent.post('/api/auth/totp/disable').send({})).status).toBe(204)
     expect((await agent.get('/api/auth/mfa')).body.totp).toBe(false)
-    expect((await agent.delete('/api/auth/me').send({ password })).status).toBe(204)
+    expect((await agent.delete('/api/auth/me').send({})).status).toBe(204)
   })
 
   it('registers a passkey with a verified ceremony and alerts on a new device', async () => {
@@ -212,9 +223,15 @@ describe('sessions and second factors', () => {
       await request(app)
         .post('/api/auth/login')
         .set('User-Agent', 'Mozilla/5.0 (Macintosh) Firefox/120.0')
+        .set('x-vercel-ip-country', 'SA')
         .send({ email, password })
       const events = await agent.get('/api/auth/security-events')
-      expect(events.body.some((event: { type: string }) => event.type === 'new-device')).toBe(true)
+      const freshDevice = events.body.find((event: { type: string }) => event.type === 'new-device')
+      expect(freshDevice?.device).toBe('Firefox on macOS')
+      expect(freshDevice?.deviceType).toBe('desktop')
+      expect(freshDevice?.location).toBe('SA')
+      const inbox = await agent.get('/api/notifications?today=2026-10-21')
+      expect(inbox.body.some((item: { kind: string; title: string }) => item.kind === 'new-device' && item.title.includes('Firefox on macOS'))).toBe(true)
       expect(await SecurityEvent.countDocuments({ type: 'passkey-added' })).toBe(1)
 
       const id = passkeys.body[0].id as string
@@ -256,11 +273,58 @@ describe('sessions and second factors', () => {
     const { agent, password, id } = await registerUser()
     await Session.updateMany({ userId: id }, { stepUpAt: new Date(Date.now() - 11 * 60 * 1000) })
     const next = `next-${crypto.randomUUID()}@align.test`
-    expect((await agent.post('/api/auth/email').send({ email: next, password: 'not-the-password' })).status).toBe(403)
+    const wrong = await agent.post('/api/auth/email').send({ email: next, password: 'not-the-password' })
+    expect(wrong.status).toBe(403)
+    expect(wrong.body.code).toBe('step_up_required')
+    const ignored = await agent.post('/api/auth/email').send({ email: next, password })
+    expect(ignored.status).toBe(403)
+    expect(ignored.body.code).toBe('step_up_required')
+    expect((await agent.post('/api/auth/step-up').send({ password })).status).toBe(204)
+    expect((await agent.post('/api/auth/email').send({ email: next, password: 'not-the-password' })).status).toBe(400)
     const changed = await agent.post('/api/auth/email').send({ email: next, password })
     expect(changed.status).toBe(200)
     expect(changed.body.email).toBe(next)
     expect(changed.body.verifyToken).toEqual(expect.any(String))
     expect((await agent.get('/api/auth/me')).body.email).toBe(next)
+  })
+
+  it('rejects a stale session on every sensitive route until a fresh step-up', async () => {
+    const { agent, password, id } = await registerUser()
+    const setup = await agent.post('/api/auth/totp/setup')
+    const code = totpAt(setup.body.secret as string, Math.floor(Date.now() / 1000 / 30))
+    await agent.post('/api/auth/totp/confirm').send({ code })
+    await Session.updateMany({ userId: id }, { stepUpAt: new Date(Date.now() - 11 * 60 * 1000) })
+    const email = `step-${crypto.randomUUID()}@align.test`
+    const routes = [
+      () => agent.post('/api/auth/email').send({ email, password }),
+      () => agent.post('/api/auth/password').send({ currentPassword: password, newPassword: 'password123' }),
+      () => agent.post('/api/auth/totp/disable').send({ password }),
+      () => agent.post('/api/auth/recovery/regenerate').send({ password }),
+      () => agent.delete('/api/auth/me').send({ password }),
+      () => agent.post('/api/auth/sessions/revoke-all').send({ password }),
+    ]
+    for (const call of routes) {
+      const rejected = await call()
+      expect(rejected.status).toBe(403)
+      expect(rejected.body.code).toBe('step_up_required')
+    }
+    expect((await agent.post('/api/auth/step-up').send({ password: 'not-the-password' })).status).toBe(403)
+    const freshCode = totpAt(setup.body.secret as string, Math.floor(Date.now() / 1000 / 30))
+    expect((await agent.post('/api/auth/step-up').send({ code: freshCode, method: 'totp' })).status).toBe(204)
+    const changed = await agent.post('/api/auth/email').send({ email, password })
+    expect(changed.status).toBe(200)
+    expect((await agent.post('/api/auth/recovery/regenerate').send({})).status).toBe(200)
+    await Session.updateMany({ userId: id }, { stepUpAt: new Date(Date.now() - 11 * 60 * 1000) })
+    expect((await agent.post('/api/auth/password').send({ currentPassword: password, newPassword: 'password123' })).status).toBe(403)
+    expect((await agent.post('/api/auth/step-up').send({ password })).status).toBe(204)
+    expect((await agent.post('/api/auth/password').send({ currentPassword: password, newPassword: 'password123' })).status).toBe(204)
+    expect((await agent.post('/api/auth/totp/disable').send({})).status).toBe(204)
+    const events = await SecurityEvent.find({ userId: id }).lean()
+    expect(events.some((event) => event.type === 'step-up' && event.device)).toBe(true)
+    expect(events.some((event) => event.type === 'email-changed' && event.deviceType)).toBe(true)
+    expect(events.some((event) => event.type === 'password-changed')).toBe(true)
+    expect(events.some((event) => event.type === 'totp-disabled')).toBe(true)
+    expect(events.some((event) => event.type === 'recovery-regenerated')).toBe(true)
+    expect((await agent.delete('/api/auth/me').send({})).status).toBe(204)
   })
 })

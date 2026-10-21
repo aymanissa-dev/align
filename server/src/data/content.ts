@@ -228,6 +228,52 @@ export function bind(tenant: Tenant) {
       await task.save()
       return task
     },
+    async purgeProject(id: string): Promise<void> {
+      const projectId = objectId(id)
+      if (!projectId) throw new HttpError(404, 'Project not found.')
+      const project = await Project.findOne({ _id: projectId, workspaceId, deletedAt: { $ne: null } }).select('_id')
+      if (!project) throw new HttpError(404, 'Project not found.')
+      await withTransaction(async (session) => {
+        const taskIds = await Task.find({ workspaceId, projectId }).session(session).distinct('_id')
+        await Notification.deleteMany({ userId, taskId: { $in: taskIds } }, { session })
+        await Task.deleteMany({ workspaceId, projectId }, { session })
+        await Note.deleteMany({ workspaceId, projectId }, { session })
+        await Whiteboard.deleteMany({ workspaceId, projectId }, { session })
+        await Activity.deleteMany({ workspaceId, projectId }, { session })
+        await Project.deleteOne({ _id: projectId, workspaceId }, { session })
+      })
+    },
+    async purgeTask(id: string): Promise<void> {
+      const taskId = objectId(id)
+      if (!taskId) throw new HttpError(404, 'Task not found.')
+      const task = await Task.findOne({ _id: taskId, workspaceId, deletedAt: { $ne: null } }).select('_id')
+      if (!task) throw new HttpError(404, 'Task not found.')
+      await withTransaction(async (session) => {
+        await Notification.deleteMany({ userId, taskId }, { session })
+        await Task.deleteOne({ _id: taskId, workspaceId }, { session })
+      })
+    },
+    async emptyTrash(): Promise<void> {
+      await withTransaction(async (session) => {
+        const projects = await Project.find({ workspaceId, deletedAt: { $ne: null } }).session(session).select('_id')
+        const projectIds = projects.map((project) => project._id)
+        const tasks = await Task.find({
+          workspaceId,
+          $or: [{ deletedAt: { $ne: null } }, { projectId: { $in: projectIds } }],
+        })
+          .session(session)
+          .select('_id')
+        const taskIds = tasks.map((task) => task._id)
+        if (taskIds.length > 0) await Notification.deleteMany({ userId, taskId: { $in: taskIds } }, { session })
+        if (taskIds.length > 0) await Task.deleteMany({ _id: { $in: taskIds }, workspaceId }, { session })
+        if (projectIds.length > 0) {
+          await Note.deleteMany({ workspaceId, projectId: { $in: projectIds } }, { session })
+          await Whiteboard.deleteMany({ workspaceId, projectId: { $in: projectIds } }, { session })
+          await Activity.deleteMany({ workspaceId, projectId: { $in: projectIds } }, { session })
+          await Project.deleteMany({ _id: { $in: projectIds }, workspaceId }, { session })
+        }
+      })
+    },
   }
 }
 

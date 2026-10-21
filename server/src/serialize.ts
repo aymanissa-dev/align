@@ -74,8 +74,8 @@ export function publicActivity(item: ActivityDoc | (Pick<ActivityDoc, 'projectId
 export function publicNotification(item: NotificationDoc | (Pick<NotificationDoc, 'projectId' | 'taskId' | 'kind' | 'title' | 'projectName' | 'dueDate' | 'read' | 'createdAt'> & { id?: string; _id: Types.ObjectId })) {
   return {
     id: docId(item),
-    projectId: item.projectId.toString(),
-    taskId: item.taskId.toString(),
+    projectId: item.projectId ? item.projectId.toString() : '',
+    taskId: item.taskId ? item.taskId.toString() : '',
     kind: item.kind,
     title: item.title,
     projectName: item.projectName,

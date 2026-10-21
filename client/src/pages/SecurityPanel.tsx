@@ -1,10 +1,12 @@
 import { startRegistration } from '@simplewebauthn/browser'
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { api } from '../api/index.ts'
 import type { Passkey, SecurityEvent } from '../api/types.ts'
+import { StepUpDialog } from '../components/StepUpDialog.tsx'
 import { Button, Field, Input } from '../components/ui.tsx'
 import { useToast } from '../components/toast-context.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
+import { stepUpRequired } from '../lib/stepUp.ts'
 
 export function SecurityPanel() {
   const toast = useToast()
@@ -15,6 +17,8 @@ export function SecurityPanel() {
   const [events, setEvents] = useState<SecurityEvent[]>([])
   const [passkeys, setPasskeys] = useState<Passkey[]>([])
   const [busy, setBusy] = useState(false)
+  const [stepUpOpen, setStepUpOpen] = useState(false)
+  const retryRef = useRef<(() => Promise<void>) | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -58,14 +62,26 @@ export function SecurityPanel() {
     }
   }
 
+  function askStepUp(action: () => Promise<void>) {
+    retryRef.current = action
+    setStepUpOpen(true)
+  }
+
   async function onDisable() {
     setBusy(true)
-    try {
-      await api.totpDisable({ password })
+    const save = async () => {
+      await api.totpDisable({})
       setCodes([])
       setEvents(await api.listSecurityEvents())
       toast('Two-factor authentication is off')
+    }
+    try {
+      await save()
     } catch (caught) {
+      if (stepUpRequired(caught)) {
+        askStepUp(save)
+        return
+      }
       toast(errorMessage(caught))
     } finally {
       setBusy(false)
@@ -74,11 +90,18 @@ export function SecurityPanel() {
 
   async function onRegenerate() {
     setBusy(true)
-    try {
-      const next = await api.regenerateRecoveryCodes({ password })
+    const save = async () => {
+      const next = await api.regenerateRecoveryCodes({})
       setCodes(next.recoveryCodes)
       setEvents(await api.listSecurityEvents())
+    }
+    try {
+      await save()
     } catch (caught) {
+      if (stepUpRequired(caught)) {
+        askStepUp(save)
+        return
+      }
       toast(errorMessage(caught))
     } finally {
       setBusy(false)
@@ -165,9 +188,20 @@ export function SecurityPanel() {
               <span>{passkey.name}</span>
               <Button
                 variant="secondary"
-                onClick={() =>
-                  void api.passkeyDelete(passkey.id, { password }).then(() => setPasskeys((current) => current.filter((item) => item.id !== passkey.id)))
-                }
+                onClick={() => {
+                  const save = async () => {
+                    await api.passkeyDelete(passkey.id, {})
+                    setPasskeys((current) => current.filter((item) => item.id !== passkey.id))
+                    setEvents(await api.listSecurityEvents())
+                  }
+                  void save().catch((caught: unknown) => {
+                    if (stepUpRequired(caught)) {
+                      askStepUp(save)
+                      return
+                    }
+                    toast(errorMessage(caught))
+                  })
+                }}
               >
                 Remove
               </Button>
@@ -185,12 +219,24 @@ export function SecurityPanel() {
               <p>{event.summary}</p>
               <p className="mt-1 text-xs text-neutral-500">
                 {new Date(event.createdAt).toLocaleString()}
-                {event.ip ? ` · ${event.ip}` : ''}
+                {[event.device, event.deviceType, event.location, event.ip].filter(Boolean).length
+                  ? ` · ${[event.device, event.deviceType, event.location, event.ip].filter(Boolean).join(' · ')}`
+                  : ''}
               </p>
             </li>
           ))}
         </ul>
       )}
+      <StepUpDialog
+        open={stepUpOpen}
+        onClose={() => setStepUpOpen(false)}
+        onConfirmed={async () => {
+          const action = retryRef.current
+          if (!action) return
+          await action()
+          retryRef.current = null
+        }}
+      />
     </section>
   )
 }

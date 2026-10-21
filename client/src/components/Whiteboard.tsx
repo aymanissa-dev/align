@@ -6,6 +6,7 @@ import { useToast } from './toast-context.ts'
 import { ErrorState, OfflineState } from './ui.tsx'
 import { useQueryMiss } from '../lib/queryMiss.ts'
 import { cn } from '../lib/cn.ts'
+import { eraseScene } from '../../../shared/erase.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 
 type Tool = 'pen' | 'eraser' | 'rect' | 'ellipse' | 'text' | 'pan'
@@ -44,9 +45,8 @@ function drawScene(ctx: CanvasRenderingContext2D, scene: WhiteboardScene, width:
     ctx.restore()
   }
   for (const stroke of scene.strokes) {
-    if (stroke.points.length === 0) continue
+    if (stroke.points.length === 0 || stroke.tool === 'eraser') continue
     ctx.save()
-    ctx.globalCompositeOperation = stroke.tool === 'eraser' ? 'destination-out' : 'source-over'
     ctx.strokeStyle = stroke.color
     ctx.lineWidth = stroke.width
     ctx.beginPath()
@@ -57,7 +57,6 @@ function drawScene(ctx: CanvasRenderingContext2D, scene: WhiteboardScene, width:
     ctx.stroke()
     ctx.restore()
   }
-  ctx.globalCompositeOperation = 'source-over'
   ctx.font = '16px Geist, sans-serif'
   ctx.textBaseline = 'top'
   for (const item of scene.texts) {
@@ -447,14 +446,12 @@ function previewScene(
   active: { kind: Tool; start: WhiteboardPoint; points: WhiteboardPoint[] },
   color: string,
 ): WhiteboardScene {
-  if (active.kind === 'pen' || active.kind === 'eraser') {
+  if (active.kind === 'eraser') return eraseScene(scene, active.points)
+  if (active.kind === 'pen') {
     const points = active.points.length === 1 ? [active.points[0], active.points[0]] : active.points
     return {
       ...scene,
-      strokes: [
-        ...scene.strokes,
-        { id: uid(), tool: active.kind, points, color, width: active.kind === 'eraser' ? 18 : 2.5 },
-      ],
+      strokes: [...scene.strokes, { id: uid(), tool: 'pen' as const, points, color, width: 2.5 }],
     }
   }
   if (active.kind === 'rect' || active.kind === 'ellipse') {

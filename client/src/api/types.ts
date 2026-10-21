@@ -57,6 +57,9 @@ export type SecurityEvent = {
   type: string
   summary: string
   ip: string
+  device?: string
+  deviceType?: string
+  location?: string
   createdAt: string
 }
 
@@ -100,7 +103,7 @@ export type Project = {
 }
 
 export type ActivityType = 'create' | 'update' | 'delete' | 'complete'
-export type NotificationKind = 'due-soon' | 'overdue'
+export type NotificationKind = 'due-soon' | 'overdue' | 'new-device'
 
 export type ActivityEvent = {
   id: string
@@ -259,7 +262,7 @@ export interface AlignApi {
   /** POST /api/auth/register */
   register(input: RegisterInput): Promise<User>
   /** POST /api/auth/login */
-  login(input: LoginInput): Promise<User | MfaChallenge>
+  login(input: LoginInput): Promise<(User & { dashboard?: DashboardData; newDevice?: boolean }) | MfaChallenge>
   /** POST /api/auth/logout */
   logout(): Promise<void>
   /** GET /api/auth/providers */
@@ -294,7 +297,7 @@ export interface AlignApi {
   totpConfirm(code: string): Promise<{ recoveryCodes: string[] }>
   totpDisable(input: { password?: string; code?: string }): Promise<void>
   regenerateRecoveryCodes(input: { password?: string }): Promise<{ recoveryCodes: string[] }>
-  completeMfa(input: { code: string; method: 'totp' | 'recovery' }): Promise<User>
+  completeMfa(input: { code: string; method: 'totp' | 'recovery' }): Promise<User & { dashboard?: DashboardData; newDevice?: boolean }>
   stepUp(input: { password?: string; code?: string; method?: 'password' | 'totp' | 'recovery' }): Promise<void>
   listSecurityEvents(): Promise<SecurityEvent[]>
   renameSession(id: string, name: string): Promise<{ id: string; device: string }>
@@ -303,10 +306,15 @@ export interface AlignApi {
   passkeyRegisterVerify(body: unknown): Promise<void>
   passkeyDelete(id: string, input?: { password?: string }): Promise<void>
   passkeyLoginOptions(): Promise<unknown>
-  passkeyLoginVerify(body: unknown): Promise<User>
+  passkeyLoginVerify(body: unknown): Promise<User & { dashboard?: DashboardData; newDevice?: boolean }>
+  passkeyStepUpOptions(): Promise<unknown>
+  passkeyStepUpVerify(body: unknown): Promise<void>
   listTrash(): Promise<{ projects: TrashItem[]; tasks: TrashItem[] }>
   restoreProject(id: string): Promise<{ id: string; name: string }>
   restoreTask(id: string): Promise<{ id: string; title: string }>
+  purgeProject(id: string): Promise<void>
+  purgeTask(id: string): Promise<void>
+  emptyTrash(): Promise<void>
 
   /** GET /api/projects */
   listProjects(params?: { status?: ProjectStatus }): Promise<Project[]>

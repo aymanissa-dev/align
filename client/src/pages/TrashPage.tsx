@@ -1,9 +1,10 @@
+import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '../api/index.ts'
 import type { TrashItem } from '../api/types.ts'
 import { PageHeader } from '../components/chrome.tsx'
 import { useToast } from '../components/toast-context.ts'
-import { Button, EmptyState, ErrorState, ListSkeleton, OfflineState } from '../components/ui.tsx'
+import { Button, ConfirmDialog, EmptyState, ErrorState, ListSkeleton, OfflineState } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { formatDate } from '../lib/format.ts'
 import { useQueryMiss } from '../lib/queryMiss.ts'
@@ -15,6 +16,8 @@ export function TrashPage() {
   const toast = useToast()
   const trash = useQuery({ queryKey: ['trash'], queryFn: () => api.listTrash() })
   const miss = useQueryMiss(trash)
+  const [purge, setPurge] = useState<{ kind: 'project' | 'task'; id: string; label: string } | null>(null)
+  const [emptyOpen, setEmptyOpen] = useState(false)
 
   const restoreProject = useMutation({
     mutationFn: (id: string) => api.restoreProject(id),
@@ -30,6 +33,27 @@ export function TrashPage() {
     onSuccess: async (task) => {
       await invalidateWorkspace()
       toast(`Restored ${task.title}`)
+    },
+    onError: (caught) => toast(errorMessage(caught)),
+  })
+
+  const purgeItem = useMutation({
+    mutationFn: (item: { kind: 'project' | 'task'; id: string }) =>
+      item.kind === 'project' ? api.purgeProject(item.id) : api.purgeTask(item.id),
+    onSuccess: async () => {
+      setPurge(null)
+      await invalidateWorkspace()
+      toast('Deleted permanently')
+    },
+    onError: (caught) => toast(errorMessage(caught)),
+  })
+
+  const emptyTrash = useMutation({
+    mutationFn: () => api.emptyTrash(),
+    onSuccess: async () => {
+      setEmptyOpen(false)
+      await invalidateWorkspace()
+      toast('Trash emptied')
     },
     onError: (caught) => toast(errorMessage(caught)),
   })
@@ -51,6 +75,13 @@ export function TrashPage() {
         eyebrow="Workspace"
         title="Trash"
         description="Deleted projects and tasks stay here for 30 days, then they are removed."
+        action={
+          empty ? null : (
+            <Button variant="secondary" onClick={() => setEmptyOpen(true)}>
+              Empty Trash
+            </Button>
+          )
+        }
       />
 
       {loading || miss === 'loading' ? (
@@ -87,8 +118,9 @@ export function TrashPage() {
                 label={project.name || 'Untitled project'}
                 deletedAt={project.deletedAt}
                 purgeAt={project.purgeAt}
-                pending={pendingId === project.id}
+                pending={pendingId === project.id || (purgeItem.isPending && purgeItem.variables?.id === project.id)}
                 onRestore={() => restoreProject.mutate(project.id)}
+                onPurge={() => setPurge({ kind: 'project', id: project.id, label: project.name || 'Untitled project' })}
               />
             ))}
           </ul>
@@ -107,13 +139,38 @@ export function TrashPage() {
                 label={task.title || 'Untitled task'}
                 deletedAt={task.deletedAt}
                 purgeAt={task.purgeAt}
-                pending={pendingId === task.id}
+                pending={pendingId === task.id || (purgeItem.isPending && purgeItem.variables?.id === task.id)}
                 onRestore={() => restoreTask.mutate(task.id)}
+                onPurge={() => setPurge({ kind: 'task', id: task.id, label: task.title || 'Untitled task' })}
               />
             ))}
           </ul>
         </section>
       ) : null}
+      <ConfirmDialog
+        open={purge !== null}
+        title="Delete permanently"
+        body={purge ? `Permanently delete “${purge.label}”? This cannot be undone.` : ''}
+        confirmLabel="Delete permanently"
+        pending={purgeItem.isPending}
+        onConfirm={() => {
+          if (purge) purgeItem.mutate(purge)
+        }}
+        onClose={() => {
+          if (!purgeItem.isPending) setPurge(null)
+        }}
+      />
+      <ConfirmDialog
+        open={emptyOpen}
+        title="Empty Trash"
+        body="Permanently delete everything in Trash, including tasks and notes that belong to those projects? This cannot be undone."
+        confirmLabel="Empty Trash"
+        pending={emptyTrash.isPending}
+        onConfirm={() => emptyTrash.mutate()}
+        onClose={() => {
+          if (!emptyTrash.isPending) setEmptyOpen(false)
+        }}
+      />
     </div>
   )
 }
@@ -124,12 +181,14 @@ function TrashRow({
   purgeAt,
   pending,
   onRestore,
+  onPurge,
 }: {
   label: string
   deletedAt: TrashItem['deletedAt']
   purgeAt: TrashItem['purgeAt']
   pending: boolean
   onRestore: () => void
+  onPurge: () => void
 }) {
   const removed = formatDate(deletedAt)
   const purge = formatDate(purgeAt)
@@ -142,9 +201,14 @@ function TrashRow({
           {purge ? ` · Removed after ${purge}` : ''}
         </p>
       </div>
-      <Button variant="secondary" disabled={pending} onClick={onRestore}>
-        {pending ? 'Restoring…' : `Restore ${label}`}
-      </Button>
+      <div className="flex shrink-0 gap-2">
+        <Button variant="secondary" disabled={pending} onClick={onRestore}>
+          {pending ? 'Restoring…' : `Restore ${label}`}
+        </Button>
+        <Button variant="secondary" disabled={pending} onClick={onPurge}>
+          {`Delete ${label} permanently`}
+        </Button>
+      </div>
     </li>
   )
 }

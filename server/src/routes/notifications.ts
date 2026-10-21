@@ -104,18 +104,36 @@ export function notificationsRouter(): Router {
     '/',
     asyncHandler(async (req, res) => {
       const today = requireToday(req.query.today)
-      const rows = await dueRows(currentTenant(req), today)
-      rows.sort((a, b) => (a.createdAt === b.createdAt ? (a.key < b.key ? 1 : -1) : a.createdAt < b.createdAt ? 1 : -1))
+      const tenant = currentTenant(req)
+      const [rows, devices] = await Promise.all([
+        dueRows(tenant, today),
+        bind(tenant).notifications.find({ kind: 'new-device' }).sort({ createdAt: -1 }).limit(20).lean(),
+      ])
+      const listed = [
+        ...rows.map(present),
+        ...devices.map((item) => ({
+          id: item._id.toString(),
+          projectId: '',
+          taskId: '',
+          kind: 'new-device' as const,
+          title: item.title,
+          projectName: item.projectName ?? '',
+          dueDate: '',
+          read: item.read,
+          createdAt: item.createdAt.toISOString(),
+        })),
+      ]
+      listed.sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? 1 : -1) : a.createdAt < b.createdAt ? 1 : -1))
       const cursor = decodeCursor(req.query.cursor)
       const filtered =
         cursor && cursor.length === 2
-          ? rows.filter((row) => row.createdAt < cursor[0] || (row.createdAt === cursor[0] && row.key < cursor[1]))
-          : rows
+          ? listed.filter((row) => row.createdAt < cursor[0] || (row.createdAt === cursor[0] && row.id < cursor[1]))
+          : listed
       const limit = pageLimit(req.query.limit)
       const page = filtered.slice(0, limit)
       const last = page[limit - 1]
-      if (filtered.length > limit && last) res.set('X-Next-Cursor', encodeCursor([last.createdAt, last.key]))
-      res.json(page.map(present))
+      if (filtered.length > limit && last) res.set('X-Next-Cursor', encodeCursor([last.createdAt, last.id]))
+      res.json(page)
     }),
   )
 

@@ -10,7 +10,7 @@ import { buttonClass } from '../lib/buttonClass.ts'
 import { useToast } from '../components/toast-context.ts'
 import { useToggleTask } from '../hooks/useToggleTask.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
-import { isUpcoming } from '../lib/due.ts'
+import { isUpcoming, UPCOMING_CAP } from '../lib/due.ts'
 import { firstName, greeting } from '../lib/format.ts'
 import { useQueryMiss } from '../lib/queryMiss.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
@@ -24,6 +24,8 @@ export function DashboardPage() {
   const dashboard = useQuery({
     queryKey: ['dashboard'],
     queryFn: ({ signal }) => api.getDashboard({ signal }),
+    // Sign-in seeds this query. Keep that payload on screen instead of waiting for another round trip.
+    staleTime: 15_000,
   })
   const miss = useQueryMiss(dashboard)
   const [showAllDated, setShowAllDated] = useState(false)
@@ -50,7 +52,8 @@ export function DashboardPage() {
   const dated = openTasks.filter((task) => task.dueDate)
   const upcoming = dated.filter((task) => isUpcoming(task.dueDate))
   const datedOpenCount = dashboard.data.datedOpenCount ?? dated.length
-  const shown = showAllDated ? dated : upcoming
+  // Upcoming is the 7-day window, capped at 5. View all dated reveals every dated task.
+  const shown = showAllDated ? dated : upcoming.slice(0, UPCOMING_CAP)
 
   return (
     <div>
@@ -119,15 +122,18 @@ export function DashboardPage() {
               ))}
             </ul>
           )}
-          {!showAllDated && datedOpenCount > upcoming.length ? (
+          {!showAllDated && (upcoming.length > UPCOMING_CAP || datedOpenCount > upcoming.length) ? (
             <div className="border-t border-neutral-200 px-4 py-3">
-              <button
-                type="button"
+              <a
+                href="#all-dated"
                 className="focus-ring text-sm text-neutral-950 underline underline-offset-4"
-                onClick={() => setShowAllDated(true)}
+                onClick={(event) => {
+                  event.preventDefault()
+                  setShowAllDated(true)
+                }}
               >
                 View all dated ({datedOpenCount})
-              </button>
+              </a>
             </div>
           ) : null}
         </section>

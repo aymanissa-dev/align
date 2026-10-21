@@ -138,7 +138,7 @@ export function ProjectDetailPage() {
       <ConfirmDialog
         open={confirmDelete}
         title="Delete project"
-        body={`Delete “${current.name}”? Tasks and notes in this project are deleted too. This cannot be undone.`}
+        body={`Delete “${current.name}”? Moved to Trash. You can restore it for 30 days.`}
         confirmLabel="Delete"
         pending={remove.isPending}
         onConfirm={() => remove.mutate()}

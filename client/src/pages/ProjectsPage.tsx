@@ -139,7 +139,7 @@ export function ProjectsPage() {
         title="Delete project"
         body={
           deleting
-            ? `Delete “${deleting.name}”? Tasks and notes in this project are deleted too. This cannot be undone.`
+            ? `Delete “${deleting.name}”? Moved to Trash. You can restore it for 30 days.`
             : ''
         }
         confirmLabel="Delete"

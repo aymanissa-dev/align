@@ -489,7 +489,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
       <ConfirmDialog
         open={pendingDelete !== null}
         title="Delete task"
-        body={pendingDelete ? `Delete “${pendingDelete.title}”? This cannot be undone.` : ''}
+        body={pendingDelete ? `Delete “${pendingDelete.title}”? Moved to Trash. You can restore it for 30 days.` : ''}
         confirmLabel="Delete"
         pending={remove.isPending}
         onConfirm={() => {

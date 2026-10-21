@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router, type Request } from 'express'
 import QRCode from 'qrcode'
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server'
 import {
@@ -23,13 +23,13 @@ import { HttpError } from '../errors.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { checkPassword } from '../password.ts'
 import { publicUser } from '../serialize.ts'
+import { dashboardForUser } from './dashboard.ts'
 import {
-  coarseIp,
   markStepUp,
   readCookie,
+  requestAudit,
+  requireFreshStepUp,
   startSession,
-  stepUpFresh,
-  loadSession,
 } from '../session.ts'
 import { verifyTotp } from '../totp.ts'
 import { mfaSchema, parseBody, stepUpSchema, totpCodeSchema } from '../validate.ts'
@@ -44,19 +44,14 @@ function pendingUser(req: { headers: { cookie?: string } }): string {
   return payload.sub
 }
 
-async function assertStepUp(req: { sessionId?: string; headers: { cookie?: string } }, password?: string, userId?: string) {
-  if (req.sessionId) {
-    const session = await loadSession(req.sessionId)
-    if (session && stepUpFresh(session.stepUpAt)) return
-  }
-  if (password && userId) {
-    const user = await users.byIdSecret(userId)
-    if (user?.passwordHash && (await checkPassword(password, user.passwordHash))) {
-      if (req.sessionId) await markStepUp(req.sessionId)
-      return
-    }
-  }
-  throw new HttpError(403, 'Confirm it is you to continue.', { code: 'step_up_required' })
+async function noteStepUp(req: Request, userId: string, summary: string) {
+  if (req.sessionId) await markStepUp(req.sessionId)
+  await recordSecurity({
+    userId,
+    type: 'step-up',
+    summary,
+    ...requestAudit(req),
+  })
 }
 
 export function mfaRouter(): Router {
@@ -85,7 +80,7 @@ export function mfaRouter(): Router {
         userId: currentUserId(req),
         type: 'totp-enabled',
         summary: 'Two-factor authentication was turned on.',
-        ipCoarse: coarseIp(req.ip),
+        ...requestAudit(req),
       })
       res.json({ recoveryCodes: codes })
     }),
@@ -96,7 +91,7 @@ export function mfaRouter(): Router {
     requireAuth,
     asyncHandler(async (req, res) => {
       const body = parseBody(stepUpSchema, req.body)
-      await assertStepUp(req, body.password, currentUserId(req))
+      await requireFreshStepUp(req.sessionId)
       if (body.code) {
         const user = await users.byIdSecret(currentUserId(req))
         if (!user?.totpSecret || !verifyTotp(user.totpSecret, body.code)) {
@@ -108,7 +103,7 @@ export function mfaRouter(): Router {
         userId: currentUserId(req),
         type: 'totp-disabled',
         summary: 'Two-factor authentication was turned off.',
-        ipCoarse: coarseIp(req.ip),
+        ...requestAudit(req),
       })
       res.status(204).send()
     }),
@@ -118,14 +113,14 @@ export function mfaRouter(): Router {
     '/recovery/regenerate',
     requireAuth,
     asyncHandler(async (req, res) => {
-      const body = parseBody(stepUpSchema, req.body)
-      await assertStepUp(req, body.password, currentUserId(req))
+      parseBody(stepUpSchema, req.body)
+      await requireFreshStepUp(req.sessionId)
       const codes = await regenerateRecoveryCodes(currentUserId(req))
       await recordSecurity({
         userId: currentUserId(req),
         type: 'recovery-regenerated',
         summary: 'Recovery codes were replaced.',
-        ipCoarse: coarseIp(req.ip),
+        ...requestAudit(req),
       })
       res.json({ recoveryCodes: codes })
     }),
@@ -147,20 +142,24 @@ export function mfaRouter(): Router {
           userId: user.id,
           type: 'mfa-failed',
           summary: 'A two-factor code was rejected.',
-          ipCoarse: coarseIp(req.ip),
+          ...requestAudit(req),
         })
         throw new HttpError(401, 'That code is not valid.')
       }
       res.clearCookie('pending', { path: '/' })
       await ensurePersonalWorkspace(user.id)
-      const started = await startSession(req, res, user.id)
+      const fresh = (await users.byId(user.id)) ?? user
+      const [started, dashboard] = await Promise.all([
+        startSession(req, res, user.id),
+        dashboardForUser(fresh),
+      ])
       await recordSecurity({
         userId: user.id,
         type: 'sign-in',
         summary: input.method === 'totp' ? 'Signed in with an authenticator code.' : 'Signed in with a recovery code.',
-        ipCoarse: coarseIp(req.ip),
+        ...requestAudit(req),
       })
-      res.json({ ...publicUser(user), newDevice: started.newDevice })
+      res.json({ ...publicUser(user), newDevice: started.newDevice, ...(dashboard ? { dashboard } : {}) })
     }),
   )
 
@@ -169,24 +168,30 @@ export function mfaRouter(): Router {
     requireAuth,
     asyncHandler(async (req, res) => {
       const body = parseBody(stepUpSchema, req.body)
+      const userId = currentUserId(req)
+      if (!req.sessionId) throw new HttpError(401, 'Sign in to continue.')
       if (body.password) {
-        await assertStepUp(req, body.password, currentUserId(req))
+        const user = await users.byIdSecret(userId)
+        if (!user?.passwordHash || !(await checkPassword(body.password, user.passwordHash))) {
+          throw new HttpError(403, 'That password is not valid.')
+        }
+        await noteStepUp(req, userId, 'Confirmed this session with a password.')
         res.status(204).send()
         return
       }
       if (body.code && body.method !== 'recovery') {
-        const user = await users.byIdSecret(currentUserId(req))
+        const user = await users.byIdSecret(userId)
         if (!user?.totpSecret || !verifyTotp(user.totpSecret, body.code)) {
           throw new HttpError(400, 'That code is not valid.')
         }
-        if (req.sessionId) await markStepUp(req.sessionId)
+        await noteStepUp(req, userId, 'Confirmed this session with an authenticator code.')
         res.status(204).send()
         return
       }
       if (body.code) {
-        const ok = await consumeRecoveryCode(currentUserId(req), body.code)
+        const ok = await consumeRecoveryCode(userId, body.code)
         if (!ok) throw new HttpError(400, 'That code is not valid.')
-        if (req.sessionId) await markStepUp(req.sessionId)
+        await noteStepUp(req, userId, 'Confirmed this session with a recovery code.')
         res.status(204).send()
         return
       }
@@ -205,6 +210,9 @@ export function mfaRouter(): Router {
           type: event.type,
           summary: event.summary,
           ip: event.ipCoarse,
+          device: event.device ?? '',
+          deviceType: event.deviceType ?? '',
+          location: event.location ?? '',
           createdAt: event.createdAt.toISOString(),
         })),
       )
@@ -231,7 +239,7 @@ export function mfaRouter(): Router {
         userId: currentUserId(req),
         type: 'passkey-added',
         summary: 'A passkey was added.',
-        ipCoarse: coarseIp(req.ip),
+        ...requestAudit(req),
       })
       res.status(204).send()
     }),
@@ -256,15 +264,15 @@ export function mfaRouter(): Router {
     '/passkeys/:id',
     requireAuth,
     asyncHandler(async (req, res) => {
-      const body = parseBody(stepUpSchema, req.body ?? {})
-      await assertStepUp(req, body.password, currentUserId(req))
+      parseBody(stepUpSchema, req.body ?? {})
+      await requireFreshStepUp(req.sessionId)
       const removed = await deletePasskey(currentUserId(req), req.params.id)
       if (!removed) throw new HttpError(404, 'Passkey not found.')
       await recordSecurity({
         userId: currentUserId(req),
         type: 'passkey-removed',
         summary: 'A passkey was removed.',
-        ipCoarse: coarseIp(req.ip),
+        ...requestAudit(req),
       })
       res.status(204).send()
     }),
@@ -284,14 +292,18 @@ export function mfaRouter(): Router {
       const user = await users.byId(verified.userId)
       if (!user) throw new HttpError(401, 'Sign in to continue.')
       await ensurePersonalWorkspace(user.id)
-      const started = await startSession(req, res, user.id)
+      const fresh = (await users.byId(user.id)) ?? user
+      const [started, dashboard] = await Promise.all([
+        startSession(req, res, user.id),
+        dashboardForUser(fresh),
+      ])
       await recordSecurity({
         userId: user.id,
         type: 'sign-in',
         summary: 'Signed in with a passkey.',
-        ipCoarse: coarseIp(req.ip),
+        ...requestAudit(req),
       })
-      res.json({ ...publicUser(user), newDevice: started.newDevice })
+      res.json({ ...publicUser(user), newDevice: started.newDevice, ...(dashboard ? { dashboard } : {}) })
     }),
   )
 
@@ -309,7 +321,7 @@ export function mfaRouter(): Router {
     asyncHandler(async (req, res) => {
       const verified = await verifyPasskey(req, req.body as AuthenticationResponseJSON, 'stepup')
       if (verified.userId !== currentUserId(req)) throw new HttpError(401, 'Passkey not recognized.')
-      if (req.sessionId) await markStepUp(req.sessionId)
+      await noteStepUp(req, currentUserId(req), 'Confirmed this session with a passkey.')
       res.status(204).send()
     }),
   )

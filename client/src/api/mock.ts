@@ -1189,6 +1189,10 @@ export const mockApi = {
     const state = load()
     return publicUser(requireUser(state))
   },
+  async passkeyStepUpOptions() {
+    return {}
+  },
+  async passkeyStepUpVerify() {},
   async changeEmail(input: { email: string; password: string }) {
     await wait()
     const state = load()
@@ -1206,4 +1210,7 @@ export const mockApi = {
   async restoreTask(id: string) {
     return { id, title: 'Restored' }
   },
+  async purgeProject() {},
+  async purgeTask() {},
+  async emptyTrash() {},
 } satisfies AlignApi
