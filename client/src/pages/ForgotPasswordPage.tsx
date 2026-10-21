@@ -11,6 +11,7 @@ export function ForgotPasswordPage() {
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
   const [resetToken, setResetToken] = useState('')
+  const [sentMessage, setSentMessage] = useState('')
   const [sent, setSent] = useState(false)
   useDocumentTitle('Reset password')
 
@@ -25,6 +26,7 @@ export function ForgotPasswordPage() {
     try {
       const result = await api.forgotPassword(email.trim())
       setSent(true)
+      setSentMessage(result.message)
       setResetToken(result.resetToken ?? '')
     } catch (caught) {
       setError(errorMessage(caught))
@@ -34,14 +36,14 @@ export function ForgotPasswordPage() {
   }
 
   return (
-    <AuthFrame title="Reset password" lede="We’ll prepare a one-time link for this email.">
+    <AuthFrame title="Reset password" lede="If an account exists, we’ll email a one-time link.">
       {sent ? (
         <div className="space-y-4">
-          <p className="text-sm leading-6 text-neutral-700">If an account exists for that email, a reset link is ready.</p>
+          <p className="text-sm leading-6 text-neutral-700">{sentMessage}</p>
           {resetToken ? (
             <div className="border border-neutral-200 p-4">
               <p className="text-sm leading-6 text-neutral-700">
-                Email isn’t configured on this server. Use this one-time link. It expires in one hour.
+                Dev tokens are enabled on this server. Use this one-time link. It expires in one hour.
               </p>
               <Link
                 to={`/reset?token=${encodeURIComponent(resetToken)}`}

@@ -1,5 +1,6 @@
 import mongoose from 'mongoose'
 import { downPersonalWorkspaces, PERSONAL_WORKSPACES, upPersonalWorkspaces, type MigrationCounts } from './personalWorkspaces.ts'
+import { downRevokeExposedTokens, REVOKE_EXPOSED_TOKENS, upRevokeExposedTokens } from './revokeExposedTokens.ts'
 
 export type MigrationResult = {
   id: string
@@ -16,6 +17,7 @@ type Migration = {
 
 const MIGRATIONS: Migration[] = [
   { id: PERSONAL_WORKSPACES, up: upPersonalWorkspaces, down: downPersonalWorkspaces },
+  { id: REVOKE_EXPOSED_TOKENS, up: upRevokeExposedTokens, down: downRevokeExposedTokens },
 ]
 
 let appliedOnce: Promise<MigrationResult[]> | null = null

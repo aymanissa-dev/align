@@ -535,7 +535,7 @@ export const mockApi = {
 
   async sendVerification() {
     await wait()
-    return { message: 'Verification link ready.', verifyToken: 'mock-verify-token' }
+    return { message: "We've sent a verification link." }
   },
 
   async listSessions() {
@@ -587,21 +587,9 @@ export const mockApi = {
 
   async forgotPassword(email) {
     await wait()
-    const state = load()
     const normalized = email.trim().toLowerCase()
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) throw new ApiError(400, 'Enter a valid email.')
-    const user = state.users.find((item) => item.email === normalized)
-    const body: { message: string; resetToken?: string } = {
-      message: 'If an account exists for that email, a reset link is ready.',
-    }
-    if (user) {
-      const resetToken = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '')
-      user.resetToken = resetToken
-      user.resetExpires = new Date(Date.now() + 60 * 60 * 1000).toISOString()
-      body.resetToken = resetToken
-      persist()
-    }
-    return body
+    return { message: "If an account exists, we've sent a reset link." }
   },
 
   async resetPassword(input) {

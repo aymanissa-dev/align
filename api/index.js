@@ -1019,9 +1019,29 @@ async function downPersonalWorkspaces(dryRun) {
   return counts;
 }
 
+// src/migrate/revokeExposedTokens.ts
+var REVOKE_EXPOSED_TOKENS = "002_revoke_exposed_auth_tokens";
+var tokenFilter = { type: { $in: ["reset", "verify"] } };
+var legacyFilter = {
+  $or: [{ resetTokenHash: { $type: "string" } }, { resetTokenExpires: { $type: "date" } }]
+};
+async function upRevokeExposedTokens(dryRun) {
+  const tokens = await AuthToken.countDocuments(tokenFilter);
+  const accounts = await User.countDocuments(legacyFilter);
+  if (!dryRun) {
+    await AuthToken.deleteMany(tokenFilter);
+    await User.updateMany(legacyFilter, { $unset: { resetTokenHash: 1, resetTokenExpires: 1 } });
+  }
+  return { tokens, accounts };
+}
+async function downRevokeExposedTokens(_dryRun) {
+  return { tokens: 0, accounts: 0 };
+}
+
 // src/migrate/runner.ts
 var MIGRATIONS = [
-  { id: PERSONAL_WORKSPACES, up: upPersonalWorkspaces, down: downPersonalWorkspaces }
+  { id: PERSONAL_WORKSPACES, up: upPersonalWorkspaces, down: downPersonalWorkspaces },
+  { id: REVOKE_EXPOSED_TOKENS, up: upRevokeExposedTokens, down: downRevokeExposedTokens }
 ];
 var appliedOnce = null;
 function runMigrations(options) {
@@ -1414,7 +1434,7 @@ var APP_VERSION = 2;
 var MINIMUM_CLIENT_VERSION = 2;
 
 // src/routes/auth.ts
-import { randomBytes as randomBytes5 } from "node:crypto";
+import { randomBytes as randomBytes6 } from "node:crypto";
 import { Router as Router3 } from "express";
 
 // src/data/content.ts
@@ -2799,6 +2819,10 @@ function watchBreachedPassword(userId, password2, fetchImpl = fetch) {
   void noteBreachedPassword(userId, password2, fetchImpl).catch(() => void 0);
 }
 
+// src/mailPolicy.ts
+import { randomBytes as randomBytes5 } from "node:crypto";
+import { Types as Types5 } from "mongoose";
+
 // src/mail.ts
 async function deliverMail(input) {
   const key = process.env.RESEND_API_KEY;
@@ -2823,6 +2847,116 @@ async function deliverMail(input) {
     console.error(error);
     return false;
   }
+}
+
+// src/tokens.ts
+import { randomBytes as randomBytes4 } from "node:crypto";
+var HOUR_MS = 60 * 60 * 1e3;
+async function issueAuthToken(userId, type) {
+  const token = randomBytes4(32).toString("hex");
+  const ttl = type === "verify" ? 24 * HOUR_MS : HOUR_MS;
+  await AuthToken.deleteMany({ userId, type, usedAt: null });
+  await AuthToken.create({
+    userId,
+    type,
+    tokenHash: hashToken(token),
+    expiresAt: new Date(Date.now() + ttl)
+  });
+  return token;
+}
+async function consumeAuthToken(token, type) {
+  const found = await AuthToken.findOne({
+    tokenHash: hashToken(token),
+    type,
+    usedAt: null,
+    expiresAt: { $gt: /* @__PURE__ */ new Date() }
+  });
+  if (!found) return null;
+  found.usedAt = /* @__PURE__ */ new Date();
+  await found.save();
+  return found.userId.toString();
+}
+
+// src/mailPolicy.ts
+var RESET_MESSAGE = "If an account exists, we've sent a reset link.";
+var VERIFY_MESSAGE = "We've sent a verification link.";
+var QUIET_FLOOR_MS = 300;
+var MAIL_FLOOR_MS = 1e3;
+function exposeDevTokens() {
+  if (process.env.VERCEL_ENV === "production") return false;
+  if (process.env.NODE_ENV === "production") return false;
+  return process.env.EXPOSE_DEV_TOKENS === "1";
+}
+function mailConfigured() {
+  return Boolean(process.env.RESEND_API_KEY && process.env.MAIL_FROM);
+}
+async function burnAuthTokenWork(type) {
+  const token = randomBytes5(32).toString("hex");
+  hashToken(token);
+  await AuthToken.deleteMany({ userId: new Types5.ObjectId(), type, usedAt: null });
+}
+function logMailRequest(kind, email2) {
+  if (exposeDevTokens() || mailConfigured()) return;
+  console.info(JSON.stringify({ msg: kind, email: email2 }));
+}
+async function settleMailResponse(started) {
+  if (exposeDevTokens()) return;
+  const floor = mailConfigured() ? MAIL_FLOOR_MS : QUIET_FLOOR_MS;
+  const wait2 = floor - (performance.now() - started);
+  if (wait2 > 0) await new Promise((resolve) => setTimeout(resolve, wait2));
+}
+async function matchUnknownMailTiming() {
+  if (!mailConfigured()) return;
+  try {
+    await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(8e3)
+    });
+  } catch {
+  }
+}
+async function issueMailedToken(options) {
+  if (!mailConfigured() && !exposeDevTokens()) {
+    await burnAuthTokenWork(options.type);
+    logMailRequest(options.log, options.email);
+    return void 0;
+  }
+  const token = await issueAuthToken(options.userId, options.type);
+  if (!mailConfigured()) return exposeDevTokens() ? token : void 0;
+  const link = `${options.origin}/${options.path}?token=${encodeURIComponent(token)}`;
+  const mailed = await deliverMail({ to: options.email, subject: options.subject, text: options.text(link) });
+  if (mailed || exposeDevTokens()) return exposeDevTokens() && !mailed ? token : void 0;
+  await AuthToken.deleteMany({ userId: options.userId, type: options.type, usedAt: null });
+  return void 0;
+}
+function devTokenField(key, token) {
+  if (!token || !exposeDevTokens()) return {};
+  return { [key]: token };
+}
+async function preparePasswordReset(email2, origin) {
+  const user = await users.byEmail(email2);
+  if (!user) {
+    await burnAuthTokenWork("reset");
+    logMailRequest("password-reset-requested", email2);
+    await matchUnknownMailTiming();
+    return void 0;
+  }
+  return issueMailedToken({
+    userId: user.id,
+    email: user.email,
+    type: "reset",
+    subject: "Reset your Align password",
+    text: (link) => `Reset your password by opening this link within one hour:
+${link}`,
+    origin,
+    path: "reset",
+    log: "password-reset-requested"
+  });
 }
 
 // src/rateLimit.ts
@@ -2920,34 +3054,6 @@ async function enforceAuthLimit(route, ip, email2) {
   return count;
 }
 
-// src/tokens.ts
-import { randomBytes as randomBytes4 } from "node:crypto";
-var HOUR_MS = 60 * 60 * 1e3;
-async function issueAuthToken(userId, type) {
-  const token = randomBytes4(32).toString("hex");
-  const ttl = type === "verify" ? 24 * HOUR_MS : HOUR_MS;
-  await AuthToken.deleteMany({ userId, type, usedAt: null });
-  await AuthToken.create({
-    userId,
-    type,
-    tokenHash: hashToken(token),
-    expiresAt: new Date(Date.now() + ttl)
-  });
-  return token;
-}
-async function consumeAuthToken(token, type) {
-  const found = await AuthToken.findOne({
-    tokenHash: hashToken(token),
-    type,
-    usedAt: null,
-    expiresAt: { $gt: /* @__PURE__ */ new Date() }
-  });
-  if (!found) return null;
-  found.usedAt = /* @__PURE__ */ new Date();
-  await found.save();
-  return found.userId.toString();
-}
-
 // src/routes/auth.ts
 function clientIp(req) {
   return req.ip || req.socket.remoteAddress || "unknown";
@@ -2959,9 +3065,6 @@ function appOrigin(req) {
 }
 function googleConfigured() {
   return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
-}
-async function sendOrReveal(email2, subject, text2) {
-  return deliverMail({ to: email2, subject, text: text2 });
 }
 function authRouter(limiter) {
   const router = Router3();
@@ -2984,16 +3087,23 @@ function authRouter(limiter) {
         emailVerifiedAt: null
       });
       await ensurePersonalWorkspace(user.id);
-      const verifyToken = await issueAuthToken(user.id, "verify");
-      const link = `${appOrigin(req)}/verify?token=${encodeURIComponent(verifyToken)}`;
-      const mailed = await sendOrReveal(
-        user.email,
-        "Verify your Align email",
-        `Confirm your email by opening this link within 24 hours:
-${link}`
-      );
+      const verifyToken = await issueMailedToken({
+        userId: user.id,
+        email: user.email,
+        type: "verify",
+        subject: "Verify your Align email",
+        text: (link) => `Confirm your email by opening this link within 24 hours:
+${link}`,
+        origin: appOrigin(req),
+        path: "verify",
+        log: "verification-requested"
+      });
       const started = await startSession(req, res, user.id);
-      res.status(201).json(mailed ? { ...publicUser(user), newDevice: started.newDevice } : { ...publicUser(user), verifyToken, newDevice: started.newDevice });
+      res.status(201).json({
+        ...publicUser(user),
+        newDevice: started.newDevice,
+        ...devTokenField("verifyToken", verifyToken)
+      });
     })
   );
   router.post(
@@ -3107,22 +3217,10 @@ ${link}`
     asyncHandler(async (req, res) => {
       const input = parseBody(forgotSchema, req.body);
       await enforceAuthLimit("forgot", clientIp(req), input.email);
-      const user = await users.byEmail(input.email);
-      const body = {
-        message: "If an account exists for that email, a reset link is ready."
-      };
-      if (user) {
-        const resetToken = await issueAuthToken(user.id, "reset");
-        const link = `${appOrigin(req)}/reset?token=${encodeURIComponent(resetToken)}`;
-        const mailed = await sendOrReveal(
-          user.email,
-          "Reset your Align password",
-          `Reset your password by opening this link within one hour:
-${link}`
-        );
-        if (!mailed) body.resetToken = resetToken;
-      }
-      res.json(body);
+      const started = performance.now();
+      const resetToken = await preparePasswordReset(input.email, appOrigin(req));
+      await settleMailResponse(started);
+      res.json({ message: RESET_MESSAGE, ...devTokenField("resetToken", resetToken) });
     })
   );
   router.post(
@@ -3168,15 +3266,21 @@ ${link}`
         res.json({ message: "This email is already verified." });
         return;
       }
-      const verifyToken = await issueAuthToken(user.id, "verify");
-      const link = `${appOrigin(req)}/verify?token=${encodeURIComponent(verifyToken)}`;
-      const mailed = await sendOrReveal(
-        user.email,
-        "Verify your Align email",
-        `Confirm your email by opening this link within 24 hours:
-${link}`
-      );
-      res.json(mailed ? { message: "Verification link sent." } : { message: "Verification link ready.", verifyToken });
+      const verifyToken = await issueMailedToken({
+        userId: user.id,
+        email: user.email,
+        type: "verify",
+        subject: "Verify your Align email",
+        text: (link) => `Confirm your email by opening this link within 24 hours:
+${link}`,
+        origin: appOrigin(req),
+        path: "verify",
+        log: "verification-requested"
+      });
+      res.json({
+        message: verifyToken && exposeDevTokens() ? "Verification link ready." : VERIFY_MESSAGE,
+        ...devTokenField("verifyToken", verifyToken)
+      });
     })
   );
   router.post(
@@ -3346,7 +3450,7 @@ ${link}`
         user = await users.create({
           name: (profile.name || email2.split("@")[0] || "Align").slice(0, 80),
           email: email2,
-          passwordHash: await hashPassword(randomBytes5(32).toString("hex")),
+          passwordHash: await hashPassword(randomBytes6(32).toString("hex")),
           emailVerifiedAt: /* @__PURE__ */ new Date(),
           googleId: profile.sub
         });
@@ -3403,15 +3507,18 @@ ${link}`
         summary: "The account email was changed.",
         ...requestAudit(req)
       });
-      const token = await issueAuthToken(user.id, "verify");
-      const link = `${appOrigin(req)}/verify?token=${encodeURIComponent(token)}`;
-      const mailed = await sendOrReveal(
-        user.email,
-        "Verify your new Align email",
-        `Confirm this email by opening this link within one hour:
-${link}`
-      );
-      res.json({ ...publicUser(user), ...mailed ? {} : { verifyToken: token } });
+      const verifyToken = await issueMailedToken({
+        userId: user.id,
+        email: user.email,
+        type: "verify",
+        subject: "Verify your new Align email",
+        text: (link) => `Confirm this email by opening this link within one hour:
+${link}`,
+        origin: appOrigin(req),
+        path: "verify",
+        log: "verification-requested"
+      });
+      res.json({ ...publicUser(user), ...devTokenField("verifyToken", verifyToken) });
     })
   );
   router.post(
@@ -3666,7 +3773,7 @@ function notesRouter() {
 
 // src/routes/notifications.ts
 import { Router as Router6 } from "express";
-import { Types as Types6 } from "mongoose";
+import { Types as Types7 } from "mongoose";
 
 // src/dates.ts
 function shiftISODate(iso, days) {
@@ -3677,7 +3784,7 @@ function shiftISODate(iso, days) {
 }
 
 // src/page.ts
-import { Types as Types5 } from "mongoose";
+import { Types as Types6 } from "mongoose";
 var PAGE_SIZE = 50;
 function pageLimit(value, fallback = PAGE_SIZE) {
   const parsed = typeof value === "string" ? Number(value) : fallback;
@@ -3699,7 +3806,7 @@ function decodeCursor(value) {
 }
 function objectIdFromCursor(value) {
   if (!/^[a-f\d]{24}$/i.test(value)) return null;
-  return new Types5.ObjectId(value);
+  return new Types6.ObjectId(value);
 }
 function beforeCursor(value) {
   const parts = decodeCursor(value);
@@ -3852,7 +3959,7 @@ function notificationsRouter() {
       const today = typeof req.query.today === "string" && req.query.today ? requireToday(req.query.today) : null;
       if (today) {
         const rows = await dueRows(tenant, today);
-        const userObjectId = new Types6.ObjectId(userId);
+        const userObjectId = new Types7.ObjectId(userId);
         const expireAt = new Date(Date.now() + NINETY_DAYS_MS2);
         if (rows.length > 0) {
           await db.notifications.bulkWrite(
@@ -4180,7 +4287,7 @@ function queryText(value) {
 function escapeRegExp2(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-function tokenFilter(tokens) {
+function tokenFilter2(tokens) {
   return {
     $and: tokens.map((token) => ({ searchWords: { $regex: `^${escapeRegExp2(token)}` } }))
   };
@@ -4201,7 +4308,7 @@ function searchRouter() {
       }
       await ensureSearchWords();
       const db = bind(currentTenant(req));
-      const filter = tokenFilter(tokens);
+      const filter = tokenFilter2(tokens);
       const [projects, tasks, notes] = await Promise.all([
         db.projects.find(filter).select("name description status createdAt updatedAt __v").limit(CANDIDATE_LIMIT).maxTimeMS(TIME_MS).lean(),
         db.tasks.find(filter).select("projectId title completed").limit(CANDIDATE_LIMIT).maxTimeMS(TIME_MS).lean(),

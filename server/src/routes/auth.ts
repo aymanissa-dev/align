@@ -9,7 +9,15 @@ import { recordSecurity } from '../data/securityLog.ts'
 import { HttpError } from '../errors.ts'
 import { assertPasswordNotBreached, watchBreachedPassword } from '../hibp.ts'
 import { signJwt, verifyJwt } from '../keys.ts'
-import { deliverMail } from '../mail.ts'
+import {
+  devTokenField,
+  exposeDevTokens,
+  issueMailedToken,
+  preparePasswordReset,
+  RESET_MESSAGE,
+  settleMailResponse,
+  VERIFY_MESSAGE,
+} from '../mailPolicy.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { checkPassword, dummyPasswordHash, hashPassword } from '../password.ts'
 import { clearLoginFailures, delayFailedAttempt, enforceAuthLimit, guardLogin, recordLoginFailure, recordLoginSuccess } from '../rateLimit.ts'
@@ -33,7 +41,7 @@ import {
   prepareNewDevice,
   startSession,
 } from '../session.ts'
-import { consumeAuthToken, issueAuthToken } from '../tokens.ts'
+import { consumeAuthToken } from '../tokens.ts'
 import {
   emailChangeSchema,
   forgotSchema,
@@ -62,14 +70,6 @@ function googleConfigured(): boolean {
   return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET)
 }
 
-async function sendOrReveal(
-  email: string,
-  subject: string,
-  text: string,
-): Promise<boolean> {
-  return deliverMail({ to: email, subject, text })
-}
-
 export function authRouter(limiter: RequestHandler): Router {
   const router = Router()
 
@@ -93,15 +93,22 @@ export function authRouter(limiter: RequestHandler): Router {
         emailVerifiedAt: null,
       })
       await ensurePersonalWorkspace(user.id)
-      const verifyToken = await issueAuthToken(user.id, 'verify')
-      const link = `${appOrigin(req)}/verify?token=${encodeURIComponent(verifyToken)}`
-      const mailed = await sendOrReveal(
-        user.email,
-        'Verify your Align email',
-        `Confirm your email by opening this link within 24 hours:\n${link}`,
-      )
+      const verifyToken = await issueMailedToken({
+        userId: user.id,
+        email: user.email,
+        type: 'verify',
+        subject: 'Verify your Align email',
+        text: (link) => `Confirm your email by opening this link within 24 hours:\n${link}`,
+        origin: appOrigin(req),
+        path: 'verify',
+        log: 'verification-requested',
+      })
       const started = await startSession(req, res, user.id)
-      res.status(201).json(mailed ? { ...publicUser(user), newDevice: started.newDevice } : { ...publicUser(user), verifyToken, newDevice: started.newDevice })
+      res.status(201).json({
+        ...publicUser(user),
+        newDevice: started.newDevice,
+        ...devTokenField('verifyToken', verifyToken),
+      })
     }),
   )
 
@@ -223,21 +230,10 @@ export function authRouter(limiter: RequestHandler): Router {
     asyncHandler(async (req, res) => {
       const input = parseBody(forgotSchema, req.body)
       await enforceAuthLimit('forgot', clientIp(req), input.email)
-      const user = await users.byEmail(input.email)
-      const body: { message: string; resetToken?: string } = {
-        message: 'If an account exists for that email, a reset link is ready.',
-      }
-      if (user) {
-        const resetToken = await issueAuthToken(user.id, 'reset')
-        const link = `${appOrigin(req)}/reset?token=${encodeURIComponent(resetToken)}`
-        const mailed = await sendOrReveal(
-          user.email,
-          'Reset your Align password',
-          `Reset your password by opening this link within one hour:\n${link}`,
-        )
-        if (!mailed) body.resetToken = resetToken
-      }
-      res.json(body)
+      const started = performance.now()
+      const resetToken = await preparePasswordReset(input.email, appOrigin(req))
+      await settleMailResponse(started)
+      res.json({ message: RESET_MESSAGE, ...devTokenField('resetToken', resetToken) })
     }),
   )
 
@@ -286,14 +282,20 @@ export function authRouter(limiter: RequestHandler): Router {
         res.json({ message: 'This email is already verified.' })
         return
       }
-      const verifyToken = await issueAuthToken(user.id, 'verify')
-      const link = `${appOrigin(req)}/verify?token=${encodeURIComponent(verifyToken)}`
-      const mailed = await sendOrReveal(
-        user.email,
-        'Verify your Align email',
-        `Confirm your email by opening this link within 24 hours:\n${link}`,
-      )
-      res.json(mailed ? { message: 'Verification link sent.' } : { message: 'Verification link ready.', verifyToken })
+      const verifyToken = await issueMailedToken({
+        userId: user.id,
+        email: user.email,
+        type: 'verify',
+        subject: 'Verify your Align email',
+        text: (link) => `Confirm your email by opening this link within 24 hours:\n${link}`,
+        origin: appOrigin(req),
+        path: 'verify',
+        log: 'verification-requested',
+      })
+      res.json({
+        message: verifyToken && exposeDevTokens() ? 'Verification link ready.' : VERIFY_MESSAGE,
+        ...devTokenField('verifyToken', verifyToken),
+      })
     }),
   )
 
@@ -536,14 +538,17 @@ export function authRouter(limiter: RequestHandler): Router {
         summary: 'The account email was changed.',
         ...requestAudit(req),
       })
-      const token = await issueAuthToken(user.id, 'verify')
-      const link = `${appOrigin(req)}/verify?token=${encodeURIComponent(token)}`
-      const mailed = await sendOrReveal(
-        user.email,
-        'Verify your new Align email',
-        `Confirm this email by opening this link within one hour:\n${link}`,
-      )
-      res.json({ ...publicUser(user), ...(mailed ? {} : { verifyToken: token }) })
+      const verifyToken = await issueMailedToken({
+        userId: user.id,
+        email: user.email,
+        type: 'verify',
+        subject: 'Verify your new Align email',
+        text: (link) => `Confirm this email by opening this link within one hour:\n${link}`,
+        origin: appOrigin(req),
+        path: 'verify',
+        log: 'verification-requested',
+      })
+      res.json({ ...publicUser(user), ...devTokenField('verifyToken', verifyToken) })
     }),
   )
 

@@ -1,7 +1,10 @@
+import { randomBytes } from 'node:crypto'
 import request from 'supertest'
 import { describe, expect, it } from 'vitest'
 import { createApp } from '../src/app.ts'
-import { Project } from '../src/models.ts'
+import { RESET_MESSAGE, VERIFY_MESSAGE } from '../src/mailPolicy.ts'
+import { upRevokeExposedTokens } from '../src/migrate/revokeExposedTokens.ts'
+import { AuthToken, Project, User } from '../src/models.ts'
 import { app, csrfToken, registerUser } from './helpers.ts'
 
 describe('auth', () => {
@@ -343,4 +346,110 @@ describe('auth', () => {
       process.env.NODE_ENV = previous
     }
   }, 30_000)
+
+  it('never returns an emailed token in production, and existing and unknown addresses match', async () => {
+    const previousNode = process.env.NODE_ENV
+    const previousVercel = process.env.VERCEL_ENV
+    const previousExpose = process.env.EXPOSE_DEV_TOKENS
+    const notes: string[] = []
+    const original = console.info
+    console.info = (...args: unknown[]) => {
+      notes.push(args.map(String).join(' '))
+    }
+    process.env.NODE_ENV = 'production'
+    process.env.EXPOSE_DEV_TOKENS = '1'
+    delete process.env.VERCEL_ENV
+    try {
+      const email = `hidden-${crypto.randomUUID()}@align.test`
+      const password = `rK7m-${crypto.randomUUID()}`
+      const created = await request(app).post('/api/auth/register').send({ name: 'Hidden', email, password })
+      expect(created.status).toBe(201)
+      expect(created.body.verifyToken).toBeUndefined()
+      expect(JSON.stringify(created.body)).not.toMatch(/resetToken|verifyToken|[0-9a-f]{64}/)
+      const issued = created.headers['set-cookie']
+      const cookieList = Array.isArray(issued) ? issued : issued ? [issued] : []
+      const cookie = cookieList.map((entry) => entry.split(';')[0]).join('; ')
+      const csrf = csrfToken(issued) ?? ''
+
+      const unknownEmail = `missing-${crypto.randomUUID()}@align.test`
+      const knownStarted = performance.now()
+      const known = await request(app).post('/api/auth/forgot').send({ email })
+      const knownMs = performance.now() - knownStarted
+      const unknownStarted = performance.now()
+      const unknown = await request(app).post('/api/auth/forgot').send({ email: unknownEmail })
+      const unknownMs = performance.now() - unknownStarted
+
+      expect(known.status).toBe(200)
+      expect(unknown.status).toBe(200)
+      expect(known.body).toEqual(unknown.body)
+      expect(known.body).toEqual({ message: RESET_MESSAGE })
+      expect(JSON.stringify(known.body)).not.toMatch(/token|https?:|[0-9a-f]{64}/i)
+      expect(knownMs).toBeGreaterThanOrEqual(250)
+      expect(unknownMs).toBeGreaterThanOrEqual(250)
+      expect(Math.abs(knownMs - unknownMs)).toBeLessThan(500)
+      expect(await AuthToken.countDocuments({ type: { $in: ['reset', 'verify'] } })).toBe(0)
+
+      const logged = notes.filter((line) => line.includes('password-reset-requested') || line.includes('verification-requested'))
+      expect(logged.length).toBeGreaterThan(0)
+      expect(logged.join('\n')).not.toMatch(/[0-9a-f]{64}|token=/)
+
+      const sent = await request(app).post('/api/auth/verify/send').set('Cookie', cookie).set('x-csrf-token', csrf)
+      expect(sent.status).toBe(200)
+      expect(sent.body).toEqual({ message: VERIFY_MESSAGE })
+
+      const next = `next-${crypto.randomUUID()}@align.test`
+      const changed = await request(app)
+        .post('/api/auth/email')
+        .set('Cookie', cookie)
+        .set('x-csrf-token', csrf)
+        .send({ email: next, password })
+      expect(changed.status).toBe(200)
+      expect(changed.body.email).toBe(next)
+      expect(changed.body.verifyToken).toBeUndefined()
+      expect(JSON.stringify(changed.body)).not.toMatch(/verifyToken|[0-9a-f]{64}/)
+      expect(await AuthToken.countDocuments()).toBe(0)
+
+      process.env.NODE_ENV = 'test'
+      process.env.VERCEL_ENV = 'production'
+      const blocked = await request(app).post('/api/auth/forgot').send({ email: next })
+      expect(blocked.status).toBe(200)
+      expect(blocked.body).toEqual({ message: RESET_MESSAGE })
+    } finally {
+      console.info = original
+      process.env.NODE_ENV = previousNode
+      if (previousExpose === undefined) delete process.env.EXPOSE_DEV_TOKENS
+      else process.env.EXPOSE_DEV_TOKENS = previousExpose
+      if (previousVercel === undefined) delete process.env.VERCEL_ENV
+      else process.env.VERCEL_ENV = previousVercel
+    }
+  })
+
+  it('deletes reset and verification tokens that were issued while responses revealed them', async () => {
+    const email = `purge-token-${crypto.randomUUID()}@align.test`
+    const created = await request(app).post('/api/auth/register').send({ name: 'Purge', email, password: 'password12' })
+    expect(created.status).toBe(201)
+    await AuthToken.create({
+      userId: created.body.id,
+      type: 'reset',
+      tokenHash: randomBytes(32).toString('hex'),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    })
+    await AuthToken.create({
+      userId: created.body.id,
+      type: 'verify',
+      tokenHash: randomBytes(32).toString('hex'),
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    })
+    await User.updateOne(
+      { _id: created.body.id },
+      { $set: { resetTokenHash: 'legacy-reset-hash', resetTokenExpires: new Date(Date.now() + 60 * 60 * 1000) } },
+    )
+    const counts = await upRevokeExposedTokens(false)
+    expect(counts.tokens).toBeGreaterThanOrEqual(2)
+    expect(counts.accounts).toBeGreaterThanOrEqual(1)
+    expect(await AuthToken.countDocuments({ type: { $in: ['reset', 'verify'] } })).toBe(0)
+    const stored = await User.findById(created.body.id).select('+resetTokenHash +resetTokenExpires')
+    expect(stored?.get('resetTokenHash')).toBeUndefined()
+    expect(stored?.get('resetTokenExpires')).toBeUndefined()
+  })
 })

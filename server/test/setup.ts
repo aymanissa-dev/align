@@ -22,6 +22,8 @@ import {
 process.env.NODE_ENV = 'test'
 process.env.JWT_SECRET ??= 'test-jwt-secret-value'
 process.env.BCRYPT_ROUNDS = '4'
+process.env.EXPOSE_DEV_TOKENS = '1'
+delete process.env.VERCEL_ENV
 
 beforeAll(async () => {
   process.env.MONGODB_URI = inject('mongoUri')

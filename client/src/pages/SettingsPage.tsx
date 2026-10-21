@@ -179,7 +179,11 @@ export function SettingsPage() {
       acceptSession(updated)
       await invalidateSecurityLog()
       setVerifyToken(updated.verifyToken ?? '')
-      setVerifyMessage(updated.verifyToken ? 'Email updated. Verify the new address when you can.' : 'Email updated.')
+      setVerifyMessage(
+        updated.verifyToken
+          ? 'Email updated. Verify the new address when you can.'
+          : "Email updated. We've sent a verification link to the new address.",
+      )
       setNextEmail('')
       setEmailPassword('')
       toast('Email updated')
