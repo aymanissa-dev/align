@@ -51,19 +51,33 @@ export function SettingsPage() {
 
   useEffect(() => {
     let cancelled = false
-    api
-      .listSessions()
-      .then((items) => {
-        if (!cancelled) setSessions(items)
-      })
-      .catch((caught: unknown) => {
-        if (!cancelled) setSessionsError(errorMessage(caught))
-      })
-      .finally(() => {
-        if (!cancelled) setSessionsLoading(false)
-      })
+    const load = (initial: boolean) => {
+      api
+        .listSessions()
+        .then((items) => {
+          if (!cancelled) setSessions(items)
+        })
+        .catch((caught: unknown) => {
+          if (!cancelled && initial) setSessionsError(errorMessage(caught))
+        })
+        .finally(() => {
+          if (!cancelled && initial) setSessionsLoading(false)
+        })
+    }
+    load(true)
+    // A new sign-in can arrive while this page is open. Refresh the list so
+    // that device can be revoked without a manual reload.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') load(false)
+    }, 4_000)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') load(false)
+    }
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
       cancelled = true
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
     }
   }, [])
 

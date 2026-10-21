@@ -921,7 +921,11 @@ try {
   await page.getByRole('dialog', { name: 'Notifications' }).getByText(/New sign-in from Safari on iOS/).waitFor({ timeout: 15_000 })
   pass('new device notification')
   await page.keyboard.press('Escape')
+  await page.getByRole('dialog', { name: 'Notifications' }).waitFor({ state: 'hidden' })
+  await page.reload()
+  await page.getByText('This device').waitFor()
   const otherRow = page.getByRole('listitem').filter({ has: page.getByRole('button', { name: 'Revoke' }) }).filter({ hasNotText: 'This device' })
+  await otherRow.waitFor()
   const revoked = page.waitForResponse(
     (response) => response.url().includes('/api/auth/sessions/') && response.request().method() === 'DELETE',
   )
