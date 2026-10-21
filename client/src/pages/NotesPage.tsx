@@ -53,6 +53,7 @@ export function NotesPage() {
       {failed && notesMiss !== 'offline' && projectsMiss !== 'offline' && notesMiss !== 'loading' && projectsMiss !== 'loading' ? (
         <div className="mt-8">
           <ErrorState
+            error={notes.error ?? projects.error}
             onRetry={() => {
               void notes.refetch()
               void projects.refetch()

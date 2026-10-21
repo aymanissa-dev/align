@@ -40,7 +40,7 @@ export function NoteEditorPage() {
   if (!note.data) {
     if (miss === 'loading') return <ListSkeleton />
     if (miss === 'offline') return <OfflineState />
-    return <ErrorState onRetry={() => void note.refetch()} />
+    return <ErrorState error={note.error} onRetry={() => void note.refetch()} />
   }
 
   return <Editor key={`${note.data.id}:${note.data.version}`} note={note.data} />

@@ -132,6 +132,32 @@ describe('auth units', () => {
     expect(read.next).toBe(true)
   })
 
+  it('caps registration at 5 per hour and 20 per day for one IP', async () => {
+    const hourIp = `203.0.113.${Math.floor(Math.random() * 200) + 1}`
+    const dayIp = `198.51.100.${Math.floor(Math.random() * 200) + 1}`
+    const otherIp = `192.0.2.${Math.floor(Math.random() * 200) + 1}`
+    const previous = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    try {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        expect(await enforceAuthLimit('register', hourIp, `hour-${attempt}@align.test`)).toBe(attempt + 1)
+      }
+      await expect(enforceAuthLimit('register', hourIp, 'someone-else@align.test')).rejects.toMatchObject({ status: 429 })
+      expect(await RateLimit.findOne({ key: 'register:email:someone-else@align.test' })).toBeNull()
+      expect(await enforceAuthLimit('register', otherIp, 'someone-else@align.test')).toBe(1)
+
+      await RateLimit.create({
+        key: `register:ip:${dayIp}:day`,
+        count: 20,
+        expiresAt: new Date(Date.now() + 60_000),
+      })
+      await expect(enforceAuthLimit('register', dayIp, 'day@align.test')).rejects.toMatchObject({ status: 429 })
+      expect(await RateLimit.findOne({ key: 'register:email:day@align.test' })).toBeNull()
+    } finally {
+      process.env.NODE_ENV = previous
+    }
+  })
+
   it('limits an address that is already over the production cap', async () => {
     const ip = `203.0.113.${Math.floor(Math.random() * 200) + 1}`
     await RateLimit.create({

@@ -146,7 +146,7 @@ export function TrashPage() {
       ) : null}
       {failed && miss !== 'loading' ? (
         <div className="mt-8">
-          <ErrorState onRetry={() => void trash.refetch()} />
+          <ErrorState error={trash.error} onRetry={() => void trash.refetch()} />
         </div>
       ) : null}
 

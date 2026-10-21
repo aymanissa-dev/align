@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ApiError } from '../api/errors.ts'
 import { api } from '../api/index.ts'
-import type { DashboardData, LoginInput, RegisterInput, User } from '../api/types.ts'
+import type { DashboardData, LoginInput, RegisterInput, RegisterResult, User } from '../api/types.ts'
 import { broadcastSignedOut } from '../lib/authChannel.ts'
 import { setForceSignOutHandler } from '../lib/forceSignOut.ts'
 import { clearLocalUser, readLocalUser, writeLocalUser } from '../lib/localUser.ts'
@@ -95,13 +95,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return adopt(next)
   }, [adopt])
 
-  const register = useCallback(async (input: RegisterInput) => {
+  const register = useCallback(async (input: RegisterInput): Promise<RegisterResult> => {
     const next = await api.register(input)
+    if (!('id' in next)) return next
     epoch.current += 1
     allowPersistedCache(next.id)
     writeLocalUser(next)
     queryClient.clear()
     setUser(next)
+    return next
   }, [])
 
   const acceptSession = useCallback((next: User & { dashboard?: DashboardData }) => {

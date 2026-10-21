@@ -1,4 +1,6 @@
 import { useEffect, useId, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react'
+import { Link } from 'react-router-dom'
+import { ApiError } from '../api/errors.ts'
 import { buttonClass, type ButtonVariant } from '../lib/buttonClass.ts'
 import { cn } from '../lib/cn.ts'
 import { IconCheck } from './icons.tsx'
@@ -213,7 +215,20 @@ export function OfflineState() {
   )
 }
 
-export function ErrorState({ onRetry }: { onRetry?: () => void }) {
+export function ErrorState({ onRetry, error }: { onRetry?: () => void; error?: unknown }) {
+  if (error instanceof ApiError && error.code === 'membership_changed') {
+    return (
+      <EmptyState
+        title="You no longer have access to this workspace"
+        body="This workspace is no longer on your account. Your other work is still available."
+        action={
+          <Link to="/" className="focus-ring text-sm text-neutral-950 underline underline-offset-4">
+            Go to your workspace
+          </Link>
+        }
+      />
+    )
+  }
   return (
     <EmptyState
       title="Something went wrong"

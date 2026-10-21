@@ -86,7 +86,7 @@ export function TodayPage() {
   if (!today.data) {
     if (miss === 'loading') return <ListSkeleton />
     if (miss === 'offline') return <OfflineState />
-    return <ErrorState onRetry={() => void today.refetch()} />
+    return <ErrorState error={today.error} onRetry={() => void today.refetch()} />
   }
 
   const names = new Map((projects.data ?? []).map((project) => [project.id, project.name]))

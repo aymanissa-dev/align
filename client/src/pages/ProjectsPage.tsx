@@ -83,7 +83,7 @@ export function ProjectsPage() {
       <div className="mt-2">
         {miss === 'loading' ? <ListSkeleton rows={3} header={false} /> : null}
         {miss === 'offline' ? <div className="mt-8"><OfflineState /></div> : null}
-        {miss === 'error' ? <div className="mt-8"><ErrorState onRetry={() => void projects.refetch()} /></div> : null}
+        {miss === 'error' ? <div className="mt-8"><ErrorState error={projects.error} onRetry={() => void projects.refetch()} /></div> : null}
         {projects.data && projects.data.length === 0 ? (
           <div className="mt-8">
             {status === 'active' ? (

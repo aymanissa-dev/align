@@ -15,6 +15,7 @@ export function RegisterPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
+  const [sent, setSent] = useState('')
   useDocumentTitle('Create account')
 
   async function onSubmit(event: FormEvent) {
@@ -34,7 +35,11 @@ export function RegisterPage() {
     setError('')
     setPending(true)
     try {
-      await register({ name, email, password })
+      const result = await register({ name, email, password })
+      if ('message' in result && !('id' in result)) {
+        setSent(result.message)
+        setPending(false)
+      }
     } catch (caught) {
       setError(errorMessage(caught))
       setPending(false)
@@ -43,6 +48,9 @@ export function RegisterPage() {
 
   return (
     <AuthFrame title="Create an account" lede="A workspace for projects, tasks, and notes.">
+      {sent ? (
+        <p className="text-sm leading-6 text-neutral-700">{sent}</p>
+      ) : (
         <form onSubmit={onSubmit} className="space-y-4" noValidate>
           <Field label="Name" htmlFor="name">
             <Input
@@ -84,12 +92,13 @@ export function RegisterPage() {
             {pending ? 'Creating account…' : 'Create account'}
           </Button>
         </form>
-        <p className="mt-6 text-sm text-neutral-500">
-          Already have an account?{' '}
-          <Link to="/login" className="focus-ring text-neutral-950 underline underline-offset-4">
-            Sign in
-          </Link>
-        </p>
+      )}
+      <p className="mt-6 text-sm text-neutral-500">
+        Already have an account?{' '}
+        <Link to="/login" className="focus-ring text-neutral-950 underline underline-offset-4">
+          Sign in
+        </Link>
+      </p>
     </AuthFrame>
   )
 }

@@ -13,6 +13,7 @@ const userSchema = new Schema(
     resetTokenHash: { type: String, select: false },
     resetTokenExpires: { type: Date, select: false },
     emailVerifiedAt: { type: Date, default: null },
+    pendingVerification: { type: Boolean, default: false },
     failedLogins: { type: Number, default: 0 },
     lockUntil: { type: Date, default: null },
     googleId: { type: String },

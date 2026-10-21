@@ -174,7 +174,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
     }
     return (
       <div className="mt-8">
-        <ErrorState onRetry={() => void Promise.all([tasks.refetch(), labels.refetch()])} />
+        <ErrorState error={tasks.error ?? labels.error} onRetry={() => void Promise.all([tasks.refetch(), labels.refetch()])} />
       </div>
     )
   }

@@ -17,6 +17,7 @@ import type {
   Label,
   Note,
   Project,
+  RegisterResult,
   ResetResult,
   SearchResults,
   Task,
@@ -131,11 +132,26 @@ async function fetchResponse(path: string, init: RequestInit = {}, refreshed = f
   // Any real response means this fetch reached something. Mutations prove the network.
   // A service-worker cache hit is not the network, even when the status is 200.
   const fromWorkerCache = response.headers.get('X-Align-Cache') === 'hit'
-  if (response.status === 401 && !refreshed && canRefresh(path) && !fromWorkerCache) {
-    const ok = await refreshSession()
-    if (ok) return fetchResponse(path, init, true)
-    broadcastSignedOut()
-    forceSignOut()
+  if (response.status === 401 && canRefresh(path) && !fromWorkerCache) {
+    const denied = await errorBody(response)
+    if (denied.code === 'membership_changed') {
+      if (!refreshed) {
+        const ok = await refreshSession()
+        if (ok) return fetchResponse(path, init, true)
+      }
+      throw new ApiError(
+        401,
+        denied.message || 'You no longer have access to this workspace.',
+        false,
+        'membership_changed',
+      )
+    }
+    if (!refreshed) {
+      const ok = await refreshSession()
+      if (ok) return fetchResponse(path, init, true)
+      broadcastSignedOut()
+      forceSignOut()
+    }
   }
   if (response.status === 304 && cached) {
     response = new Response(cached.body, { status: 200, headers: cached.headers })
@@ -170,6 +186,18 @@ async function fetchResponse(path: string, init: RequestInit = {}, refreshed = f
     throw new ApiError(response.status, message, false, code, retryAfterSeconds(response))
   }
   return response
+}
+
+async function errorBody(response: Response): Promise<{ message: string; code?: string }> {
+  try {
+    const data: unknown = await response.clone().json()
+    const message =
+      data && typeof data === 'object' && 'error' in data && typeof data.error === 'string' ? data.error : 'Request failed.'
+    const code = data && typeof data === 'object' && 'code' in data && typeof data.code === 'string' ? data.code : undefined
+    return { message, code }
+  } catch {
+    return { message: 'Request failed.' }
+  }
 }
 
 function retryAfterSeconds(response: Response): number | undefined {
@@ -229,7 +257,7 @@ function withQuery(path: string, params: Record<string, string | undefined>): st
 
 export const httpApi = {
   register(input) {
-    return request<User>('/api/auth/register', { method: 'POST', body: JSON.stringify(input) })
+    return request<RegisterResult>('/api/auth/register', { method: 'POST', body: JSON.stringify(input) })
   },
   login(input) {
     return request<(User & { dashboard?: DashboardData }) | import('./types.ts').MfaChallenge>('/api/auth/login', {

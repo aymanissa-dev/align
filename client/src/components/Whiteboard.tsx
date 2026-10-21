@@ -331,7 +331,7 @@ export function Whiteboard({ projectId }: { projectId: string }) {
   if (board.isError && !board.data) {
     return (
       <div className="mt-8">
-        <ErrorState onRetry={() => void board.refetch()} />
+        <ErrorState error={board.error} onRetry={() => void board.refetch()} />
       </div>
     )
   }

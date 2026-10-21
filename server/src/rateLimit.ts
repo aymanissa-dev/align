@@ -3,6 +3,9 @@ import { RateLimit } from './models.ts'
 
 const WINDOW_MS = 15 * 60 * 1000
 const REGISTER_WINDOW_MS = 60 * 60 * 1000
+const REGISTER_DAY_MS = 24 * 60 * 60 * 1000
+const REGISTER_HOUR_MAX = 5
+const REGISTER_DAY_MAX = 20
 const SUCCESS_WINDOW_MS = 60 * 1000
 const SUCCESS_MAX = 30
 const MFA_MAX = 5
@@ -16,9 +19,8 @@ export const AUTH_ROUTE_LIMIT = 60
  * The 11th attempt in that window is the 429. A correct password clears the
  * per-email counter. There is no second lock at five failures.
  */
-const PRODUCTION_MAX: Record<'login' | 'register' | 'forgot' | 'reset', number> = {
+const PRODUCTION_MAX: Record<'login' | 'forgot' | 'reset', number> = {
   login: 10,
-  register: 3,
   forgot: 5,
   reset: 10,
 }
@@ -118,14 +120,42 @@ export async function delayFailedAttempt(count: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, delay))
 }
 
+/**
+ * Registration is counted per IP only. An email key would 429 one address and
+ * still accept another, which reveals which address is being throttled.
+ * Production allows 5 an hour and 20 a day. Callers apply the same progressive
+ * delay on the new-account and duplicate paths.
+ */
+async function enforceRegisterLimit(ip: string): Promise<number> {
+  const production = process.env.NODE_ENV === 'production'
+  const hourMax = production ? REGISTER_HOUR_MAX : 1000
+  const dayMax = production ? REGISTER_DAY_MAX : 1000
+  const safeIp = ip || 'unknown'
+  const [hour, day] = await Promise.all([
+    hit(`register:ip:${safeIp}`, REGISTER_WINDOW_MS),
+    hit(`register:ip:${safeIp}:day`, REGISTER_DAY_MS),
+  ])
+  const blocked = [hour.count > hourMax ? hour : null, day.count > dayMax ? day : null].filter(
+    (entry): entry is Bucket => entry !== null,
+  )
+  if (blocked.length > 0) {
+    const now = Date.now()
+    const remainingMs = Math.max(...blocked.map((entry) => entry.expiresAt.getTime() - now))
+    const seconds = Math.max(1, Math.ceil(remainingMs / 1000))
+    throw new HttpError(429, 'Too many attempts. Try again later.', { headers: { 'Retry-After': String(seconds) } })
+  }
+  return hour.count
+}
+
 export async function enforceAuthLimit(
   route: 'login' | 'register' | 'forgot' | 'reset',
   ip: string,
   email?: string,
 ): Promise<number> {
+  if (route === 'register') return enforceRegisterLimit(ip)
   const production = process.env.NODE_ENV === 'production'
   const max = production ? PRODUCTION_MAX[route] : 1000
-  const windowMs = production && route === 'register' ? REGISTER_WINDOW_MS : WINDOW_MS
+  const windowMs = WINDOW_MS
   const keys = [`${route}:ip:${ip || 'unknown'}`]
   if (email) keys.push(`${route}:email:${email}`)
   const hits = await Promise.all(keys.map((key) => hit(key, windowMs)))

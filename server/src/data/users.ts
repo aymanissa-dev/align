@@ -24,6 +24,7 @@ export const users = {
     passwordHash: string
     emailVerifiedAt?: Date | null
     googleId?: string
+    pendingVerification?: boolean
   }) {
     return User.create(doc)
   },

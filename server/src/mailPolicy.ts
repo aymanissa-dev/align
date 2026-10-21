@@ -8,6 +8,7 @@ import { issueAuthToken } from './tokens.ts'
 
 export const RESET_MESSAGE = "If an account exists, we've sent a reset link."
 export const VERIFY_MESSAGE = "We've sent a verification link."
+export const REGISTER_MESSAGE = 'Check your email to finish creating your account.'
 
 /** Hide a hit-versus-miss database lookup. Mail adds its own round trip, so the floor is longer then. */
 const QUIET_FLOOR_MS = 300
@@ -98,6 +99,16 @@ export async function issueMailedToken(options: MailedToken): Promise<string | u
 export function devTokenField(key: 'resetToken' | 'verifyToken', token: string | undefined): Record<string, string> {
   if (!token || !exposeDevTokens()) return {}
   return { [key]: token }
+}
+
+/** Tell an existing account that someone used their address on the signup form. */
+export async function sendSignupNotice(email: string): Promise<void> {
+  if (!mailConfigured()) return
+  await deliverMail({
+    to: email,
+    subject: 'Someone tried to sign up with your email',
+    text: "Someone tried to sign up with your email. If this was you, sign in with your existing password. If it wasn't, you can ignore this message.",
+  })
 }
 
 export async function preparePasswordReset(email: string, origin: string): Promise<string | undefined> {

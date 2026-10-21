@@ -457,6 +457,15 @@ async function keepSyncedTask(item: QueuedWrite, response: Response) {
   })
 }
 
+async function membershipChanged(response: Response): Promise<boolean> {
+  try {
+    const data: unknown = await response.clone().json()
+    return Boolean(data && typeof data === 'object' && 'code' in data && data.code === 'membership_changed')
+  } catch {
+    return false
+  }
+}
+
 async function errorMessage(response: Response): Promise<string> {
   try {
     const data: unknown = await response.json()
@@ -553,14 +562,23 @@ async function runFlush(signal: AbortSignal): Promise<FlushResult> {
       }
       let response = await send()
       if (response.status === 401) {
+        const changed = await membershipChanged(response)
         const refreshed = await refreshSession()
         if (!refreshed) {
+          if (changed) {
+            rejected.push('You no longer have access to this workspace.')
+            continue
+          }
           left.push({ ...item, attempts: item.attempts + 1, lastError: 'Sign in to finish syncing this change.' })
           stop = true
           continue
         }
         response = await send()
         if (response.status === 401) {
+          if (changed || (await membershipChanged(response))) {
+            rejected.push('You no longer have access to this workspace.')
+            continue
+          }
           left.push({ ...item, attempts: item.attempts + 1, lastError: 'Sign in to finish syncing this change.' })
           stop = true
           continue

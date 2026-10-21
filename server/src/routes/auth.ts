@@ -14,8 +14,11 @@ import {
   devTokenField,
   exposeDevTokens,
   issueMailedToken,
+  mailConfigured,
   preparePasswordReset,
+  REGISTER_MESSAGE,
   RESET_MESSAGE,
+  sendSignupNotice,
   settleMailResponse,
   VERIFY_MESSAGE,
 } from '../mailPolicy.ts'
@@ -60,6 +63,13 @@ import {
 
 function clientIp(req: Request): string {
   return req.ip || req.socket.remoteAddress || 'unknown'
+}
+
+function duplicateEmail(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 11000) return false
+  const pattern = 'keyPattern' in error && typeof error.keyPattern === 'object' && error.keyPattern !== null ? error.keyPattern : null
+  if (!pattern || !('email' in pattern)) return !pattern
+  return !('workspaceId' in pattern)
 }
 
 function appOrigin(req: Request): string {
@@ -117,18 +127,55 @@ export function authRouter(limiter: RequestHandler): Router {
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(registerSchema, req.body)
-      await enforceAuthLimit('register', clientIp(req), input.email)
+      const attempt = await enforceAuthLimit('register', clientIp(req))
       await assertPasswordNotBreached(input.password)
+      const startedAt = performance.now()
+      // Hash before the branch so a duplicate costs the same bcrypt work as a new account.
+      const passwordHash = await hashPassword(input.password)
       const existing = await users.byEmail(input.email)
+      if (mailConfigured()) {
+        if (existing) {
+          await sendSignupNotice(existing.email)
+        } else {
+          try {
+            const user = await users.create({
+              name: input.name,
+              email: input.email,
+              passwordHash,
+              emailVerifiedAt: null,
+              pendingVerification: true,
+            })
+            await ensurePersonalWorkspace(user.id)
+            await claimInvites(user.id, user.email)
+            await issueMailedToken({
+              userId: user.id,
+              email: user.email,
+              type: 'verify',
+              subject: 'Verify your Align email',
+              text: (link) => `Confirm your email by opening this link within 24 hours:\n${link}`,
+              origin: appOrigin(req),
+              path: 'verify',
+              log: 'verification-requested',
+            })
+          } catch (error) {
+            if (!duplicateEmail(error)) throw error
+            await sendSignupNotice(input.email)
+          }
+        }
+        await settleMailResponse(startedAt)
+        res.status(202).json({ message: REGISTER_MESSAGE })
+        return
+      }
+      await delayFailedAttempt(attempt)
       if (existing) {
-        await hashPassword(input.password)
         throw new HttpError(409, "We couldn't create an account with those details.")
       }
       const user = await users.create({
         name: input.name,
         email: input.email,
-        passwordHash: await hashPassword(input.password),
+        passwordHash,
         emailVerifiedAt: null,
+        pendingVerification: false,
       })
       await ensurePersonalWorkspace(user.id)
       await claimInvites(user.id, user.email)
@@ -182,6 +229,17 @@ export function authRouter(limiter: RequestHandler): Router {
             ...requestAudit(req),
           }).catch(() => undefined)
         }
+        await delayFailedAttempt(failures)
+        throw new HttpError(401, 'Email or password is incorrect.')
+      }
+      if (user.pendingVerification) {
+        const failures = await recordLoginFailure(ip, input.email)
+        await recordSecurity({
+          userId: user.id,
+          type: 'sign-in-failed',
+          summary: 'A sign-in was blocked until the email is verified.',
+          ...requestAudit(req),
+        }).catch(() => undefined)
         await delayFailedAttempt(failures)
         throw new HttpError(401, 'Email or password is incorrect.')
       }
@@ -311,8 +369,11 @@ export function authRouter(limiter: RequestHandler): Router {
       const userId = await consumeAuthToken(input.token, 'verify')
       const user = userId ? await users.byId(userId) : null
       if (!user) throw new HttpError(400, 'This verification link is invalid or has expired.')
+      const finishSignup = Boolean(user.pendingVerification) || !user.emailVerifiedAt
       if (!user.emailVerifiedAt) user.emailVerifiedAt = new Date()
+      user.pendingVerification = false
       await user.save()
+      if (finishSignup) await startSession(req, res, user.id)
       res.json(publicUser(user))
     }),
   )

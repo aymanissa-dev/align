@@ -253,6 +253,9 @@ export type ResetResult = {
   resetToken?: string
 }
 
+/** A mail-backed signup returns the message. Instant signup returns the user. */
+export type RegisterResult = User | { message: string }
+
 export type LabelInput = z.infer<typeof labelCreateSchema>
 export type LabelPatch = z.infer<typeof labelPatchSchema>
 export type NoteInput = z.infer<typeof noteCreateSchema>
@@ -260,7 +263,7 @@ export type NotePatch = z.infer<typeof notePatchSchema>
 
 export interface AlignApi {
   /** POST /api/auth/register */
-  register(input: RegisterInput): Promise<User>
+  register(input: RegisterInput): Promise<RegisterResult>
   /** POST /api/auth/login */
   login(input: LoginInput): Promise<(User & { dashboard?: DashboardData; newDevice?: boolean }) | MfaChallenge>
   /** POST /api/auth/logout */

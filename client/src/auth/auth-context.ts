@@ -1,11 +1,11 @@
 import { createContext, useContext } from 'react'
-import type { LoginInput, MfaChallenge, RegisterInput, User } from '../api/types.ts'
+import type { LoginInput, MfaChallenge, RegisterInput, RegisterResult, User } from '../api/types.ts'
 
 export type AuthContextValue = {
   user: User | null
   ready: boolean
   login: (input: LoginInput) => Promise<User | MfaChallenge>
-  register: (input: RegisterInput) => Promise<void>
+  register: (input: RegisterInput) => Promise<RegisterResult>
   acceptSession: (user: User) => void
   logout: () => Promise<void>
   updateProfile: (input: { name?: string; accent?: string }) => Promise<User>

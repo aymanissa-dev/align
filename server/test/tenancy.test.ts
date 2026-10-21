@@ -61,7 +61,12 @@ describe('tenancy', () => {
     expect((await owner.agent.patch(`/api/workspaces/members/${member.id}`).set(header).send({ role: 'admin' })).status).toBe(200)
     expect((await owner.agent.delete(`/api/workspaces/members/${viewer.id}`).set(header)).status).toBe(204)
     expect((await viewer.agent.get('/api/projects').set(header)).status).toBe(403)
-    expect((await viewer.agent.get('/api/projects')).status).toBe(401)
+    const stale = await viewer.agent.get('/api/projects')
+    expect(stale.status).toBe(401)
+    expect(stale.body).toEqual({
+      error: 'You no longer have access to this workspace.',
+      code: 'membership_changed',
+    })
     expect((await viewer.agent.post('/api/auth/refresh')).status).toBe(200)
     expect((await viewer.agent.get('/api/projects')).status).toBe(200)
     expect((await viewer.agent.get('/api/projects').set(header)).status).toBe(403)

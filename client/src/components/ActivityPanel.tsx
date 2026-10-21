@@ -24,7 +24,7 @@ export function ActivityPanel({ projectId }: { projectId: string }) {
     if (miss === 'offline') return <div className="mt-8"><OfflineState /></div>
     return (
       <div className="mt-8">
-        <ErrorState onRetry={() => void activity.refetch()} />
+        <ErrorState error={activity.error} onRetry={() => void activity.refetch()} />
       </div>
     )
   }

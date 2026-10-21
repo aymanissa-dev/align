@@ -68,6 +68,12 @@ export const requireAuth: RequestHandler = (req, _res, next) => {
         return
       }
       if (!claimed) {
+        if (access.workspaceId && access.role && access.membershipVersion !== version) {
+          next(
+            new HttpError(401, 'You no longer have access to this workspace.', { code: 'membership_changed' }),
+          )
+          return
+        }
         next(new HttpError(401, 'Sign in to continue.'))
         return
       }

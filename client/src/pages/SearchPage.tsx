@@ -47,7 +47,7 @@ export function SearchPage() {
       ) : null}
       {query.length >= 3 && miss === 'error' ? (
         <div className="mt-8">
-          <ErrorState onRetry={() => void results.refetch()} />
+          <ErrorState error={results.error} onRetry={() => void results.refetch()} />
         </div>
       ) : null}
 

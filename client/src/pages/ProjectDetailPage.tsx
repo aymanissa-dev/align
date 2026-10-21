@@ -77,7 +77,7 @@ export function ProjectDetailPage() {
   if (!project.data) {
     if (miss === 'loading') return <ListSkeleton />
     if (miss === 'offline') return <OfflineState />
-    return <ErrorState onRetry={() => void project.refetch()} />
+    return <ErrorState error={project.error} onRetry={() => void project.refetch()} />
   }
 
   const current = project.data
@@ -171,7 +171,7 @@ function NotesPanel({ projectId }: { projectId: string }) {
   if (!notes.data) {
     if (miss === 'loading') return <ListSkeleton rows={3} />
     if (miss === 'offline') return <div className="mt-8"><OfflineState /></div>
-    return <div className="mt-8"><ErrorState onRetry={() => void notes.refetch()} /></div>
+    return <div className="mt-8"><ErrorState error={notes.error} onRetry={() => void notes.refetch()} /></div>
   }
 
   return (

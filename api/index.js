@@ -87,6 +87,7 @@ var userSchema = new Schema(
     resetTokenHash: { type: String, select: false },
     resetTokenExpires: { type: Date, select: false },
     emailVerifiedAt: { type: Date, default: null },
+    pendingVerification: { type: Boolean, default: false },
     failedLogins: { type: Number, default: 0 },
     lockUntil: { type: Date, default: null },
     googleId: { type: String },
@@ -1380,6 +1381,12 @@ var requireAuth = (req, _res, next) => {
       return;
     }
     if (!claimed) {
+      if (access.workspaceId && access.role && access.membershipVersion !== version) {
+        next(
+          new HttpError(401, "You no longer have access to this workspace.", { code: "membership_changed" })
+        );
+        return;
+      }
       next(new HttpError(401, "Sign in to continue."));
       return;
     }
@@ -1504,13 +1511,15 @@ var MINIMUM_CLIENT_VERSION = 2;
 // src/rateLimit.ts
 var WINDOW_MS = 15 * 60 * 1e3;
 var REGISTER_WINDOW_MS = 60 * 60 * 1e3;
+var REGISTER_DAY_MS = 24 * 60 * 60 * 1e3;
+var REGISTER_HOUR_MAX = 5;
+var REGISTER_DAY_MAX = 20;
 var SUCCESS_WINDOW_MS = 60 * 1e3;
 var SUCCESS_MAX = 30;
 var MFA_MAX = 5;
 var AUTH_ROUTE_LIMIT = 60;
 var PRODUCTION_MAX = {
   login: 10,
-  register: 3,
   forgot: 5,
   reset: 10
 };
@@ -1582,10 +1591,31 @@ async function delayFailedAttempt(count) {
   const delay = Math.min(5e3, (count - 2) * 250);
   await new Promise((resolve) => setTimeout(resolve, delay));
 }
+async function enforceRegisterLimit(ip) {
+  const production = process.env.NODE_ENV === "production";
+  const hourMax = production ? REGISTER_HOUR_MAX : 1e3;
+  const dayMax = production ? REGISTER_DAY_MAX : 1e3;
+  const safeIp = ip || "unknown";
+  const [hour, day] = await Promise.all([
+    hit(`register:ip:${safeIp}`, REGISTER_WINDOW_MS),
+    hit(`register:ip:${safeIp}:day`, REGISTER_DAY_MS)
+  ]);
+  const blocked = [hour.count > hourMax ? hour : null, day.count > dayMax ? day : null].filter(
+    (entry) => entry !== null
+  );
+  if (blocked.length > 0) {
+    const now = Date.now();
+    const remainingMs = Math.max(...blocked.map((entry) => entry.expiresAt.getTime() - now));
+    const seconds = Math.max(1, Math.ceil(remainingMs / 1e3));
+    throw new HttpError(429, "Too many attempts. Try again later.", { headers: { "Retry-After": String(seconds) } });
+  }
+  return hour.count;
+}
 async function enforceAuthLimit(route, ip, email2) {
+  if (route === "register") return enforceRegisterLimit(ip);
   const production = process.env.NODE_ENV === "production";
   const max = production ? PRODUCTION_MAX[route] : 1e3;
-  const windowMs = production && route === "register" ? REGISTER_WINDOW_MS : WINDOW_MS;
+  const windowMs = WINDOW_MS;
   const keys = [`${route}:ip:${ip || "unknown"}`];
   if (email2) keys.push(`${route}:email:${email2}`);
   const hits = await Promise.all(keys.map((key) => hit(key, windowMs)));
@@ -3131,6 +3161,7 @@ async function consumeAuthToken(token, type) {
 // src/mailPolicy.ts
 var RESET_MESSAGE = "If an account exists, we've sent a reset link.";
 var VERIFY_MESSAGE = "We've sent a verification link.";
+var REGISTER_MESSAGE = "Check your email to finish creating your account.";
 var QUIET_FLOOR_MS = 300;
 var MAIL_FLOOR_MS = 1e3;
 function exposeDevTokens() {
@@ -3189,6 +3220,14 @@ function devTokenField(key, token) {
   if (!token || !exposeDevTokens()) return {};
   return { [key]: token };
 }
+async function sendSignupNotice(email2) {
+  if (!mailConfigured()) return;
+  await deliverMail({
+    to: email2,
+    subject: "Someone tried to sign up with your email",
+    text: "Someone tried to sign up with your email. If this was you, sign in with your existing password. If it wasn't, you can ignore this message."
+  });
+}
 async function preparePasswordReset(email2, origin) {
   const user = await users.byEmail(email2);
   if (!user) {
@@ -3213,6 +3252,12 @@ ${link}`,
 // src/routes/auth.ts
 function clientIp2(req) {
   return req.ip || req.socket.remoteAddress || "unknown";
+}
+function duplicateEmail(error) {
+  if (typeof error !== "object" || error === null || !("code" in error) || error.code !== 11e3) return false;
+  const pattern = "keyPattern" in error && typeof error.keyPattern === "object" && error.keyPattern !== null ? error.keyPattern : null;
+  if (!pattern || !("email" in pattern)) return !pattern;
+  return !("workspaceId" in pattern);
 }
 function appOrigin(req) {
   const configured = process.env.APP_ORIGIN?.replace(/\/$/, "");
@@ -3261,18 +3306,55 @@ function authRouter(limiter) {
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(registerSchema, req.body);
-      await enforceAuthLimit("register", clientIp2(req), input.email);
+      const attempt = await enforceAuthLimit("register", clientIp2(req));
       await assertPasswordNotBreached(input.password);
+      const startedAt = performance.now();
+      const passwordHash = await hashPassword(input.password);
       const existing = await users.byEmail(input.email);
+      if (mailConfigured()) {
+        if (existing) {
+          await sendSignupNotice(existing.email);
+        } else {
+          try {
+            const user2 = await users.create({
+              name: input.name,
+              email: input.email,
+              passwordHash,
+              emailVerifiedAt: null,
+              pendingVerification: true
+            });
+            await ensurePersonalWorkspace(user2.id);
+            await claimInvites(user2.id, user2.email);
+            await issueMailedToken({
+              userId: user2.id,
+              email: user2.email,
+              type: "verify",
+              subject: "Verify your Align email",
+              text: (link) => `Confirm your email by opening this link within 24 hours:
+${link}`,
+              origin: appOrigin(req),
+              path: "verify",
+              log: "verification-requested"
+            });
+          } catch (error) {
+            if (!duplicateEmail(error)) throw error;
+            await sendSignupNotice(input.email);
+          }
+        }
+        await settleMailResponse(startedAt);
+        res.status(202).json({ message: REGISTER_MESSAGE });
+        return;
+      }
+      await delayFailedAttempt(attempt);
       if (existing) {
-        await hashPassword(input.password);
         throw new HttpError(409, "We couldn't create an account with those details.");
       }
       const user = await users.create({
         name: input.name,
         email: input.email,
-        passwordHash: await hashPassword(input.password),
-        emailVerifiedAt: null
+        passwordHash,
+        emailVerifiedAt: null,
+        pendingVerification: false
       });
       await ensurePersonalWorkspace(user.id);
       await claimInvites(user.id, user.email);
@@ -3327,6 +3409,17 @@ ${link}`,
             ...requestAudit(req)
           }).catch(() => void 0);
         }
+        await delayFailedAttempt(failures);
+        throw new HttpError(401, "Email or password is incorrect.");
+      }
+      if (user.pendingVerification) {
+        const failures = await recordLoginFailure(ip, input.email);
+        await recordSecurity({
+          userId: user.id,
+          type: "sign-in-failed",
+          summary: "A sign-in was blocked until the email is verified.",
+          ...requestAudit(req)
+        }).catch(() => void 0);
         await delayFailedAttempt(failures);
         throw new HttpError(401, "Email or password is incorrect.");
       }
@@ -3446,8 +3539,11 @@ ${link}`,
       const userId = await consumeAuthToken(input.token, "verify");
       const user = userId ? await users.byId(userId) : null;
       if (!user) throw new HttpError(400, "This verification link is invalid or has expired.");
+      const finishSignup = Boolean(user.pendingVerification) || !user.emailVerifiedAt;
       if (!user.emailVerifiedAt) user.emailVerifiedAt = /* @__PURE__ */ new Date();
+      user.pendingVerification = false;
       await user.save();
+      if (finishSignup) await startSession(req, res, user.id);
       res.json(publicUser(user));
     })
   );

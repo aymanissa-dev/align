@@ -34,7 +34,7 @@ export function DashboardPage() {
   if (!dashboard.data) {
     if (miss === 'loading') return <ListSkeleton />
     if (miss === 'offline') return <OfflineState />
-    return <ErrorState onRetry={() => void dashboard.refetch()} />
+    return <ErrorState error={dashboard.error} onRetry={() => void dashboard.refetch()} />
   }
 
   const { projects, openTasks } = dashboard.data
