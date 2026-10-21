@@ -4993,6 +4993,15 @@ function workspacesRouter() {
 }
 
 // src/app.ts
+function wipeFailure(error) {
+  const name = error instanceof Error ? error.name : "Error";
+  const raw = error instanceof Error ? error.message : "failed";
+  const message = raw.replace(/mongodb(?:\+srv)?:\/\/\S+/gi, "[redacted]").replace(/\/\/[^/\s:@]+:[^@\s/]+@/g, "//[redacted]@").replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted]").slice(0, 300);
+  const record = typeof error === "object" && error !== null ? error : {};
+  const code = "code" in record && typeof record.code === "number" ? record.code : null;
+  const codeName = "codeName" in record && typeof record.codeName === "string" ? record.codeName.slice(0, 80) : null;
+  return { name, code, codeName, message };
+}
 function createApp(options = {}) {
   const app2 = express();
   app2.disable("x-powered-by");
@@ -5056,8 +5065,14 @@ function createApp(options = {}) {
         appliedAt: record?.appliedAt instanceof Date ? record.appliedAt.toISOString() : null,
         counts: numeric
       });
-    }).catch(() => {
-      res.status(503).json({ id: FULL_WIPE, applied: false, appliedAt: null, counts: {} });
+    }).catch((error) => {
+      res.status(503).json({
+        id: FULL_WIPE,
+        applied: false,
+        appliedAt: null,
+        counts: {},
+        failure: wipeFailure(error)
+      });
     });
   });
   app2.use((req, res, next) => {

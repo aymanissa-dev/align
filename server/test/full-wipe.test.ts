@@ -5,6 +5,7 @@ import { RateLimit, User } from '../src/models.ts'
 import { hashPassword } from '../src/password.ts'
 import { BACKUP_DB, FULL_WIPE, upFullWipe, wipeTest } from '../src/migrate/fullWipe.ts'
 import { runMigrations } from '../src/migrate/runner.ts'
+import { wipeFailure } from '../src/app.ts'
 import { app } from './helpers.ts'
 
 async function resetWipe(): Promise<void> {
@@ -17,6 +18,19 @@ async function resetWipe(): Promise<void> {
 }
 
 describe('full wipe migration', () => {
+  it('redacts secrets from a wipe failure', () => {
+    const error = Object.assign(new Error('auth failed mongodb+srv://user:secret@cluster.mongodb.net/align for keep@align.test'), {
+      code: 13,
+      codeName: 'Unauthorized',
+    })
+    expect(wipeFailure(error)).toEqual({
+      name: 'Error',
+      code: 13,
+      codeName: 'Unauthorized',
+      message: 'auth failed [redacted] for [redacted]',
+    })
+  })
+
   it('copies every collection, checks the counts, then deletes user data once', async () => {
     await resetWipe()
     const email = `wipe-${crypto.randomUUID()}@align.test`

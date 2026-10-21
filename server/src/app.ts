@@ -7,6 +7,20 @@ import type { HealthReport } from '../../shared/contract.ts'
 import { csrfProtection } from './csrf.ts'
 import { connectDb } from './db.ts'
 import { FULL_WIPE } from './migrate/fullWipe.ts'
+
+export function wipeFailure(error: unknown): { name: string; code: number | null; codeName: string | null; message: string } {
+  const name = error instanceof Error ? error.name : 'Error'
+  const raw = error instanceof Error ? error.message : 'failed'
+  const message = raw
+    .replace(/mongodb(?:\+srv)?:\/\/\S+/gi, '[redacted]')
+    .replace(/\/\/[^/\s:@]+:[^@\s/]+@/g, '//[redacted]@')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted]')
+    .slice(0, 300)
+  const record = typeof error === 'object' && error !== null ? error : {}
+  const code = 'code' in record && typeof record.code === 'number' ? record.code : null
+  const codeName = 'codeName' in record && typeof record.codeName === 'string' ? record.codeName.slice(0, 80) : null
+  return { name, code, codeName, message }
+}
 import { markTiming } from './serverTiming.ts'
 import { privateRevalidate } from './httpCache.ts'
 import { errorHandler } from './middleware.ts'
@@ -102,8 +116,14 @@ export function createApp(options: AppOptions = {}): Express {
           counts: numeric,
         })
       })
-      .catch(() => {
-        res.status(503).json({ id: FULL_WIPE, applied: false, appliedAt: null, counts: {} })
+      .catch((error: unknown) => {
+        res.status(503).json({
+          id: FULL_WIPE,
+          applied: false,
+          appliedAt: null,
+          counts: {},
+          failure: wipeFailure(error),
+        })
       })
   })
   app.use((req, res, next) => {
