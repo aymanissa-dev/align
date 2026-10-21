@@ -12,6 +12,7 @@ import { SecurityPanel } from './SecurityPanel.tsx'
 import { StepUpDialog } from '../components/StepUpDialog.tsx'
 import { Button, ConfirmDialog, Field, Input, ListSkeleton } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
+import { invalidateSecurityLog } from '../lib/securityLog.ts'
 import { stepUpRequired } from '../lib/stepUp.ts'
 import { isMediumPassword, MEDIUM_PASSWORD_HINT, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
 import { clearSignedOut, markSignedOut } from '../lib/signedOut.ts'
@@ -120,6 +121,7 @@ export function SettingsPage() {
     setSavingPassword(true)
     const save = async () => {
       await api.changePassword({ currentPassword, newPassword })
+      await invalidateSecurityLog()
       setCurrentPassword('')
       setNewPassword('')
       setConfirmPassword('')
@@ -157,6 +159,7 @@ export function SettingsPage() {
   async function onRevoke(session: AuthSession) {
     try {
       await api.revokeSession(session.id)
+      await invalidateSecurityLog()
       if (session.current) {
         await onSignOut()
         return
@@ -174,6 +177,7 @@ export function SettingsPage() {
     const save = async () => {
       const updated = await api.changeEmail({ email: nextEmail.trim(), password: emailPassword })
       acceptSession(updated)
+      await invalidateSecurityLog()
       setVerifyToken(updated.verifyToken ?? '')
       setVerifyMessage(updated.verifyToken ? 'Email updated. Verify the new address when you can.' : 'Email updated.')
       setNextEmail('')
@@ -200,6 +204,7 @@ export function SettingsPage() {
     const save = async () => {
       if (others) {
         await api.revokeOtherSessions(revokePassword)
+        await invalidateSecurityLog()
         setSessions((current) => current.filter((session) => session.current))
         setRevokePassword('')
         setRevokeMode(null)
@@ -388,8 +393,9 @@ export function SettingsPage() {
                     const data = new FormData(event.currentTarget)
                     const name = String(data.get('name') ?? '').trim()
                     if (!name) return
-                    void api.renameSession(session.id, name).then(() => {
+                    void api.renameSession(session.id, name).then(async () => {
                       setSessions((current) => current.map((item) => (item.id === session.id ? { ...item, device: name } : item)))
+                      await invalidateSecurityLog()
                       toast('Session renamed')
                     })
                   }}

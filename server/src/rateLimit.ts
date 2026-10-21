@@ -14,7 +14,7 @@ function duplicateKey(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 11000
 }
 
-async function hit(key: string): Promise<number> {
+async function hit(key: string): Promise<{ count: number; expiresAt: Date }> {
   const now = Date.now()
   const expiresAt = new Date(now + WINDOW_MS)
   let doc
@@ -31,7 +31,7 @@ async function hit(key: string): Promise<number> {
   if (doc && doc.expiresAt.getTime() <= now) {
     doc = await RateLimit.findOneAndUpdate({ key }, { $set: { count: 1, expiresAt } }, { new: true })
   }
-  return doc?.count ?? 1
+  return { count: doc?.count ?? 1, expiresAt: doc?.expiresAt ?? expiresAt }
 }
 
 /** Back off a failed attempt. Successful sign-in does not wait. */
@@ -49,10 +49,15 @@ export async function enforceAuthLimit(
   const max = process.env.NODE_ENV === 'production' ? PRODUCTION_MAX[route] : 1000
   const keys = [`${route}:ip:${ip || 'unknown'}`]
   if (email) keys.push(`${route}:email:${email}`)
-  const counts = await Promise.all(keys.map((key) => hit(key)))
-  const count = Math.max(0, ...counts)
+  const hits = await Promise.all(keys.map((key) => hit(key)))
+  const count = Math.max(0, ...hits.map((entry) => entry.count))
   if (count > max) {
-    throw new HttpError(429, 'Too many attempts. Try again later.', { headers: { 'Retry-After': '60' } })
+    const now = Date.now()
+    const remainingMs = Math.max(
+      ...hits.filter((entry) => entry.count > max).map((entry) => entry.expiresAt.getTime() - now),
+    )
+    const seconds = Math.max(1, Math.ceil(remainingMs / 1000))
+    throw new HttpError(429, 'Too many attempts. Try again later.', { headers: { 'Retry-After': String(seconds) } })
   }
   return count
 }

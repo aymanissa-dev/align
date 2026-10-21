@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { useEffect, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, type ReactNode } from 'react'
 import { applyAccent, applyTheme, readTheme } from './lib/theme.ts'
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { ConnectionStatus } from './components/ConnectionStatus.tsx'
@@ -16,7 +16,6 @@ import { ResetPasswordPage } from './pages/ResetPasswordPage.tsx'
 import { Layout } from './components/Layout.tsx'
 import { MarketingLayout } from './components/MarketingLayout.tsx'
 import { ToastProvider } from './components/ToastProvider.tsx'
-import { DashboardPage } from './pages/DashboardPage.tsx'
 import { LandingPage } from './pages/LandingPage.tsx'
 import { PrivacyPage, TermsPage } from './pages/LegalPage.tsx'
 import { LoginPage } from './pages/LoginPage.tsx'
@@ -33,6 +32,8 @@ import { TodayPage } from './pages/TodayPage.tsx'
 import { TrashPage } from './pages/TrashPage.tsx'
 import { clearSignedOut, wasSignedOut } from './lib/signedOut.ts'
 import { queryClient } from './queryClient.ts'
+
+const DashboardPage = lazy(() => import('./pages/DashboardPage.tsx').then((module) => ({ default: module.DashboardPage })))
 
 function safeReturnPath(state: unknown): string | null {
   if (!state || typeof state !== 'object' || !('from' in state)) return null
@@ -142,6 +143,7 @@ export default function App() {
             <AuthBroadcast />
             <DataBroadcast />
             <AppErrorBoundary>
+            <Suspense fallback={<BootScreen />}>
             <Routes>
               <Route
                 path="/login"
@@ -200,6 +202,7 @@ export default function App() {
               </Route>
               <Route path="*" element={<PublicNotFound />} />
             </Routes>
+            </Suspense>
             </AppErrorBoundary>
           </BrowserRouter>
         </ToastProvider>

@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/index.ts'
 import type { TrashItem } from '../api/types.ts'
 import { PageHeader } from '../components/chrome.tsx'
@@ -7,15 +7,34 @@ import { useToast } from '../components/toast-context.ts'
 import { Button, ConfirmDialog, EmptyState, ErrorState, ListSkeleton, OfflineState } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { formatDate } from '../lib/format.ts'
+import { flushPersistedCache } from '../lib/queryPersist.tsx'
 import { useQueryMiss } from '../lib/queryMiss.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 import { invalidateWorkspace } from '../queryClient.ts'
 
+type TrashList = { projects: TrashItem[]; tasks: TrashItem[] }
+
+function withoutItem(current: TrashList, item: { kind: 'project' | 'task'; id: string }): TrashList {
+  if (item.kind === 'project') {
+    return { ...current, projects: current.projects.filter((project) => project.id !== item.id) }
+  }
+  return { ...current, tasks: current.tasks.filter((task) => task.id !== item.id) }
+}
+
 export function TrashPage() {
   useDocumentTitle('Trash')
   const toast = useToast()
-  const trash = useQuery({ queryKey: ['trash'], queryFn: () => api.listTrash() })
+  const queryClient = useQueryClient()
+  const trash = useQuery({
+    queryKey: ['trash'],
+    queryFn: () => api.listTrash(),
+    // Read the persisted list while the network is down, the same way /today does.
+    networkMode: 'offlineFirst',
+  })
   const miss = useQueryMiss(trash)
+  useEffect(() => {
+    if (trash.data) flushPersistedCache()
+  }, [trash.data])
   const [purge, setPurge] = useState<{ kind: 'project' | 'task'; id: string; label: string } | null>(null)
   const [emptyOpen, setEmptyOpen] = useState(false)
 
@@ -40,22 +59,52 @@ export function TrashPage() {
   const purgeItem = useMutation({
     mutationFn: (item: { kind: 'project' | 'task'; id: string }) =>
       item.kind === 'project' ? api.purgeProject(item.id) : api.purgeTask(item.id),
+    onMutate: async (item) => {
+      await queryClient.cancelQueries({ queryKey: ['trash'] })
+      const previous = queryClient.getQueryData<TrashList>(['trash'])
+      if (previous) {
+        queryClient.setQueryData<TrashList>(['trash'], withoutItem(previous, item))
+        flushPersistedCache()
+      }
+      return { previous }
+    },
     onSuccess: async () => {
       setPurge(null)
       await invalidateWorkspace()
+      flushPersistedCache()
       toast('Deleted permanently')
     },
-    onError: (caught) => toast(errorMessage(caught)),
+    onError: (caught, _item, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(['trash'], context.previous)
+        flushPersistedCache()
+      }
+      toast(errorMessage(caught))
+    },
   })
 
   const emptyTrash = useMutation({
     mutationFn: () => api.emptyTrash(),
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: ['trash'] })
+      const previous = queryClient.getQueryData<TrashList>(['trash'])
+      queryClient.setQueryData<TrashList>(['trash'], { projects: [], tasks: [] })
+      flushPersistedCache()
+      return { previous }
+    },
     onSuccess: async () => {
       setEmptyOpen(false)
       await invalidateWorkspace()
+      flushPersistedCache()
       toast('Trash emptied')
     },
-    onError: (caught) => toast(errorMessage(caught)),
+    onError: (caught, _item, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(['trash'], context.previous)
+        flushPersistedCache()
+      }
+      toast(errorMessage(caught))
+    },
   })
 
   const projects = trash.data?.projects ?? []

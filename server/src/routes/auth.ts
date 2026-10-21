@@ -596,7 +596,7 @@ export function authRouter(limiter: RequestHandler): Router {
       await recordSecurity({
         userId: currentUserId(req),
         type: 'session-renamed',
-        summary: `A session was renamed to ${input.name}.`,
+        summary: `A session and device were renamed to ${input.name}.`,
         ...requestAudit(req),
       })
       res.json({ id: session.id, device: session.deviceName })

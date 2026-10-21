@@ -1,11 +1,13 @@
 import { startRegistration } from '@simplewebauthn/browser'
+import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { api } from '../api/index.ts'
-import type { Passkey, SecurityEvent } from '../api/types.ts'
+import type { Passkey } from '../api/types.ts'
 import { StepUpDialog } from '../components/StepUpDialog.tsx'
 import { Button, Field, Input } from '../components/ui.tsx'
 import { useToast } from '../components/toast-context.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
+import { invalidateSecurityLog } from '../lib/securityLog.ts'
 import { stepUpRequired } from '../lib/stepUp.ts'
 
 export function SecurityPanel() {
@@ -14,7 +16,11 @@ export function SecurityPanel() {
   const [code, setCode] = useState('')
   const [codes, setCodes] = useState<string[]>([])
   const [password, setPassword] = useState('')
-  const [events, setEvents] = useState<SecurityEvent[]>([])
+  const eventsQuery = useQuery({
+    queryKey: ['security-events'],
+    queryFn: () => api.listSecurityEvents(),
+  })
+  const events = eventsQuery.data ?? []
   const [passkeys, setPasskeys] = useState<Passkey[]>([])
   const [busy, setBusy] = useState(false)
   const [stepUpOpen, setStepUpOpen] = useState(false)
@@ -22,11 +28,10 @@ export function SecurityPanel() {
 
   useEffect(() => {
     let cancelled = false
-    void Promise.all([api.listSecurityEvents(), api.listPasskeys()])
-      .then(([nextEvents, nextPasskeys]) => {
-        if (cancelled) return
-        setEvents(nextEvents)
-        setPasskeys(nextPasskeys)
+    void api
+      .listPasskeys()
+      .then((nextPasskeys) => {
+        if (!cancelled) setPasskeys(nextPasskeys)
       })
       .catch(() => undefined)
     return () => {
@@ -53,7 +58,7 @@ export function SecurityPanel() {
       const next = await api.totpConfirm(code.trim())
       setCodes(next.recoveryCodes)
       setSetup(null)
-      setEvents(await api.listSecurityEvents())
+      await invalidateSecurityLog()
       toast('Two-factor authentication is on')
     } catch (caught) {
       toast(errorMessage(caught))
@@ -73,7 +78,7 @@ export function SecurityPanel() {
     const save = async () => {
       await api.totpDisable(credential)
       setCodes([])
-      setEvents(await api.listSecurityEvents())
+      await invalidateSecurityLog()
       toast('Two-factor authentication is off')
     }
     try {
@@ -95,7 +100,7 @@ export function SecurityPanel() {
     const save = async () => {
       const next = await api.regenerateRecoveryCodes(credential)
       setCodes(next.recoveryCodes)
-      setEvents(await api.listSecurityEvents())
+      await invalidateSecurityLog()
     }
     try {
       await save()
@@ -117,6 +122,7 @@ export function SecurityPanel() {
       const credential = await startRegistration({ optionsJSON: options as never })
       await api.passkeyRegisterVerify({ ...credential, name: 'This device' })
       setPasskeys(await api.listPasskeys())
+      await invalidateSecurityLog()
       toast('Passkey saved')
     } catch (caught) {
       toast(errorMessage(caught))
@@ -198,7 +204,7 @@ export function SecurityPanel() {
                   const save = async () => {
                     await api.passkeyDelete(passkey.id, credential)
                     setPasskeys((current) => current.filter((item) => item.id !== passkey.id))
-                    setEvents(await api.listSecurityEvents())
+                    await invalidateSecurityLog()
                   }
                   void save().catch((caught: unknown) => {
                     if (stepUpRequired(caught)) {
@@ -216,7 +222,7 @@ export function SecurityPanel() {
         </ul>
       ) : null}
       <h3 className="mt-6 font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Activity</h3>
-      {events.length === 0 ? (
+      {eventsQuery.isPending ? null : events.length === 0 ? (
         <p className="mt-2 text-sm text-neutral-500">No security events yet.</p>
       ) : (
         <ul className="mt-2 divide-y divide-neutral-200 border border-neutral-200" aria-label="Security activity">

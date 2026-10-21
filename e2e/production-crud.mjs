@@ -452,6 +452,42 @@ async function queuedAddFlushesWithoutEvents(browser, signedIn, projectUrl) {
   }
 }
 
+/** /trash was opened online. A full reload while offline must show that cached item. */
+async function offlineTrashCache(browser, signedIn, projectName) {
+  const state = await signedIn.storageState()
+  const ctx = await browser.newContext({
+    timezoneId: 'Asia/Riyadh',
+    viewport: { width: 1280, height: 800 },
+    storageState: state,
+  })
+  const swPage = await ctx.newPage()
+  swPage.setDefaultTimeout(25_000)
+  try {
+    await swPage.goto(`${base}/trash`)
+    await swPage.waitForFunction(() => navigator.serviceWorker?.controller != null, null, { timeout: 30_000 })
+    await swPage.getByRole('heading', { name: 'Trash', exact: true }).waitFor()
+    await swPage.getByRole('button', { name: `Restore ${projectName}` }).waitFor()
+    await swPage.waitForFunction(
+      (name) =>
+        Object.keys(localStorage).some(
+          (key) => key.startsWith('align-rq:') && (localStorage.getItem(key) ?? '').includes(name),
+        ),
+      projectName,
+    )
+    await ctx.setOffline(true)
+    await swPage.goto(`${base}/trash`)
+    await swPage.getByRole('heading', { name: 'Trash', exact: true }).waitFor()
+    await swPage.getByRole('button', { name: `Restore ${projectName}` }).waitFor()
+    if (await swPage.getByRole('heading', { name: "You're offline. This page will load when you reconnect." }).count()) {
+      throw new Error('offline trash reload showed the empty state')
+    }
+    console.log('offline trash reload kept', projectName)
+  } finally {
+    await ctx.setOffline(false).catch(() => {})
+    await ctx.close()
+  }
+}
+
 /** An unvisited route with no cache shows the offline empty state, then loads on its own. */
 async function unvisitedRouteRecovers(browser, signedIn, projectName) {
   const state = await signedIn.storageState()
@@ -894,6 +930,9 @@ try {
   await page.waitForURL(/\/projects\/?$/)
   await page.getByRole('link', { name: projectName, exact: true }).waitFor({ state: 'detached' })
   pass('delete project')
+
+  await offlineTrashCache(browser, context, projectName)
+  pass('trash offline cache')
 
   await page.getByLabel('Primary').getByRole('link', { name: 'Trash' }).click()
   await page.getByRole('heading', { name: 'Trash', exact: true }).waitFor()

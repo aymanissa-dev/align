@@ -80,7 +80,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { dashboard, ...user } = next
     writeLocalUser(user)
     queryClient.clear()
-    if (dashboard) queryClient.setQueryData(['dashboard'], dashboard)
+    // The sign-in response already includes the dashboard. Rendering it here
+    // skips a follow-up /api/dashboard or /api/auth/me round trip.
+    if (dashboard) {
+      queryClient.setQueryData(['dashboard'], dashboard, { updatedAt: Date.now() })
+    }
     setUser(user)
     return user
   }, [])
@@ -132,7 +136,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider value={value}>
-      {user ? <QueryCache userId={user.id}>{children}</QueryCache> : children}
+      <QueryCache userId={user?.id ?? null}>{children}</QueryCache>
     </AuthContext.Provider>
   )
 }

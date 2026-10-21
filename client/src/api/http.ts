@@ -31,6 +31,10 @@ const OFFLINE_MESSAGE = "You're offline. This change is saved on this device and
 type CachedGet = { etag: string; body: string; headers: [string, string][] }
 const etags = new Map<string, CachedGet>()
 
+export function forgetGet(path: string): void {
+  etags.delete(path)
+}
+
 function rememberGet(path: string, response: Response, body: string) {
   const etag = response.headers.get('etag')
   if (!etag || body.length > 1_000_000) return
@@ -228,7 +232,7 @@ export const httpApi = {
     return request<User>('/api/auth/register', { method: 'POST', body: JSON.stringify(input) })
   },
   login(input) {
-    return request<User | import('./types.ts').MfaChallenge>('/api/auth/login', {
+    return request<(User & { dashboard?: DashboardData }) | import('./types.ts').MfaChallenge>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify(input),
     })
@@ -310,7 +314,10 @@ export const httpApi = {
     })
   },
   completeMfa(input) {
-    return request<User>('/api/auth/login/mfa', { method: 'POST', body: JSON.stringify(input) })
+    return request<User & { dashboard?: DashboardData }>('/api/auth/login/mfa', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
   },
   async stepUp(input) {
     await request<void>('/api/auth/step-up', { method: 'POST', body: JSON.stringify(input) })

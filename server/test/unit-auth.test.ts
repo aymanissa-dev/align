@@ -6,6 +6,7 @@ import { csrfProtection } from '../src/csrf.ts'
 import { assertPasswordNotBreached, HIBP_TIMEOUT_MS, noteBreachedPassword, passwordIsBreached } from '../src/hibp.ts'
 import { signJwt, verifyJwt } from '../src/keys.ts'
 import { isMediumPassword } from '../src/passwordPolicy.ts'
+import { HttpError } from '../src/errors.ts'
 import { enforceAuthLimit } from '../src/rateLimit.ts'
 import { RateLimit, SecurityEvent } from '../src/models.ts'
 import { accessFromRequest, coarseIp, deviceLabel, sessionExpired, stepUpFresh } from '../src/session.ts'
@@ -141,6 +142,31 @@ describe('auth units', () => {
     process.env.NODE_ENV = 'production'
     try {
       await expect(enforceAuthLimit('login', ip, 'person@align.test')).rejects.toMatchObject({ status: 429 })
+    } finally {
+      process.env.NODE_ENV = previous
+    }
+  })
+
+  it('sets Retry-After to the remaining per-email window', async () => {
+    const ip = `198.51.100.${Math.floor(Math.random() * 200) + 1}`
+    const email = `window-${crypto.randomUUID()}@align.test`
+    await RateLimit.create({
+      key: `login:email:${email}`,
+      count: 10,
+      expiresAt: new Date(Date.now() + 6 * 60 * 1000),
+    })
+    const previous = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    try {
+      await enforceAuthLimit('login', ip, email)
+      throw new Error('expected the per-email window to reject the attempt')
+    } catch (error) {
+      expect(error).toBeInstanceOf(HttpError)
+      const locked = error as HttpError
+      expect(locked.status).toBe(429)
+      const retryAfter = Number(locked.headers['Retry-After'])
+      expect(retryAfter).toBeGreaterThan(5 * 60)
+      expect(retryAfter).toBeLessThanOrEqual(6 * 60)
     } finally {
       process.env.NODE_ENV = previous
     }

@@ -5,6 +5,9 @@ import { broadcastWorkspaceChange } from './lib/dataChannel.ts'
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
+      // Visited lists stay in memory for a day, which is how long the per-user
+      // cache keeps them. A shorter lifetime drops /trash from the next save.
+      gcTime: 24 * 60 * 60 * 1000,
       refetchOnWindowFocus: true,
       retry: (failureCount, error) => {
         if (error instanceof ApiError && error.status < 500) return false

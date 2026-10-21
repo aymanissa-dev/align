@@ -7,7 +7,10 @@ import { AuthFrame } from '../components/AuthFrame.tsx'
 import { Button, Field, Input } from '../components/ui.tsx'
 import { consumeForcedSignOut } from '../lib/forceSignOut.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
+import { preloadDashboard } from '../lib/preloadDashboard.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
+
+preloadDashboard()
 
 const DEMO_EMAIL = 'demo@align.app'
 const DEMO_PASSWORD = 'password'

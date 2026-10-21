@@ -21,9 +21,12 @@ export function isOfflineMiss(error: unknown): boolean {
 export function useQueryMiss(query: MissQuery): 'loading' | 'offline' | 'error' | null {
   const restoring = useIsRestoring()
   if (query.data != null) return null
+  // Restoring reads the per-user cache. navigator.onLine is not a reason to
+  // show the offline empty state before that cache has been applied.
+  if (restoring) return 'loading'
   // A paused query has no error yet. onlineManager is offline, so this page
   // will not load until the probe marks the server reachable.
   if (query.isPaused || isOfflineMiss(query.error)) return 'offline'
-  if (restoring || query.isLoading || !query.isError) return 'loading'
+  if (query.isLoading || !query.isError) return 'loading'
   return 'error'
 }

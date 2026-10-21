@@ -3,9 +3,11 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { startOfflineSync } from './lib/offline.ts'
+import { preloadDashboard } from './lib/preloadDashboard.ts'
 import { purgeStaleClient } from './lib/staleClient.ts'
 
 startOfflineSync()
+preloadDashboard()
 
 if ('serviceWorker' in navigator) {
   let hadController = !!navigator.serviceWorker.controller

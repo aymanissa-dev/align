@@ -2825,7 +2825,7 @@ async function hit(key) {
   if (doc && doc.expiresAt.getTime() <= now) {
     doc = await RateLimit.findOneAndUpdate({ key }, { $set: { count: 1, expiresAt } }, { new: true });
   }
-  return doc?.count ?? 1;
+  return { count: doc?.count ?? 1, expiresAt: doc?.expiresAt ?? expiresAt };
 }
 async function delayFailedAttempt(count) {
   if (process.env.NODE_ENV === "test" || count <= 2) return;
@@ -2836,10 +2836,15 @@ async function enforceAuthLimit(route, ip, email2) {
   const max = process.env.NODE_ENV === "production" ? PRODUCTION_MAX[route] : 1e3;
   const keys = [`${route}:ip:${ip || "unknown"}`];
   if (email2) keys.push(`${route}:email:${email2}`);
-  const counts = await Promise.all(keys.map((key) => hit(key)));
-  const count = Math.max(0, ...counts);
+  const hits = await Promise.all(keys.map((key) => hit(key)));
+  const count = Math.max(0, ...hits.map((entry) => entry.count));
   if (count > max) {
-    throw new HttpError(429, "Too many attempts. Try again later.", { headers: { "Retry-After": "60" } });
+    const now = Date.now();
+    const remainingMs = Math.max(
+      ...hits.filter((entry) => entry.count > max).map((entry) => entry.expiresAt.getTime() - now)
+    );
+    const seconds = Math.max(1, Math.ceil(remainingMs / 1e3));
+    throw new HttpError(429, "Too many attempts. Try again later.", { headers: { "Retry-After": String(seconds) } });
   }
   return count;
 }
@@ -3384,7 +3389,7 @@ ${link}`
       await recordSecurity({
         userId: currentUserId(req),
         type: "session-renamed",
-        summary: `A session was renamed to ${input.name}.`,
+        summary: `A session and device were renamed to ${input.name}.`,
         ...requestAudit(req)
       });
       res.json({ id: session.id, device: session.deviceName });
