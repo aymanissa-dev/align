@@ -172,6 +172,9 @@ function Editor({ note }: { note: Note }) {
         </span>
       </div>
       <input
+        id="note-editor-title"
+        name="title"
+        autoComplete="off"
         value={title}
         onChange={(event) => setTitle(event.target.value)}
         onBlur={() => {
@@ -192,6 +195,9 @@ function Editor({ note }: { note: Note }) {
         <p className="mt-3 text-sm text-neutral-400">Project</p>
       )}
       <textarea
+        id="note-editor-body"
+        name="body"
+        autoComplete="off"
         value={body}
         onChange={(event) => setBody(event.target.value)}
         placeholder="Write…"

@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import type { CookieOptions, Request, Response } from 'express'
 import { Types } from 'mongoose'
 import { isRole, type Role } from './authz.ts'
+import { clientIp } from './clientIp.ts'
 import { recordSecurity } from './data/securityLog.ts'
 import { ensurePersonalWorkspace, ownerClaims, type AccessClaims } from './data/workspaces.ts'
 import { HttpError } from './errors.ts'
@@ -95,7 +96,7 @@ export function prepareNewDevice(req: Request, userId: string): Promise<boolean>
 function noticeNewDevice(req: Request, userId: string, before: Date): Promise<boolean> {
   const userAgent = (req.get('user-agent') ?? '').slice(0, 300)
   const deviceName = deviceLabel(userAgent)
-  const ip = coarseIp(req.ip)
+  const ip = coarseIp(clientIp(req))
   return Promise.all([
     Session.exists({ userId, deviceName, ipCoarse: ip, createdAt: { $lt: before } }),
     Session.exists({ userId, createdAt: { $lt: before } }),
@@ -163,7 +164,7 @@ async function issueSession(
     expiresAt: new Date(now.getTime() + REFRESH_MS),
     userAgent: userAgent.slice(0, 300),
     deviceName: deviceLabel(userAgent),
-    ipCoarse: coarseIp(req.ip),
+    ipCoarse: coarseIp(clientIp(req)),
     location: coarseLocation(req),
     lastSeenAt: now,
     stepUpAt: previous?.stepUpAt ?? null,
@@ -299,7 +300,7 @@ export async function requireFreshStepUp(sessionId: string | undefined): Promise
 export function requestAudit(req: Request): { ipCoarse: string; device: string; deviceType: string; location: string } {
   const userAgent = req.get('user-agent') ?? ''
   return {
-    ipCoarse: coarseIp(req.ip),
+    ipCoarse: coarseIp(clientIp(req)),
     device: deviceLabel(userAgent),
     deviceType: deviceKind(userAgent),
     location: coarseLocation(req),

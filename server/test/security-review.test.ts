@@ -5,7 +5,7 @@ import { createApp } from '../src/app.ts'
 import { consumeRecoveryCode } from '../src/data/factors.ts'
 import { claimInvites } from '../src/data/workspaces.ts'
 import { upPurgeReviewerWorkspace } from '../src/migrate/purgeReviewerWorkspace.ts'
-import { Invite, Membership, Passkey, Project, SecurityEvent, Session, User, Workspace } from '../src/models.ts'
+import { Invite, Membership, Passkey, Project, RateLimit, SecurityEvent, Session, User, Workspace } from '../src/models.ts'
 import { totpAt } from '../src/totp.ts'
 import { consumeAuthToken, issueAuthToken } from '../src/tokens.ts'
 import { app, csrfToken, registerUser } from './helpers.ts'
@@ -214,7 +214,87 @@ describe('security review', () => {
     })
     expect(fresh.status).toBe(201)
     expect(fresh.body.id).toEqual(expect.any(String))
+    const spoofed = await request(app).post('/api/auth/register').set('x-real-ip', '203.0.113.50').set('x-forwarded-for', '198.51.100.8').send({
+      name: 'Spoof',
+      email: `spoof-${crypto.randomUUID()}@align.test`,
+      password: 'password12',
+    })
+    expect(spoofed.status).toBe(201)
+    const keys = (await RateLimit.find({ key: /^register:ip:/ }).select('key').lean()).map((row) => row.key)
+    expect(keys.join(' ')).not.toMatch(/203\.0\.113\.50|198\.51\.100\.8/)
   })
+
+  it('counts a failed sign-in and a password reset request against x-real-ip', async () => {
+    const previous = process.env.VERCEL
+    process.env.VERCEL = '1'
+    try {
+      const email = `miss-${crypto.randomUUID()}@align.test`
+      const wrong = await request(app)
+        .post('/api/auth/login')
+        .set('x-real-ip', '203.0.113.40')
+        .set('x-forwarded-for', '198.51.100.40, 10.0.0.4')
+        .send({ email, password: 'not-the-password' })
+      expect(wrong.status).toBe(401)
+      const forgot = await request(app)
+        .post('/api/auth/forgot')
+        .set('x-real-ip', '203.0.113.41')
+        .set('x-forwarded-for', '198.51.100.41')
+        .send({ email })
+      expect(forgot.status).toBe(200)
+      expect(await RateLimit.findOne({ key: 'login:fail:ip:203.0.113.40' })).toBeTruthy()
+      expect(await RateLimit.findOne({ key: 'login:fail:ip:198.51.100.40' })).toBeNull()
+      expect(await RateLimit.findOne({ key: 'forgot:ip:203.0.113.41' })).toBeTruthy()
+      expect(await RateLimit.findOne({ key: 'forgot:ip:198.51.100.41' })).toBeNull()
+    } finally {
+      if (previous === undefined) delete process.env.VERCEL
+      else process.env.VERCEL = previous
+    }
+  })
+
+  it('counts registration against x-real-ip when Vercel sets it, even if forwarded-for changes', async () => {
+    const previousEnv = process.env.NODE_ENV
+    const previousVercel = process.env.VERCEL
+    process.env.NODE_ENV = 'production'
+    process.env.VERCEL = '1'
+    try {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const created = await request(app)
+          .post('/api/auth/register')
+          .set('x-real-ip', '203.0.113.10')
+          .set('x-forwarded-for', `198.51.100.${attempt}, 10.0.0.${attempt}`)
+          .send({
+            name: 'Rate',
+            email: `edge-${crypto.randomUUID()}@align.test`,
+            password: `rK7m-${crypto.randomUUID()}`,
+          })
+        expect(created.status).toBe(201)
+      }
+      const blocked = await request(app)
+        .post('/api/auth/register')
+        .set('x-real-ip', '203.0.113.10')
+        .set('x-forwarded-for', '203.0.113.99')
+        .send({
+          name: 'Rate',
+          email: `edge-${crypto.randomUUID()}@align.test`,
+          password: `rK7m-${crypto.randomUUID()}`,
+        })
+      expect(blocked.status).toBe(429)
+      const other = await request(app)
+        .post('/api/auth/register')
+        .set('x-real-ip', '203.0.113.11')
+        .set('x-forwarded-for', '203.0.113.10')
+        .send({
+          name: 'Rate',
+          email: `edge-${crypto.randomUUID()}@align.test`,
+          password: `rK7m-${crypto.randomUUID()}`,
+        })
+      expect(other.status).toBe(201)
+    } finally {
+      process.env.NODE_ENV = previousEnv
+      if (previousVercel === undefined) delete process.env.VERCEL
+      else process.env.VERCEL = previousVercel
+    }
+  }, 60_000)
 
   it('returns the same accepted response for new and existing emails when mail is configured', async () => {
     const existing = await registerUser('Existing')
@@ -349,12 +429,16 @@ describe('security review', () => {
 
     process.env.NODE_ENV = 'production'
     try {
-      const limited = createApp()
-      for (let attempt = 0; attempt < 60; attempt += 1) {
-        const response = await request(limited).post('/api/auth/password').send({})
-        expect(response.status).not.toBe(429)
+      await RateLimit.deleteMany({ key: /^auth-route:/ })
+      const first = createApp()
+      const second = createApp()
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        expect((await request(first).post('/api/auth/password').send({})).status).not.toBe(429)
       }
-      expect((await request(limited).post('/api/auth/password').send({})).status).toBe(429)
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        expect((await request(second).post('/api/auth/password').send({})).status).not.toBe(429)
+      }
+      expect((await request(first).post('/api/auth/password').send({})).status).toBe(429)
     } finally {
       process.env.NODE_ENV = previous
     }

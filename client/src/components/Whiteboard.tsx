@@ -406,6 +406,9 @@ export function Whiteboard({ projectId }: { projectId: string }) {
         {screenDraft ? (
           <input
             ref={textRef}
+            id="whiteboard-text"
+            name="text"
+            autoComplete="off"
             value={draft?.value ?? ''}
             aria-label="Whiteboard text"
             className="board-surface focus-ring absolute z-10 min-h-11 min-w-40 border border-neutral-950 px-2 text-sm"

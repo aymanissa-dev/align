@@ -131,6 +131,7 @@ function ProjectForm({ project, onClose }: { project: Project | null; onClose: (
       <Field label="Name" htmlFor="project-name" error={error}>
         <Input
           id="project-name"
+          name="name"
           value={name}
           onChange={(event) => setName(event.target.value)}
           autoComplete="off"
@@ -142,6 +143,8 @@ function ProjectForm({ project, onClose }: { project: Project | null; onClose: (
       <Field label="Description" htmlFor="project-description">
         <Textarea
           id="project-description"
+          name="description"
+          autoComplete="off"
           value={description}
           onChange={(event) => setDescription(event.target.value)}
           rows={4}

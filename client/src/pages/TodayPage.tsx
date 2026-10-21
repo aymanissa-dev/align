@@ -152,6 +152,8 @@ export function TodayPage() {
             <Field label="Task" htmlFor="today-task">
               <Input
                 id="today-task"
+                name="title"
+                autoComplete="off"
                 value={title}
                 onChange={(event) => setTitle(event.target.value)}
                 placeholder="Task title"
@@ -165,6 +167,8 @@ export function TodayPage() {
             </label>
             <Select
               id="today-project"
+              name="project"
+              autoComplete="off"
               className="mt-1.5"
               aria-label="Project"
               value={selectedProject}

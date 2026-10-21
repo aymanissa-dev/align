@@ -188,6 +188,8 @@ function NewNoteForm({ projects, onClose }: { projects: Project[]; onClose: () =
       <Field label="Project" htmlFor="note-project" error={error}>
         <Select
           id="note-project"
+          name="project"
+          autoComplete="off"
           value={projectId}
           onChange={(event) => setProjectId(event.target.value)}
           aria-invalid={error ? true : undefined}
@@ -203,6 +205,8 @@ function NewNoteForm({ projects, onClose }: { projects: Project[]; onClose: () =
       <Field label="Title" htmlFor="note-title">
         <Input
           id="note-title"
+          name="title"
+          autoComplete="off"
           value={title}
           onChange={(event) => setTitle(event.target.value)}
           placeholder="Untitled"

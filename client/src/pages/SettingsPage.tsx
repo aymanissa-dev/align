@@ -306,6 +306,7 @@ export function SettingsPage() {
           <Field label="Name" htmlFor="profile-name" error={nameError}>
             <Input
               id="profile-name"
+              name="name"
               autoComplete="name"
               value={name}
               onChange={(event) => setName(event.target.value)}
@@ -325,6 +326,7 @@ export function SettingsPage() {
           <Field label="Current password" htmlFor="current-password">
             <Input
               id="current-password"
+              name="current-password"
               type="password"
               autoComplete="current-password"
               value={currentPassword}
@@ -335,6 +337,7 @@ export function SettingsPage() {
           <Field label="New password" htmlFor="new-password" hint={MEDIUM_PASSWORD_HINT}>
             <Input
               id="new-password"
+              name="new-password"
               type="password"
               autoComplete="new-password"
               value={newPassword}
@@ -345,6 +348,7 @@ export function SettingsPage() {
           <Field label="Confirm new password" htmlFor="confirm-password">
             <Input
               id="confirm-password"
+              name="confirm-password"
               type="password"
               autoComplete="new-password"
               value={confirmPassword}
@@ -421,7 +425,14 @@ export function SettingsPage() {
                     })
                   }}
                 >
-                  <Input name="name" aria-label={`Rename ${session.device}`} defaultValue={session.device} className="h-9" />
+                  <Input
+                    id={`session-name-${session.id}`}
+                    name="name"
+                    autoComplete="off"
+                    aria-label={`Rename ${session.device}`}
+                    defaultValue={session.device}
+                    className="h-9"
+                  />
                   <Button variant="secondary" type="submit">
                     Rename
                   </Button>
@@ -453,6 +464,7 @@ export function SettingsPage() {
           <Field label="New email" htmlFor="next-email" error={emailError}>
             <Input
               id="next-email"
+              name="email"
               type="email"
               autoComplete="email"
               value={nextEmail}
@@ -462,6 +474,7 @@ export function SettingsPage() {
           <Field label="Current password" htmlFor="email-password">
             <Input
               id="email-password"
+              name="password"
               type="password"
               autoComplete="current-password"
               value={emailPassword}
@@ -519,6 +532,7 @@ export function SettingsPage() {
           <Field label="Password" htmlFor="revoke-password">
             <Input
               id="revoke-password"
+              name="password"
               type="password"
               autoComplete="current-password"
               value={revokePassword}
@@ -543,6 +557,7 @@ export function SettingsPage() {
           <Field label="Password" htmlFor="delete-password">
             <Input
               id="delete-password"
+              name="password"
               type="password"
               autoComplete="current-password"
               value={deletePassword}

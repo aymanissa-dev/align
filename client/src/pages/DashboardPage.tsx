@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/auth-context.ts'
@@ -28,7 +27,6 @@ export function DashboardPage() {
     staleTime: 15_000,
   })
   const miss = useQueryMiss(dashboard)
-  const [showAllDated, setShowAllDated] = useState(false)
 
   if (!user) return null
   if (!dashboard.data) {
@@ -52,8 +50,7 @@ export function DashboardPage() {
   const dated = openTasks.filter((task) => task.dueDate)
   const upcoming = dated.filter((task) => isUpcoming(task.dueDate))
   const datedOpenCount = dashboard.data.datedOpenCount ?? dated.length
-  // Upcoming is the 7-day window, capped at 5. View all dated reveals every dated task.
-  const shown = showAllDated ? dated : upcoming.slice(0, UPCOMING_CAP)
+  const shown = upcoming.slice(0, UPCOMING_CAP)
 
   return (
     <div>
@@ -90,10 +87,8 @@ export function DashboardPage() {
         <>
         <section className="mt-8 border border-neutral-200">
           <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
-            <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">
-              {showAllDated ? 'All dated' : 'Upcoming'}
-            </h2>
-            <Badge>{showAllDated ? datedOpenCount : upcoming.length}</Badge>
+            <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Upcoming</h2>
+            <Badge>{upcoming.length}</Badge>
           </div>
           {shown.length === 0 ? (
             <p className="px-4 py-6 text-sm text-neutral-500">Nothing overdue or due in the next week.</p>
@@ -122,18 +117,11 @@ export function DashboardPage() {
               ))}
             </ul>
           )}
-          {!showAllDated && (upcoming.length > UPCOMING_CAP || datedOpenCount > upcoming.length) ? (
+          {upcoming.length > UPCOMING_CAP || datedOpenCount > upcoming.length ? (
             <div className="border-t border-neutral-200 px-4 py-3">
-              <a
-                href="#all-dated"
-                className="focus-ring text-sm text-neutral-950 underline underline-offset-4"
-                onClick={(event) => {
-                  event.preventDefault()
-                  setShowAllDated(true)
-                }}
-              >
+              <Link to="/upcoming" className="focus-ring text-sm text-neutral-950 underline underline-offset-4">
                 View all dated ({datedOpenCount})
-              </a>
+              </Link>
             </div>
           ) : null}
         </section>

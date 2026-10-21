@@ -29,6 +29,7 @@ import { VerifyEmailPage } from './pages/VerifyEmailPage.tsx'
 import { SearchPage } from './pages/SearchPage.tsx'
 import { SettingsPage } from './pages/SettingsPage.tsx'
 import { TodayPage } from './pages/TodayPage.tsx'
+import { UpcomingPage } from './pages/UpcomingPage.tsx'
 import { TrashPage } from './pages/TrashPage.tsx'
 import { clearSignedOut, wasSignedOut } from './lib/signedOut.ts'
 import { queryClient } from './queryClient.ts'
@@ -192,6 +193,7 @@ export default function App() {
               </Route>
               <Route element={<Protected />}>
                 <Route path="/today" element={<TodayPage />} />
+                <Route path="/upcoming" element={<UpcomingPage />} />
                 <Route path="/projects" element={<ProjectsPage />} />
                 <Route path="/projects/:id" element={<ProjectDetailPage />} />
                 <Route path="/notes" element={<NotesPage />} />

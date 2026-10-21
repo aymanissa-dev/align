@@ -52,6 +52,7 @@ export function ResetPasswordPage() {
         <Field label="New password" htmlFor="password" hint={MEDIUM_PASSWORD_HINT} error={error}>
           <Input
             id="password"
+            name="password"
             type="password"
             autoComplete="new-password"
             value={password}
@@ -63,6 +64,7 @@ export function ResetPasswordPage() {
         <Field label="Confirm password" htmlFor="confirm">
           <Input
             id="confirm"
+            name="confirm-password"
             type="password"
             autoComplete="new-password"
             value={confirm}

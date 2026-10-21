@@ -55,6 +55,7 @@ export function RegisterPage() {
           <Field label="Name" htmlFor="name">
             <Input
               id="name"
+              name="name"
               autoComplete="name"
               value={name}
               onChange={(event) => setName(event.target.value)}
@@ -64,6 +65,7 @@ export function RegisterPage() {
           <Field label="Email" htmlFor="email">
             <Input
               id="email"
+              name="email"
               type="email"
               autoComplete="email"
               inputMode="email"
@@ -75,6 +77,7 @@ export function RegisterPage() {
           <Field label="Password" htmlFor="password" hint={MEDIUM_PASSWORD_HINT}>
             <Input
               id="password"
+              name="password"
               type="password"
               autoComplete="new-password"
               value={password}

@@ -35,7 +35,7 @@ export function dueState(dueDate: string | null | undefined, today = localISODat
 /**
  * Dashboard policy: Upcoming is overdue items and anything due within 7 days,
  * and the dashboard shows at most UPCOMING_CAP of them. "View all dated"
- * opens the rest of the dated list.
+ * links to /upcoming, which lists every dated task.
  */
 export const UPCOMING_DAYS = 7
 export const UPCOMING_CAP = 5

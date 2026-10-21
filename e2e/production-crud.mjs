@@ -650,7 +650,12 @@ async function signedOutOfflineAndUnvisited(browser) {
   } finally {
     await ctx.setOffline(false).catch(() => {})
     const login = await ctx.request.post(`${base}/api/auth/login`, { data: { email, password }, headers: await apiHeaders(ctx) }).catch(() => null)
-    if (login?.ok()) await ctx.request.delete(`${base}/api/auth/me`, { headers: await apiHeaders(ctx), data: { password } }).catch(() => {})
+    if (login?.ok()) {
+      const stepped = await ctx.request.post(`${base}/api/auth/step-up`, { headers: await apiHeaders(ctx), data: { password } })
+      if (!stepped.ok()) throw new Error(`private account step-up ${stepped.status()}`)
+      const removed = await ctx.request.delete(`${base}/api/auth/me`, { headers: await apiHeaders(ctx), data: { password } })
+      if (!removed.ok()) throw new Error(`private account delete ${removed.status()}`)
+    }
     await ctx.close()
   }
 }

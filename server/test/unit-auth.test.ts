@@ -7,7 +7,8 @@ import { assertPasswordNotBreached, HIBP_TIMEOUT_MS, noteBreachedPassword, passw
 import { signJwt, verifyJwt } from '../src/keys.ts'
 import { isMediumPassword } from '../src/passwordPolicy.ts'
 import { HttpError } from '../src/errors.ts'
-import { clearLoginFailures, enforceAuthLimit, guardLogin, recordLoginFailure, recordLoginSuccess } from '../src/rateLimit.ts'
+import { clientIp } from '../src/clientIp.ts'
+import { authRouteStore, clearLoginFailures, enforceAuthLimit, guardLogin, recordLoginFailure, recordLoginSuccess } from '../src/rateLimit.ts'
 import { RateLimit, SecurityEvent } from '../src/models.ts'
 import { accessFromRequest, coarseIp, deviceLabel, sessionExpired, stepUpFresh } from '../src/session.ts'
 import { generateRecoveryCodes, generateTotpSecret, totpAt, verifyTotp } from '../src/totp.ts'
@@ -130,6 +131,56 @@ describe('auth units', () => {
 
     const read = await invokeCsrf({ method: 'GET', path: '/api/projects', headers: { cookie: 'csrf=abc' } })
     expect(read.next).toBe(true)
+  })
+
+  it('reads the Vercel client address and ignores a spoofed forwarded header off the platform', () => {
+    const previous = process.env.VERCEL
+    delete process.env.VERCEL
+    const spoofed = {
+      get(name: string) {
+        const headers: Record<string, string> = { 'x-real-ip': '203.0.113.50', 'x-forwarded-for': '198.51.100.8, 10.0.0.2' }
+        return headers[name.toLowerCase()]
+      },
+      socket: { remoteAddress: '127.0.0.1' },
+    }
+    expect(clientIp(spoofed)).toBe('127.0.0.1')
+    process.env.VERCEL = '1'
+    try {
+      expect(clientIp(spoofed)).toBe('203.0.113.50')
+      expect(
+        clientIp({
+          get(name: string) {
+            return name.toLowerCase() === 'x-forwarded-for' ? '2001:db8::1, 10.0.0.2' : undefined
+          },
+          socket: { remoteAddress: '10.0.0.8' },
+        }),
+      ).toBe('2001:db8::1')
+      expect(
+        clientIp({
+          get(name: string) {
+            return name.toLowerCase() === 'x-real-ip' ? '::ffff:203.0.113.10' : '198.51.100.1'
+          },
+          socket: { remoteAddress: '10.0.0.8' },
+        }),
+      ).toBe('203.0.113.10')
+    } finally {
+      if (previous === undefined) delete process.env.VERCEL
+      else process.env.VERCEL = previous
+    }
+  })
+
+  it('shares the auth route counter across store instances', async () => {
+    const first = authRouteStore()
+    const second = authRouteStore()
+    first.init({ windowMs: 60_000 })
+    second.init({ windowMs: 60_000 })
+    expect((await first.increment('203.0.113.20')).totalHits).toBe(1)
+    expect((await second.increment('203.0.113.20')).totalHits).toBe(2)
+    await first.decrement('203.0.113.20')
+    expect((await second.increment('203.0.113.20')).totalHits).toBe(2)
+    await second.resetKey('203.0.113.20')
+    expect((await first.increment('203.0.113.20')).totalHits).toBe(1)
+    expect(await RateLimit.findOne({ key: 'auth-route:203.0.113.20' })).toBeTruthy()
   })
 
   it('caps registration at 5 per hour and 20 per day for one IP', async () => {

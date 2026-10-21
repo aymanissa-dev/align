@@ -4,6 +4,7 @@ import { deleteAccount } from '../data/content.ts'
 import { dashboardForUser } from './dashboard.ts'
 import { assertCredentialPresent, requireSensitiveCredential } from './mfa.ts'
 import { clearAllFactors } from '../data/factors.ts'
+import { clientIp } from '../clientIp.ts'
 import { claimInvites, ensurePersonalWorkspace, ownerClaims } from '../data/workspaces.ts'
 import { users } from '../data/users.ts'
 import { recordSecurity } from '../data/securityLog.ts'
@@ -60,10 +61,6 @@ import {
   stepUpSchema,
   verifySchema,
 } from '../validate.ts'
-
-function clientIp(req: Request): string {
-  return req.ip || req.socket.remoteAddress || 'unknown'
-}
 
 function duplicateEmail(error: unknown): boolean {
   if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 11000) return false

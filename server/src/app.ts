@@ -11,7 +11,8 @@ import { privateRevalidate } from './httpCache.ts'
 import { errorHandler } from './middleware.ts'
 import { guardOrigin } from './security.ts'
 import { APP_VERSION, MINIMUM_CLIENT_VERSION } from './version.ts'
-import { AUTH_ROUTE_LIMIT } from './rateLimit.ts'
+import { clientIp } from './clientIp.ts'
+import { AUTH_ROUTE_LIMIT, authRouteStore } from './rateLimit.ts'
 import { authRouter } from './routes/auth.ts'
 import { dashboardRouter } from './routes/dashboard.ts'
 import { labelsRouter } from './routes/labels.ts'
@@ -33,6 +34,8 @@ export type AppOptions = {
 export function createApp(options: AppOptions = {}): Express {
   const app = express()
   app.disable('x-powered-by')
+  // One trusted hop so Express does not treat every forwarded entry as the
+  // client. Per-IP limits use clientIp(), which reads Vercel's x-real-ip.
   app.set('trust proxy', 1)
   app.use(
     helmet({
@@ -98,6 +101,8 @@ export function createApp(options: AppOptions = {}): Express {
     max: options.authRateLimitMax ?? (process.env.NODE_ENV === 'production' ? AUTH_ROUTE_LIMIT : 1000),
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: (req) => clientIp(req),
+    store: authRouteStore(),
     message: { error: 'Too many attempts. Try again later.' },
   })
 

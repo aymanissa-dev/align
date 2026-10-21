@@ -73,7 +73,10 @@ export function AccentPicker() {
         <label className="focus-ring inline-flex items-center gap-2 border border-neutral-300 px-2 py-1 text-xs text-neutral-600">
           Custom
           <input
+            id="accent-color"
+            name="accent"
             type="color"
+            autoComplete="off"
             aria-label="Custom accent color"
             value={current}
             className="h-6 w-8 cursor-pointer border-0 bg-transparent p-0"

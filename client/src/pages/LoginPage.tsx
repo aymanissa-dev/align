@@ -142,6 +142,7 @@ export function LoginPage() {
             <Field label={useRecovery ? 'Recovery code' : 'Authenticator code'} htmlFor="mfa-code">
               <Input
                 id="mfa-code"
+                name="code"
                 inputMode={useRecovery ? 'text' : 'numeric'}
                 autoComplete="one-time-code"
                 value={code}
@@ -170,6 +171,7 @@ export function LoginPage() {
           <Field label="Email" htmlFor="email">
             <Input
               id="email"
+              name="email"
               type="email"
               autoComplete="email"
               inputMode="email"
@@ -181,6 +183,7 @@ export function LoginPage() {
           <Field label="Password" htmlFor="password">
             <Input
               id="password"
+              name="password"
               type="password"
               autoComplete="current-password"
               value={password}

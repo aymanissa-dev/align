@@ -59,6 +59,7 @@ export function ForgotPasswordPage() {
           <Field label="Email" htmlFor="email" error={error}>
             <Input
               id="email"
+              name="email"
               type="email"
               autoComplete="email"
               inputMode="email"

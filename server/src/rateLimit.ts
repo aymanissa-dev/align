@@ -10,7 +10,7 @@ const SUCCESS_WINDOW_MS = 60 * 1000
 const SUCCESS_MAX = 30
 const MFA_MAX = 5
 
-/** Production cap for the in-memory limiter around every /api/auth route. */
+/** Production cap for the shared limiter around every /api/auth route. */
 export const AUTH_ROUTE_LIMIT = 60
 
 /**
@@ -45,6 +45,31 @@ function failureKeys(ip: string, email: string): string[] {
 
 function successKeys(ip: string, email: string): string[] {
   return [`login:ok:ip:${ip || 'unknown'}`, `login:ok:email:${email}`]
+}
+
+/**
+ * Shared counter for the limiter in front of every /api/auth route.
+ * Counts live in Mongo, so a second instance sees the same total.
+ */
+export function authRouteStore() {
+  let windowMs = WINDOW_MS
+  const storageKey = (key: string) => `auth-route:${key}`
+  return {
+    localKeys: false as const,
+    init(options: { windowMs: number }) {
+      windowMs = options.windowMs
+    },
+    async increment(key: string) {
+      const bucket = await hit(storageKey(key), windowMs)
+      return { totalHits: bucket.count, resetTime: bucket.expiresAt }
+    },
+    async decrement(key: string) {
+      await RateLimit.updateOne({ key: storageKey(key), count: { $gt: 0 } }, { $inc: { count: -1 } })
+    },
+    async resetKey(key: string) {
+      await RateLimit.deleteOne({ key: storageKey(key) })
+    },
+  }
 }
 
 async function hit(key: string, windowMs = WINDOW_MS): Promise<Bucket> {

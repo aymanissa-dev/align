@@ -210,7 +210,7 @@ export function SecurityPanel() {
             Secret <span data-secret={setup.secret}>{setup.secret}</span>
           </p>
           <Field label="Authenticator code" htmlFor="totp-code">
-            <Input id="totp-code" inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(event) => setCode(event.target.value)} />
+            <Input id="totp-code" name="code" inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(event) => setCode(event.target.value)} />
           </Field>
           <Button type="submit" disabled={busy}>
             Confirm code
@@ -233,6 +233,7 @@ export function SecurityPanel() {
         <Field label="Current password" htmlFor="security-password">
           <Input
             id="security-password"
+            name="password"
             type="password"
             autoComplete="current-password"
             value={password}

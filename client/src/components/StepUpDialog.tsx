@@ -57,6 +57,7 @@ export function StepUpDialog({
           <Field label="Password" htmlFor="step-up-password">
             <Input
               id="step-up-password"
+              name="password"
               type="password"
               autoComplete="current-password"
               value={password}
@@ -66,6 +67,7 @@ export function StepUpDialog({
           <Field label="Authenticator code" htmlFor="step-up-code">
             <Input
               id="step-up-code"
+              name="code"
               inputMode="numeric"
               autoComplete="one-time-code"
               value={code}

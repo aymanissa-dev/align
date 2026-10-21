@@ -23,6 +23,7 @@ import { recordSecurity } from '../data/securityLog.ts'
 import { HttpError } from '../errors.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { checkPassword } from '../password.ts'
+import { clientIp } from '../clientIp.ts'
 import { clearMfaFailures, delayFailedAttempt, guardMfa, recordMfaFailure } from '../rateLimit.ts'
 import { publicUser } from '../serialize.ts'
 import { dashboardForUser } from './dashboard.ts'
@@ -94,10 +95,6 @@ async function requireAccountPassword(req: Request, userId: string): Promise<voi
   if (!user?.passwordHash || !(await checkPassword(password, user.passwordHash))) {
     throw new HttpError(400, 'Current password is incorrect.')
   }
-}
-
-function clientIp(req: Request): string {
-  return req.ip || req.socket.remoteAddress || 'unknown'
 }
 
 export function mfaRouter(): Router {

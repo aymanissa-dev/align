@@ -255,6 +255,9 @@ export function TasksPanel({ projectId }: { projectId: string }) {
           )}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <Input
+              id="label-name"
+              name="name"
+              autoComplete="off"
               value={labelName}
               onChange={(event) => setLabelName(event.target.value)}
               placeholder="New label"
@@ -292,14 +295,20 @@ export function TasksPanel({ projectId }: { projectId: string }) {
       <form onSubmit={onCreate} className="mt-4 flex flex-col gap-2">
         <div className="flex flex-col gap-2 sm:flex-row">
           <Input
+            id="task-title"
+            name="title"
+            autoComplete="off"
             value={title}
             onChange={(event) => setTitle(event.target.value)}
             placeholder="Add a task"
             aria-label="Task title"
             className="sm:flex-1"
           />
-          <Input type="date" value={due} onChange={(event) => setDue(event.target.value)} aria-label="Due date" className="sm:w-40" />
+          <Input id="task-due" name="due" type="date" autoComplete="off" value={due} onChange={(event) => setDue(event.target.value)} aria-label="Due date" className="sm:w-40" />
           <Select
+            id="task-priority"
+            name="priority"
+            autoComplete="off"
             aria-label="Priority"
             value={priority}
             onChange={(event) => setPriority(event.target.value as TaskPriority)}
@@ -321,12 +330,15 @@ export function TasksPanel({ projectId }: { projectId: string }) {
       </form>
 
       <div className="mt-4 grid gap-2 sm:grid-cols-3">
-        <Select aria-label="Sort tasks" value={sort} onChange={(event) => setSort(event.target.value as TaskSort)}>
+        <Select id="task-sort" name="sort" autoComplete="off" aria-label="Sort tasks" value={sort} onChange={(event) => setSort(event.target.value as TaskSort)}>
           <option value="manual">Sort: Manual</option>
           <option value="due">Sort: Due date</option>
           <option value="priority">Sort: Priority</option>
         </Select>
         <Select
+          id="task-priority-filter"
+          name="priority-filter"
+          autoComplete="off"
           aria-label="Filter by priority"
           value={priorityFilter}
           onChange={(event) => setPriorityFilter(event.target.value as TaskPriority | 'all')}
@@ -338,7 +350,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
             </option>
           ))}
         </Select>
-        <Select aria-label="Filter by label" value={labelFilter} onChange={(event) => setLabelFilter(event.target.value)}>
+        <Select id="task-label-filter" name="label-filter" autoComplete="off" aria-label="Filter by label" value={labelFilter} onChange={(event) => setLabelFilter(event.target.value)}>
           <option value="all">All labels</option>
           {catalog.map((label) => (
             <option key={label.id} value={label.id}>
@@ -377,6 +389,9 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                     >
                       <div className="flex flex-col gap-2 sm:flex-row">
                         <Input
+                          id="task-title-edit"
+                          name="title"
+                          autoComplete="off"
                           value={draftTitle}
                           onChange={(event) => setDraftTitle(event.target.value)}
                           aria-label="Task title"
@@ -387,13 +402,19 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                           className="sm:flex-1"
                         />
                         <Input
+                          id="task-due-edit"
+                          name="due"
                           type="date"
+                          autoComplete="off"
                           value={draftDue}
                           onChange={(event) => setDraftDue(event.target.value)}
                           aria-label="Due date"
                           className="sm:w-40"
                         />
                         <Select
+                          id="task-priority-edit"
+                          name="priority"
+                          autoComplete="off"
                           aria-label="Priority"
                           value={draftPriority}
                           onChange={(event) => setDraftPriority(event.target.value as TaskPriority)}

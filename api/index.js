@@ -22,6 +22,28 @@ function isRole(value) {
   return ROLES.includes(value);
 }
 
+// src/clientIp.ts
+import { isIP } from "node:net";
+function normalize(ip) {
+  const trimmed = ip.trim();
+  const mapped = trimmed.startsWith("::ffff:") ? trimmed.slice("::ffff:".length) : trimmed;
+  return isIP(mapped) ? mapped : trimmed;
+}
+function valid(ip) {
+  if (!ip) return void 0;
+  const trimmed = ip.trim();
+  return isIP(trimmed) ? normalize(trimmed) : void 0;
+}
+function clientIp(req) {
+  if (process.env.VERCEL === "1") {
+    const real = valid(req.get("x-real-ip"));
+    if (real) return real;
+    const forwarded = valid(req.get("x-forwarded-for")?.split(",")[0]);
+    if (forwarded) return forwarded;
+  }
+  return valid(req.socket?.remoteAddress ?? void 0) ?? "unknown";
+}
+
 // src/models.ts
 import mongoose, { Schema, model } from "mongoose";
 
@@ -734,7 +756,7 @@ function prepareNewDevice(req, userId) {
 function noticeNewDevice(req, userId, before) {
   const userAgent = (req.get("user-agent") ?? "").slice(0, 300);
   const deviceName = deviceLabel(userAgent);
-  const ip = coarseIp(req.ip);
+  const ip = coarseIp(clientIp(req));
   return Promise.all([
     Session.exists({ userId, deviceName, ipCoarse: ip, createdAt: { $lt: before } }),
     Session.exists({ userId, createdAt: { $lt: before } })
@@ -781,7 +803,7 @@ async function issueSession(req, res, userId, familyId, claims, previous) {
     expiresAt: new Date(now.getTime() + REFRESH_MS),
     userAgent: userAgent.slice(0, 300),
     deviceName: deviceLabel(userAgent),
-    ipCoarse: coarseIp(req.ip),
+    ipCoarse: coarseIp(clientIp(req)),
     location: coarseLocation(req),
     lastSeenAt: now,
     stepUpAt: previous?.stepUpAt ?? null
@@ -892,7 +914,7 @@ async function requireFreshStepUp(sessionId) {
 function requestAudit(req) {
   const userAgent = req.get("user-agent") ?? "";
   return {
-    ipCoarse: coarseIp(req.ip),
+    ipCoarse: coarseIp(clientIp(req)),
     device: deviceLabel(userAgent),
     deviceType: deviceKind(userAgent),
     location: coarseLocation(req)
@@ -1537,6 +1559,26 @@ function failureKeys(ip, email2) {
 }
 function successKeys(ip, email2) {
   return [`login:ok:ip:${ip || "unknown"}`, `login:ok:email:${email2}`];
+}
+function authRouteStore() {
+  let windowMs = WINDOW_MS;
+  const storageKey = (key) => `auth-route:${key}`;
+  return {
+    localKeys: false,
+    init(options) {
+      windowMs = options.windowMs;
+    },
+    async increment(key) {
+      const bucket = await hit(storageKey(key), windowMs);
+      return { totalHits: bucket.count, resetTime: bucket.expiresAt };
+    },
+    async decrement(key) {
+      await RateLimit.updateOne({ key: storageKey(key), count: { $gt: 0 } }, { $inc: { count: -1 } });
+    },
+    async resetKey(key) {
+      await RateLimit.deleteOne({ key: storageKey(key) });
+    }
+  };
 }
 async function hit(key, windowMs = WINDOW_MS) {
   const now = Date.now();
@@ -2776,9 +2818,6 @@ async function requireAccountPassword(req, userId) {
     throw new HttpError(400, "Current password is incorrect.");
   }
 }
-function clientIp(req) {
-  return req.ip || req.socket.remoteAddress || "unknown";
-}
 function mfaRouter() {
   const router = Router2();
   router.post(
@@ -3250,9 +3289,6 @@ ${link}`,
 }
 
 // src/routes/auth.ts
-function clientIp2(req) {
-  return req.ip || req.socket.remoteAddress || "unknown";
-}
 function duplicateEmail(error) {
   if (typeof error !== "object" || error === null || !("code" in error) || error.code !== 11e3) return false;
   const pattern = "keyPattern" in error && typeof error.keyPattern === "object" && error.keyPattern !== null ? error.keyPattern : null;
@@ -3306,7 +3342,7 @@ function authRouter(limiter) {
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(registerSchema, req.body);
-      const attempt = await enforceAuthLimit("register", clientIp2(req));
+      const attempt = await enforceAuthLimit("register", clientIp(req));
       await assertPasswordNotBreached(input.password);
       const startedAt = performance.now();
       const passwordHash = await hashPassword(input.password);
@@ -3382,7 +3418,7 @@ ${link}`,
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(loginSchema, req.body);
-      const ip = clientIp2(req);
+      const ip = clientIp(req);
       const lookupStarted = performance.now();
       let user;
       try {
@@ -3498,7 +3534,7 @@ ${link}`,
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(forgotSchema, req.body);
-      await enforceAuthLimit("forgot", clientIp2(req), input.email);
+      await enforceAuthLimit("forgot", clientIp(req), input.email);
       const started = performance.now();
       const resetToken = await preparePasswordReset(input.email, appOrigin(req));
       await settleMailResponse(started);
@@ -3510,7 +3546,7 @@ ${link}`,
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(resetSchema, req.body);
-      await enforceAuthLimit("reset", clientIp2(req));
+      await enforceAuthLimit("reset", clientIp(req));
       const userId = await consumeAuthToken(input.token, "reset");
       await assertPasswordNotBreached(input.password);
       const user = userId ? await users.byIdSecret(userId) : null;
@@ -4995,6 +5031,8 @@ function createApp(options = {}) {
     max: options.authRateLimitMax ?? (process.env.NODE_ENV === "production" ? AUTH_ROUTE_LIMIT : 1e3),
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: (req) => clientIp(req),
+    store: authRouteStore(),
     message: { error: "Too many attempts. Try again later." }
   });
   const auth = authRouter(authLimiter);
