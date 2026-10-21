@@ -210,7 +210,7 @@ function Editor({ note }: { note: Note }) {
       <ConfirmDialog
         open={confirmDelete}
         title="Delete note"
-        body="Delete this note? This cannot be undone."
+        body="Delete this note? Moved to Trash. You can restore it for 30 days."
         confirmLabel="Delete"
         pending={remove.isPending}
         onConfirm={() => remove.mutate()}

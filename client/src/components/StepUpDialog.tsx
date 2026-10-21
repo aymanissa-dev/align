@@ -1,7 +1,7 @@
-import { startAuthentication } from '@simplewebauthn/browser'
 import { useState, type FormEvent } from 'react'
 import { api } from '../api/index.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
+import { passkeyErrorMessage, stepUpWithPasskey } from '../lib/passkey.ts'
 import { Button, Field, Input, Modal } from './ui.tsx'
 
 export function StepUpDialog({
@@ -88,13 +88,22 @@ export function StepUpDialog({
             variant="secondary"
             type="button"
             disabled={pending}
-            onClick={() =>
-              void finish(async () => {
-                const options = await api.passkeyStepUpOptions()
-                const credential = await startAuthentication({ optionsJSON: options as never })
-                await api.passkeyStepUpVerify(credential)
-              })
-            }
+            onClick={() => {
+              setPending(true)
+              setError('')
+              void stepUpWithPasskey()
+                .then(async () => {
+                  setPassword('')
+                  setCode('')
+                  await onConfirmed()
+                  onClose()
+                })
+                .catch((caught: unknown) => {
+                  if (caught instanceof DOMException && caught.name === 'AbortError') return
+                  setError(passkeyErrorMessage(caught))
+                })
+                .finally(() => setPending(false))
+            }}
           >
             Use a passkey
           </Button>

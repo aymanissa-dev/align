@@ -15,6 +15,7 @@ import { errorMessage } from '../lib/errorMessage.ts'
 import { invalidateSecurityLog } from '../lib/securityLog.ts'
 import { stepUpRequired } from '../lib/stepUp.ts'
 import { isMediumPassword, MEDIUM_PASSWORD_HINT, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
+import { markAccountDeleted } from '../lib/accountDeleted.ts'
 import { clearSignedOut, markSignedOut } from '../lib/signedOut.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
@@ -266,7 +267,8 @@ export function SettingsPage() {
     const save = async () => {
       markSignedOut()
       await deleteAccount(deletePassword)
-      navigate('/', { replace: true })
+      markAccountDeleted()
+      navigate('/?deleted=1', { replace: true })
     }
     try {
       await save()

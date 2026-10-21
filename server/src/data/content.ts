@@ -72,10 +72,10 @@ export function bind(tenant: Tenant) {
     },
     notes: {
       find(filter: Loose = {}) {
-        return Note.find(wid(filter))
+        return Note.find(wid({ ...alive, ...filter }))
       },
       create(doc: Record<string, unknown>) {
-        return Note.create({ ...doc, userId, workspaceId })
+        return Note.create({ ...doc, userId, workspaceId, deletedAt: null, purgeAt: null, deletedWithProject: false })
       },
     },
     labels: {
@@ -146,7 +146,7 @@ export function bind(tenant: Tenant) {
     async requireNote(id: string): Promise<NoteDoc> {
       const noteId = objectId(id)
       if (!noteId) throw new HttpError(404, 'Note not found.')
-      const note = await Note.findOne({ _id: noteId, workspaceId })
+      const note = await Note.findOne({ _id: noteId, workspaceId, deletedAt: null })
       if (!note) throw new HttpError(404, 'Note not found.')
       const project = await Project.findOne({ _id: note.projectId, workspaceId, deletedAt: null }).select('_id')
       if (!project) throw new HttpError(404, 'Note not found.')
@@ -180,6 +180,11 @@ export function bind(tenant: Tenant) {
           { $set: { deletedAt: now, purgeAt, deletedWithProject: true } },
           { session },
         )
+        await Note.updateMany(
+          { workspaceId, projectId: project._id, deletedAt: null },
+          { $set: { deletedAt: now, purgeAt, deletedWithProject: true } },
+          { session },
+        )
         project.deletedAt = now
         project.purgeAt = purgeAt
         await project.save({ session })
@@ -192,12 +197,20 @@ export function bind(tenant: Tenant) {
       task.deletedWithProject = false
       await task.save()
     },
+    async softDeleteNote(note: NoteDoc): Promise<void> {
+      const now = new Date()
+      note.deletedAt = now
+      note.purgeAt = new Date(now.getTime() + TRASH_MS)
+      note.deletedWithProject = false
+      await note.save()
+    },
     async trash() {
-      const [projects, tasks] = await Promise.all([
+      const [projects, tasks, notes] = await Promise.all([
         Project.find({ workspaceId, deletedAt: { $ne: null } }).sort({ deletedAt: -1 }).lean(),
         Task.find({ workspaceId, deletedAt: { $ne: null } }).sort({ deletedAt: -1 }).lean(),
+        Note.find({ workspaceId, deletedAt: { $ne: null } }).sort({ deletedAt: -1 }).lean(),
       ])
-      return { projects, tasks }
+      return { projects, tasks, notes }
     },
     async restoreProject(id: string): Promise<ProjectDoc> {
       const projectId = objectId(id)
@@ -209,6 +222,11 @@ export function bind(tenant: Tenant) {
         project.purgeAt = null
         await project.save({ session })
         await Task.updateMany(
+          { workspaceId, projectId: project._id, deletedWithProject: true },
+          { $set: { deletedAt: null, purgeAt: null, deletedWithProject: false } },
+          { session },
+        )
+        await Note.updateMany(
           { workspaceId, projectId: project._id, deletedWithProject: true },
           { $set: { deletedAt: null, purgeAt: null, deletedWithProject: false } },
           { session },
@@ -228,6 +246,19 @@ export function bind(tenant: Tenant) {
       task.deletedWithProject = false
       await task.save()
       return task
+    },
+    async restoreNote(id: string): Promise<NoteDoc> {
+      const noteId = objectId(id)
+      if (!noteId) throw new HttpError(404, 'Note not found.')
+      const note = await Note.findOne({ _id: noteId, workspaceId, deletedAt: { $ne: null } })
+      if (!note) throw new HttpError(404, 'Note not found.')
+      const project = await Project.findOne({ _id: note.projectId, workspaceId, deletedAt: null }).select('_id')
+      if (!project) throw new HttpError(409, 'Restore the project before restoring this note.')
+      note.deletedAt = null
+      note.purgeAt = null
+      note.deletedWithProject = false
+      await note.save()
+      return note
     },
     async purgeProject(id: string): Promise<void> {
       const projectId = objectId(id)
@@ -254,6 +285,13 @@ export function bind(tenant: Tenant) {
         await Task.deleteOne({ _id: taskId, workspaceId }, { session })
       })
     },
+    async purgeNote(id: string): Promise<void> {
+      const noteId = objectId(id)
+      if (!noteId) throw new HttpError(404, 'Note not found.')
+      const note = await Note.findOne({ _id: noteId, workspaceId, deletedAt: { $ne: null } }).select('_id')
+      if (!note) throw new HttpError(404, 'Note not found.')
+      await Note.deleteOne({ _id: noteId, workspaceId })
+    },
     async emptyTrash(): Promise<void> {
       await withTransaction(async (session) => {
         const projects = await Project.find({ workspaceId, deletedAt: { $ne: null } }).session(session).select('_id')
@@ -267,8 +305,12 @@ export function bind(tenant: Tenant) {
         const taskIds = tasks.map((task) => task._id)
         if (taskIds.length > 0) await Notification.deleteMany({ userId, taskId: { $in: taskIds } }, { session })
         if (taskIds.length > 0) await Task.deleteMany({ _id: { $in: taskIds }, workspaceId }, { session })
+        const noteFilter =
+          projectIds.length > 0
+            ? { workspaceId, $or: [{ deletedAt: { $ne: null } }, { projectId: { $in: projectIds } }] }
+            : { workspaceId, deletedAt: { $ne: null } }
+        await Note.deleteMany(noteFilter, { session })
         if (projectIds.length > 0) {
-          await Note.deleteMany({ workspaceId, projectId: { $in: projectIds } }, { session })
           await Whiteboard.deleteMany({ workspaceId, projectId: { $in: projectIds } }, { session })
           await Activity.deleteMany({ workspaceId, projectId: { $in: projectIds } }, { session })
           await Project.deleteMany({ _id: { $in: projectIds }, workspaceId }, { session })

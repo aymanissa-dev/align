@@ -12,11 +12,15 @@ import { useQueryMiss } from '../lib/queryMiss.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 import { invalidateWorkspace } from '../queryClient.ts'
 
-type TrashList = { projects: TrashItem[]; tasks: TrashItem[] }
+type TrashKind = 'project' | 'task' | 'note'
+type TrashList = { projects: TrashItem[]; tasks: TrashItem[]; notes: TrashItem[] }
 
-function withoutItem(current: TrashList, item: { kind: 'project' | 'task'; id: string }): TrashList {
+function withoutItem(current: TrashList, item: { kind: TrashKind; id: string }): TrashList {
   if (item.kind === 'project') {
     return { ...current, projects: current.projects.filter((project) => project.id !== item.id) }
+  }
+  if (item.kind === 'note') {
+    return { ...current, notes: current.notes.filter((note) => note.id !== item.id) }
   }
   return { ...current, tasks: current.tasks.filter((task) => task.id !== item.id) }
 }
@@ -35,7 +39,7 @@ export function TrashPage() {
   useEffect(() => {
     if (trash.data) flushPersistedCache()
   }, [trash.data])
-  const [purge, setPurge] = useState<{ kind: 'project' | 'task'; id: string; label: string } | null>(null)
+  const [purge, setPurge] = useState<{ kind: TrashKind; id: string; label: string } | null>(null)
   const [emptyOpen, setEmptyOpen] = useState(false)
 
   const restoreProject = useMutation({
@@ -56,9 +60,21 @@ export function TrashPage() {
     onError: (caught) => toast(errorMessage(caught)),
   })
 
+  const restoreNote = useMutation({
+    mutationFn: (id: string) => api.restoreNote(id),
+    onSuccess: async (note) => {
+      await invalidateWorkspace()
+      toast(`Restored ${note.title}`)
+    },
+    onError: (caught) => toast(errorMessage(caught)),
+  })
+
   const purgeItem = useMutation({
-    mutationFn: (item: { kind: 'project' | 'task'; id: string }) =>
-      item.kind === 'project' ? api.purgeProject(item.id) : api.purgeTask(item.id),
+    mutationFn: (item: { kind: TrashKind; id: string }) => {
+      if (item.kind === 'project') return api.purgeProject(item.id)
+      if (item.kind === 'note') return api.purgeNote(item.id)
+      return api.purgeTask(item.id)
+    },
     onMutate: async (item) => {
       await queryClient.cancelQueries({ queryKey: ['trash'] })
       const previous = queryClient.getQueryData<TrashList>(['trash'])
@@ -88,7 +104,7 @@ export function TrashPage() {
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: ['trash'] })
       const previous = queryClient.getQueryData<TrashList>(['trash'])
-      queryClient.setQueryData<TrashList>(['trash'], { projects: [], tasks: [] })
+      queryClient.setQueryData<TrashList>(['trash'], { projects: [], tasks: [], notes: [] })
       flushPersistedCache()
       return { previous }
     },
@@ -109,7 +125,8 @@ export function TrashPage() {
 
   const projects = trash.data?.projects ?? []
   const tasks = trash.data?.tasks ?? []
-  const empty = projects.length === 0 && tasks.length === 0
+  const notes = trash.data?.notes ?? []
+  const empty = projects.length === 0 && tasks.length === 0 && notes.length === 0
   const loading = trash.isLoading && !trash.data
   const offline = miss === 'offline' && !trash.data
   const failed = !trash.data && trash.isError && !offline
@@ -117,14 +134,16 @@ export function TrashPage() {
     ? restoreProject.variables
     : restoreTask.isPending
       ? restoreTask.variables
-      : null
+      : restoreNote.isPending
+        ? restoreNote.variables
+        : null
 
   return (
     <div>
       <PageHeader
         eyebrow="Workspace"
         title="Trash"
-        description="Deleted projects and tasks stay here for 30 days, then they are removed."
+        description="Deleted projects, tasks, and notes stay here for 30 days, then they are removed."
         action={
           empty ? null : (
             <Button variant="secondary" onClick={() => setEmptyOpen(true)}>
@@ -152,7 +171,7 @@ export function TrashPage() {
 
       {!loading && !failed && !offline && empty ? (
         <div className="mt-8">
-          <EmptyState title="Trash is empty" body="Deleted projects and tasks show up here until the 30 days are up." />
+          <EmptyState title="Trash is empty" body="Deleted projects, tasks, and notes show up here until the 30 days are up." />
         </div>
       ) : null}
 
@@ -197,6 +216,27 @@ export function TrashPage() {
           </ul>
         </section>
       ) : null}
+
+      {!loading && !failed && notes.length > 0 ? (
+        <section className="mt-8" aria-labelledby="trash-notes">
+          <h2 id="trash-notes" className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">
+            Notes
+          </h2>
+          <ul className="mt-3 divide-y divide-neutral-200 border border-neutral-200">
+            {notes.map((note) => (
+              <TrashRow
+                key={note.id}
+                label={note.title || 'Untitled note'}
+                deletedAt={note.deletedAt}
+                purgeAt={note.purgeAt}
+                pending={pendingId === note.id || (purgeItem.isPending && purgeItem.variables?.id === note.id)}
+                onRestore={() => restoreNote.mutate(note.id)}
+                onPurge={() => setPurge({ kind: 'note', id: note.id, label: note.title || 'Untitled note' })}
+              />
+            ))}
+          </ul>
+        </section>
+      ) : null}
       <ConfirmDialog
         open={purge !== null}
         title="Delete permanently"
@@ -213,7 +253,7 @@ export function TrashPage() {
       <ConfirmDialog
         open={emptyOpen}
         title="Empty Trash"
-        body="Permanently delete everything in Trash, including tasks and notes that belong to those projects? This cannot be undone."
+        body="Permanently delete everything in Trash, including tasks and notes? This cannot be undone."
         confirmLabel="Empty Trash"
         pending={emptyTrash.isPending}
         onConfirm={() => emptyTrash.mutate()}

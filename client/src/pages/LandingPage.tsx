@@ -4,6 +4,7 @@ import { Eyebrow } from '../components/chrome.tsx'
 import { cn } from '../lib/cn.ts'
 import { MarketingLayout } from '../components/MarketingLayout.tsx'
 import { buttonClass } from '../lib/buttonClass.ts'
+import { accountWasDeleted } from '../lib/accountDeleted.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
 const AUDIENCES = ['makers', 'teams', 'writers', 'planners'] as const
@@ -48,6 +49,7 @@ const STEPS = [
 
 export function LandingPage() {
   useDocumentTitle('Align — Keep your work in alignment.', true)
+  const [deleted] = useState(() => accountWasDeleted(window.location.search))
 
   return (
     <MarketingLayout>
@@ -68,6 +70,11 @@ export function LandingPage() {
               <span>Built for</span>
               <AudienceWord />
             </p>
+            {deleted ? (
+              <p role="status" className="mt-5 border border-neutral-200 px-3 py-2 text-sm text-neutral-800">
+                Your account and all its data were deleted.
+              </p>
+            ) : null}
             <h1 className="hero-line hero-delay-2 mt-3 max-w-xl text-[2.75rem] leading-[0.94] font-medium tracking-[-0.05em] text-balance text-neutral-950 sm:text-6xl lg:text-[4.25rem]">
               Keep your work in alignment.
             </h1>

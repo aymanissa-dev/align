@@ -8,6 +8,7 @@ import { PasswordMeter } from '../components/PasswordMeter.tsx'
 import { RecoveryKeyNotice } from '../components/RecoveryKeyNotice.tsx'
 import { Button, Field, Input } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
+import { passkeyErrorMessage, signInWithPasskey } from '../lib/passkey.ts'
 import { isMediumPassword, MEDIUM_PASSWORD_HINT, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
@@ -22,6 +23,8 @@ export function ForgotPasswordPage() {
   const [pending, setPending] = useState(false)
   const [issuedKey, setIssuedKey] = useState('')
   const [signedIn, setSignedIn] = useState<User | null>(null)
+  const [passkeyError, setPasskeyError] = useState('')
+  const [passkeyPending, setPasskeyPending] = useState(false)
   useDocumentTitle('Reset password')
 
   function validatePassword(): boolean {
@@ -148,6 +151,31 @@ export function ForgotPasswordPage() {
           {pending ? 'Resetting…' : 'Reset password'}
         </Button>
       </form>
+      {passkeyError ? (
+        <p role="alert" className="mt-4 text-sm text-neutral-800">
+          {passkeyError}
+        </p>
+      ) : null}
+      <p className="mt-4 text-sm">
+        <button
+          type="button"
+          className="focus-ring text-neutral-950 underline underline-offset-4"
+          disabled={passkeyPending}
+          onClick={() => {
+            setPasskeyError('')
+            setPasskeyPending(true)
+            void signInWithPasskey()
+              .then((user) => acceptSession(user))
+              .catch((caught: unknown) => {
+                if (caught instanceof DOMException && caught.name === 'AbortError') return
+                setPasskeyError(passkeyErrorMessage(caught))
+              })
+              .finally(() => setPasskeyPending(false))
+          }}
+        >
+          {passkeyPending ? 'Waiting for passkey…' : 'Use a passkey instead'}
+        </button>
+      </p>
       <p className="mt-6 text-sm text-neutral-500">
         <Link to="/login" className="focus-ring text-neutral-950 underline underline-offset-4">
           Back to sign in

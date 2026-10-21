@@ -129,6 +129,9 @@ const noteSchema = new Schema(
     title: { type: String, required: true },
     body: { type: String, default: '' },
     searchWords: { type: [String] },
+    deletedAt: { type: Date, default: null },
+    purgeAt: { type: Date, default: null },
+    deletedWithProject: { type: Boolean, default: false },
   },
   { timestamps: true, optimisticConcurrency: true },
 )
@@ -142,6 +145,10 @@ noteSchema.index({ userId: 1, searchWords: 1 }, { name: 'NoteSearchWords' })
 noteSchema.index(
   { userId: 1, title: 'text', body: 'text' },
   { weights: { title: 5, body: 1 }, name: 'NoteTextIndex' },
+)
+noteSchema.index(
+  { purgeAt: 1 },
+  { name: 'NotePurge', expireAfterSeconds: 0, partialFilterExpression: { purgeAt: { $type: 'date' } } },
 )
 
 const NINETY_DAYS_SECONDS = 90 * 24 * 60 * 60

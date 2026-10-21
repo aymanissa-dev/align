@@ -300,11 +300,13 @@ export interface AlignApi {
   passkeyLoginVerify(body: unknown): Promise<User & { dashboard?: DashboardData; newDevice?: boolean }>
   passkeyStepUpOptions(): Promise<unknown>
   passkeyStepUpVerify(body: unknown): Promise<void>
-  listTrash(): Promise<{ projects: TrashItem[]; tasks: TrashItem[] }>
+  listTrash(): Promise<{ projects: TrashItem[]; tasks: TrashItem[]; notes: TrashItem[] }>
   restoreProject(id: string): Promise<{ id: string; name: string }>
   restoreTask(id: string): Promise<{ id: string; title: string }>
+  restoreNote(id: string): Promise<{ id: string; title: string }>
   purgeProject(id: string): Promise<void>
   purgeTask(id: string): Promise<void>
+  purgeNote(id: string): Promise<void>
   emptyTrash(): Promise<void>
 
   /** GET /api/projects */

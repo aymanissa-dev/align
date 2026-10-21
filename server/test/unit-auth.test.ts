@@ -10,7 +10,7 @@ import { signJwt, verifyJwt } from '../src/keys.ts'
 import { isMediumPassword } from '../src/passwordPolicy.ts'
 import { HttpError } from '../src/errors.ts'
 import { clientIp } from '../src/clientIp.ts'
-import { authRouteStore, bucketStart, clearLoginFailures, enforceAuthLimit, guardLogin, recordLoginFailure, recordLoginSuccess, REGISTER_DAY_MS, WINDOW_MS } from '../src/rateLimit.ts'
+import { authRouteStore, bucketStart, clearLoginFailures, enforceAuthLimit, guardLogin, recordLoginFailure, recordLoginSuccess, REGISTER_DAY_MS, REGISTER_WINDOW_MS, WINDOW_MS } from '../src/rateLimit.ts'
 import { RateLimit, SecurityEvent } from '../src/models.ts'
 import { accessFromRequest, coarseIp, deviceLabel, sessionExpired, stepUpFresh } from '../src/session.ts'
 import { generateRecoveryCodes, generateTotpSecret, totpAt, verifyTotp } from '../src/totp.ts'
@@ -214,6 +214,101 @@ describe('auth units', () => {
       })
       await expect(enforceAuthLimit('register', dayIp, 'day@align.test')).rejects.toMatchObject({ status: 429 })
       expect(await RateLimit.findOne({ key: 'register:email:day@align.test' })).toBeNull()
+    } finally {
+      process.env.NODE_ENV = previous
+    }
+  })
+
+  it('keeps the per-IP register window at 60 minutes', async () => {
+    const previous = process.env.NODE_ENV
+    const previousVercel = process.env.VERCEL
+    process.env.NODE_ENV = 'production'
+    process.env.VERCEL = '1'
+    const original = globalThis.fetch
+    globalThis.fetch = (async () => new Response('', { status: 200 })) as typeof fetch
+    const realNow = Date.now
+    const hourStart = Math.floor(realNow() / REGISTER_WINDOW_MS) * REGISTER_WINDOW_MS
+    const now = hourStart + 30 * 60 * 1000
+    Date.now = () => now
+    try {
+      const app = createApp()
+      const ip = '203.0.113.61'
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const created = await request(app)
+          .post('/api/auth/register')
+          .set('x-real-ip', ip)
+          .send({ name: 'Hour', email: `hour-${attempt}-${crypto.randomUUID()}@align.test`, password: 'password12' })
+        expect(created.status).toBe(201)
+      }
+      const blocked = await request(app)
+        .post('/api/auth/register')
+        .set('x-real-ip', ip)
+        .send({ name: 'Hour', email: `hour-blocked-${crypto.randomUUID()}@align.test`, password: 'password12' })
+      expect(blocked.status).toBe(429)
+      expect(blocked.headers['retry-after']).toBe('1800')
+      expect(blocked.headers['ratelimit-reset']).toBe('1800')
+      const doc = await RateLimit.findOne({ key: `register:ip:${ip}`, windowStart: hourStart })
+      expect(doc?.expiresAt.getTime()).toBe(hourStart + REGISTER_WINDOW_MS)
+      expect((doc?.expiresAt.getTime() ?? 0) - (doc?.windowStart ?? 0)).toBe(60 * 60 * 1000)
+    } finally {
+      Date.now = realNow
+      globalThis.fetch = original
+      process.env.NODE_ENV = previous
+      if (previousVercel === undefined) delete process.env.VERCEL
+      else process.env.VERCEL = previousVercel
+    }
+  })
+
+  it('shares a 20-per-hour register bucket across one IPv4 /24 and one IPv6 /64', async () => {
+    const previous = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    try {
+      for (let host = 1; host <= 20; host += 1) {
+        expect(await enforceAuthLimit('register', `203.0.113.${host}`, `net-${host}@align.test`)).toBe(1)
+      }
+      await expect(enforceAuthLimit('register', '203.0.113.21', 'net-over@align.test')).rejects.toMatchObject({
+        status: 429,
+        headers: { 'Retry-After': expect.any(String) },
+      })
+      const subnet = await RateLimit.findOne({ key: 'register:net:203.0.113.0/24' })
+      expect(subnet?.count).toBe(21)
+      expect((subnet?.expiresAt.getTime() ?? 0) - (subnet?.windowStart ?? 0)).toBe(REGISTER_WINDOW_MS)
+      expect(await enforceAuthLimit('register', '198.51.100.21', 'other-net@align.test')).toBe(1)
+
+      expect(await enforceAuthLimit('register', '2001:db8:1:2::10', 'v6-a@align.test')).toBe(1)
+      expect(await enforceAuthLimit('register', '2001:db8:1:2::20', 'v6-b@align.test')).toBe(1)
+      expect((await RateLimit.findOne({ key: 'register:net:2001:db8:1:2::/64' }))?.count).toBe(2)
+      expect(await enforceAuthLimit('register', '2001:db8:9:9::1', 'v6-other@align.test')).toBe(1)
+    } finally {
+      process.env.NODE_ENV = previous
+    }
+  })
+
+  it('stops registration globally after 200 attempts in an hour', async () => {
+    const previous = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    const start = bucketStart(REGISTER_WINDOW_MS)
+    try {
+      await RateLimit.create({
+        key: 'register:global',
+        windowStart: start,
+        count: 200,
+        expiresAt: new Date(start + REGISTER_WINDOW_MS),
+      })
+      try {
+        await enforceAuthLimit('register', '192.0.2.40', 'global@align.test')
+        throw new Error('expected the global register cap to reject the attempt')
+      } catch (error) {
+        expect(error).toBeInstanceOf(HttpError)
+        const limited = error as HttpError
+        expect(limited.status).toBe(429)
+        const retryAfter = Number(limited.headers['Retry-After'])
+        expect(retryAfter).toBeGreaterThan(0)
+        expect(retryAfter).toBeLessThanOrEqual(60 * 60)
+        const doc = await RateLimit.findOne({ key: 'register:global', windowStart: start })
+        expect(doc?.count).toBe(201)
+        expect((doc?.expiresAt.getTime() ?? 0) - start).toBe(REGISTER_WINDOW_MS)
+      }
     } finally {
       process.env.NODE_ENV = previous
     }

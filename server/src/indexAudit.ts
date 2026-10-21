@@ -67,6 +67,7 @@ export async function auditHotQueries(): Promise<string[]> {
       'NoteWorkspace',
       Note.find({ workspaceId, projectId }).sort({ updatedAt: -1 }).hint('NoteWorkspace'),
     ),
+    check('NotePurge', Note.find({ purgeAt: { $type: 'date' } }).hint('NotePurge')),
     check('LabelWorkspace', Label.find({ workspaceId, name: 'Focus' }).hint('LabelWorkspace')),
     check(
       'ActivityProject',

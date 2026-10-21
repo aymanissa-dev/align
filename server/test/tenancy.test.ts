@@ -34,7 +34,7 @@ describe('tenancy', () => {
     expect((await other.agent.get(`/api/projects/${projectId}/tasks`)).status).toBe(404)
     expect((await other.agent.patch(`/api/tasks/${task.body.id}`).send({ title: 'Stolen' })).status).toBe(404)
     expect((await other.agent.get(`/api/notes/${note.body.id}`)).status).toBe(404)
-    expect((await other.agent.get('/api/trash')).body).toEqual({ projects: [], tasks: [] })
+    expect((await other.agent.get('/api/trash')).body).toEqual({ projects: [], tasks: [], notes: [] })
     expect((await other.agent.post(`/api/trash/projects/${projectId}/restore`)).status).toBe(404)
   })
 
@@ -157,7 +157,7 @@ describe('tenancy', () => {
     await agent.post(`/api/projects/${doomed.body.id}/notes`).send({ title: 'Slip', body: 'Paper' })
     expect((await agent.delete(`/api/projects/${doomed.body.id}`)).status).toBe(204)
     expect((await agent.post('/api/trash/empty')).status).toBe(204)
-    expect((await agent.get('/api/trash')).body).toEqual({ projects: [], tasks: [] })
+    expect((await agent.get('/api/trash')).body).toEqual({ projects: [], tasks: [], notes: [] })
     expect(await Task.countDocuments({ _id: child.body.id })).toBe(0)
     expect(await Note.countDocuments({ projectId: doomed.body.id })).toBe(0)
     expect(task.body.id).toEqual(expect.any(String))

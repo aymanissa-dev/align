@@ -66,7 +66,7 @@ export function notesRouter(): Router {
       const note = await db.requireNote(req.params.id)
       const projectId = note.projectId
       const title = note.title
-      await note.deleteOne()
+      await db.softDeleteNote(note)
       await db.touchProject(projectId)
       await recordActivity({
         userId: tenant.userId,

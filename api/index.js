@@ -227,7 +227,10 @@ var noteSchema = new Schema(
     projectId: { type: Schema.Types.ObjectId, ref: "Project", required: true },
     title: { type: String, required: true },
     body: { type: String, default: "" },
-    searchWords: { type: [String] }
+    searchWords: { type: [String] },
+    deletedAt: { type: Date, default: null },
+    purgeAt: { type: Date, default: null },
+    deletedWithProject: { type: Boolean, default: false }
   },
   { timestamps: true, optimisticConcurrency: true }
 );
@@ -241,6 +244,10 @@ noteSchema.index({ userId: 1, searchWords: 1 }, { name: "NoteSearchWords" });
 noteSchema.index(
   { userId: 1, title: "text", body: "text" },
   { weights: { title: 5, body: 1 }, name: "NoteTextIndex" }
+);
+noteSchema.index(
+  { purgeAt: 1 },
+  { name: "NotePurge", expireAfterSeconds: 0, partialFilterExpression: { purgeAt: { $type: "date" } } }
 );
 var NINETY_DAYS_SECONDS = 90 * 24 * 60 * 60;
 var YEAR_SECONDS = 365 * 24 * 60 * 60;
@@ -1752,6 +1759,8 @@ var REGISTER_WINDOW_MS = 60 * 60 * 1e3;
 var REGISTER_DAY_MS = 24 * 60 * 60 * 1e3;
 var REGISTER_HOUR_MAX = 5;
 var REGISTER_DAY_MAX = 20;
+var REGISTER_SUBNET_MAX = 20;
+var REGISTER_GLOBAL_MAX = 200;
 var SUCCESS_WINDOW_MS = 60 * 1e3;
 var SUCCESS_MAX = 30;
 var MFA_MAX = 5;
@@ -1823,16 +1832,13 @@ async function hit(key, windowMs = WINDOW_MS) {
   await ensureRateLimitIndexes();
   const start = bucketStart(windowMs);
   const expiresAt = new Date(start + windowMs);
+  const update = { $inc: { count: 1 }, $set: { expiresAt } };
   try {
-    const doc = await RateLimit.findOneAndUpdate(
-      { key, windowStart: start },
-      { $inc: { count: 1 }, $setOnInsert: { expiresAt } },
-      { upsert: true, new: true }
-    );
+    const doc = await RateLimit.findOneAndUpdate({ key, windowStart: start }, update, { upsert: true, new: true });
     return { count: doc?.count ?? 1, expiresAt: doc?.expiresAt ?? expiresAt };
   } catch (error) {
     if (!duplicateKey2(error)) throw error;
-    const doc = await RateLimit.findOneAndUpdate({ key, windowStart: start }, { $inc: { count: 1 } }, { new: true });
+    const doc = await RateLimit.findOneAndUpdate({ key, windowStart: start }, update, { new: true });
     return { count: doc?.count ?? 1, expiresAt: doc?.expiresAt ?? expiresAt };
   }
 }
@@ -1893,23 +1899,36 @@ async function delayFailedAttempt(count) {
   const delay = Math.min(5e3, (count - 2) * 250);
   await new Promise((resolve) => setTimeout(resolve, delay));
 }
+function registerNetKey(ip) {
+  return `register:net:${coarseIp(ip) || "unknown"}`;
+}
+function limitedHeaders(buckets) {
+  const now = Date.now();
+  const remainingMs = Math.max(...buckets.map((entry) => entry.expiresAt.getTime() - now));
+  const seconds = String(Math.max(1, Math.ceil(remainingMs / 1e3)));
+  return { "Retry-After": seconds, "RateLimit-Reset": seconds };
+}
 async function enforceRegisterLimit(ip) {
   const production = process.env.NODE_ENV === "production";
   const hourMax = production ? REGISTER_HOUR_MAX : 1e3;
   const dayMax = production ? REGISTER_DAY_MAX : 1e3;
+  const subnetMax = production ? REGISTER_SUBNET_MAX : 1e3;
+  const globalMax = production ? REGISTER_GLOBAL_MAX : 1e3;
   const safeIp = ip || "unknown";
-  const [hour, day] = await Promise.all([
+  const [hour, day, subnet, global] = await Promise.all([
     hit(`register:ip:${safeIp}`, REGISTER_WINDOW_MS),
-    hit(`register:ip:${safeIp}:day`, REGISTER_DAY_MS)
+    hit(`register:ip:${safeIp}:day`, REGISTER_DAY_MS),
+    hit(registerNetKey(safeIp), REGISTER_WINDOW_MS),
+    hit("register:global", REGISTER_WINDOW_MS)
   ]);
-  const blocked = [hour.count > hourMax ? hour : null, day.count > dayMax ? day : null].filter(
-    (entry) => entry !== null
-  );
+  const blocked = [
+    hour.count > hourMax ? hour : null,
+    day.count > dayMax ? day : null,
+    subnet.count > subnetMax ? subnet : null,
+    global.count > globalMax ? global : null
+  ].filter((entry) => entry !== null);
   if (blocked.length > 0) {
-    const now = Date.now();
-    const remainingMs = Math.max(...blocked.map((entry) => entry.expiresAt.getTime() - now));
-    const seconds = Math.max(1, Math.ceil(remainingMs / 1e3));
-    throw new HttpError(429, "Too many attempts. Try again later.", { headers: { "Retry-After": String(seconds) } });
+    throw new HttpError(429, "Too many attempts. Try again later.", { headers: limitedHeaders(blocked) });
   }
   return hour.count;
 }
@@ -1998,10 +2017,10 @@ function bind(tenant) {
     },
     notes: {
       find(filter = {}) {
-        return Note.find(wid(filter));
+        return Note.find(wid({ ...alive, ...filter }));
       },
       create(doc) {
-        return Note.create({ ...doc, userId, workspaceId });
+        return Note.create({ ...doc, userId, workspaceId, deletedAt: null, purgeAt: null, deletedWithProject: false });
       }
     },
     labels: {
@@ -2072,7 +2091,7 @@ function bind(tenant) {
     async requireNote(id) {
       const noteId = objectId(id);
       if (!noteId) throw new HttpError(404, "Note not found.");
-      const note = await Note.findOne({ _id: noteId, workspaceId });
+      const note = await Note.findOne({ _id: noteId, workspaceId, deletedAt: null });
       if (!note) throw new HttpError(404, "Note not found.");
       const project = await Project.findOne({ _id: note.projectId, workspaceId, deletedAt: null }).select("_id");
       if (!project) throw new HttpError(404, "Note not found.");
@@ -2104,6 +2123,11 @@ function bind(tenant) {
           { $set: { deletedAt: now, purgeAt, deletedWithProject: true } },
           { session }
         );
+        await Note.updateMany(
+          { workspaceId, projectId: project._id, deletedAt: null },
+          { $set: { deletedAt: now, purgeAt, deletedWithProject: true } },
+          { session }
+        );
         project.deletedAt = now;
         project.purgeAt = purgeAt;
         await project.save({ session });
@@ -2116,12 +2140,20 @@ function bind(tenant) {
       task.deletedWithProject = false;
       await task.save();
     },
+    async softDeleteNote(note) {
+      const now = /* @__PURE__ */ new Date();
+      note.deletedAt = now;
+      note.purgeAt = new Date(now.getTime() + TRASH_MS);
+      note.deletedWithProject = false;
+      await note.save();
+    },
     async trash() {
-      const [projects, tasks] = await Promise.all([
+      const [projects, tasks, notes] = await Promise.all([
         Project.find({ workspaceId, deletedAt: { $ne: null } }).sort({ deletedAt: -1 }).lean(),
-        Task.find({ workspaceId, deletedAt: { $ne: null } }).sort({ deletedAt: -1 }).lean()
+        Task.find({ workspaceId, deletedAt: { $ne: null } }).sort({ deletedAt: -1 }).lean(),
+        Note.find({ workspaceId, deletedAt: { $ne: null } }).sort({ deletedAt: -1 }).lean()
       ]);
-      return { projects, tasks };
+      return { projects, tasks, notes };
     },
     async restoreProject(id) {
       const projectId = objectId(id);
@@ -2133,6 +2165,11 @@ function bind(tenant) {
         project.purgeAt = null;
         await project.save({ session });
         await Task.updateMany(
+          { workspaceId, projectId: project._id, deletedWithProject: true },
+          { $set: { deletedAt: null, purgeAt: null, deletedWithProject: false } },
+          { session }
+        );
+        await Note.updateMany(
           { workspaceId, projectId: project._id, deletedWithProject: true },
           { $set: { deletedAt: null, purgeAt: null, deletedWithProject: false } },
           { session }
@@ -2152,6 +2189,19 @@ function bind(tenant) {
       task.deletedWithProject = false;
       await task.save();
       return task;
+    },
+    async restoreNote(id) {
+      const noteId = objectId(id);
+      if (!noteId) throw new HttpError(404, "Note not found.");
+      const note = await Note.findOne({ _id: noteId, workspaceId, deletedAt: { $ne: null } });
+      if (!note) throw new HttpError(404, "Note not found.");
+      const project = await Project.findOne({ _id: note.projectId, workspaceId, deletedAt: null }).select("_id");
+      if (!project) throw new HttpError(409, "Restore the project before restoring this note.");
+      note.deletedAt = null;
+      note.purgeAt = null;
+      note.deletedWithProject = false;
+      await note.save();
+      return note;
     },
     async purgeProject(id) {
       const projectId = objectId(id);
@@ -2178,6 +2228,13 @@ function bind(tenant) {
         await Task.deleteOne({ _id: taskId, workspaceId }, { session });
       });
     },
+    async purgeNote(id) {
+      const noteId = objectId(id);
+      if (!noteId) throw new HttpError(404, "Note not found.");
+      const note = await Note.findOne({ _id: noteId, workspaceId, deletedAt: { $ne: null } }).select("_id");
+      if (!note) throw new HttpError(404, "Note not found.");
+      await Note.deleteOne({ _id: noteId, workspaceId });
+    },
     async emptyTrash() {
       await withTransaction(async (session) => {
         const projects = await Project.find({ workspaceId, deletedAt: { $ne: null } }).session(session).select("_id");
@@ -2189,8 +2246,9 @@ function bind(tenant) {
         const taskIds = tasks.map((task) => task._id);
         if (taskIds.length > 0) await Notification.deleteMany({ userId, taskId: { $in: taskIds } }, { session });
         if (taskIds.length > 0) await Task.deleteMany({ _id: { $in: taskIds }, workspaceId }, { session });
+        const noteFilter = projectIds.length > 0 ? { workspaceId, $or: [{ deletedAt: { $ne: null } }, { projectId: { $in: projectIds } }] } : { workspaceId, deletedAt: { $ne: null } };
+        await Note.deleteMany(noteFilter, { session });
         if (projectIds.length > 0) {
-          await Note.deleteMany({ workspaceId, projectId: { $in: projectIds } }, { session });
           await Whiteboard.deleteMany({ workspaceId, projectId: { $in: projectIds } }, { session });
           await Activity.deleteMany({ workspaceId, projectId: { $in: projectIds } }, { session });
           await Project.deleteMany({ _id: { $in: projectIds }, workspaceId }, { session });
@@ -4187,7 +4245,7 @@ function notesRouter() {
       const note = await db.requireNote(req.params.id);
       const projectId = note.projectId;
       const title = note.title;
-      await note.deleteOne();
+      await db.softDeleteNote(note);
       await db.touchProject(projectId);
       await recordActivity({
         userId: tenant.userId,
@@ -4953,7 +5011,7 @@ function trashRouter() {
   router.get(
     "/",
     asyncHandler(async (req, res) => {
-      const { projects, tasks } = await bind(currentTenant(req)).trash();
+      const { projects, tasks, notes } = await bind(currentTenant(req)).trash();
       res.json({
         projects: projects.map((project) => ({
           id: project._id.toString(),
@@ -4967,6 +5025,13 @@ function trashRouter() {
           title: task.title,
           deletedAt: task.deletedAt?.toISOString() ?? null,
           purgeAt: task.purgeAt?.toISOString() ?? null
+        })),
+        notes: notes.map((note) => ({
+          id: note._id.toString(),
+          projectId: note.projectId.toString(),
+          title: note.title,
+          deletedAt: note.deletedAt?.toISOString() ?? null,
+          purgeAt: note.purgeAt?.toISOString() ?? null
         }))
       });
     })
@@ -4996,6 +5061,20 @@ function trashRouter() {
     "/tasks/:id",
     asyncHandler(async (req, res) => {
       await bind(currentTenant(req)).purgeTask(req.params.id);
+      res.status(204).send();
+    })
+  );
+  router.post(
+    "/notes/:id/restore",
+    asyncHandler(async (req, res) => {
+      const note = await bind(currentTenant(req)).restoreNote(req.params.id);
+      res.json({ id: note.id, title: note.title });
+    })
+  );
+  router.delete(
+    "/notes/:id",
+    asyncHandler(async (req, res) => {
+      await bind(currentTenant(req)).purgeNote(req.params.id);
       res.status(204).send();
     })
   );

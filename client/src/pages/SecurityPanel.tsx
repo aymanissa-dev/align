@@ -1,4 +1,4 @@
-import { startRegistration } from '@simplewebauthn/browser'
+import { passkeyErrorMessage, registerPasskey } from '../lib/passkey.ts'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { api } from '../api/index.ts'
@@ -141,8 +141,7 @@ export function SecurityPanel() {
   async function onPasskey() {
     setBusy(true)
     const save = async () => {
-      const options = await api.passkeyRegisterOptions()
-      const credential = await startRegistration({ optionsJSON: options as never })
+      const credential = await registerPasskey()
       await api.passkeyRegisterVerify({ ...credential, name: 'This device' })
       setPasskeys(await api.listPasskeys())
       setReviewSessions(true)
@@ -156,7 +155,7 @@ export function SecurityPanel() {
         askStepUp(save)
         return
       }
-      toast(errorMessage(caught))
+      toast(passkeyErrorMessage(caught))
     } finally {
       setBusy(false)
     }

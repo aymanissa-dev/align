@@ -161,6 +161,8 @@ export default function App() {
                 }
               />
               <Route path="/reset" element={<Navigate to="/forgot" replace />} />
+              <Route path="/forgot-password" element={<Navigate to="/forgot" replace />} />
+              <Route path="/reset-password" element={<Navigate to="/forgot" replace />} />
               <Route path="/verify" element={<Navigate to="/login" replace />} />
               <Route
                 path="/register"

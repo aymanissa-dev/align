@@ -378,7 +378,11 @@ export const httpApi = {
     return request<User>('/api/auth/passkeys/login/verify', { method: 'POST', body: JSON.stringify(body) })
   },
   listTrash() {
-    return request<{ projects: import('./types.ts').TrashItem[]; tasks: import('./types.ts').TrashItem[] }>('/api/trash')
+    return request<{
+      projects: import('./types.ts').TrashItem[]
+      tasks: import('./types.ts').TrashItem[]
+      notes: import('./types.ts').TrashItem[]
+    }>('/api/trash')
   },
   restoreProject(id) {
     return request<{ id: string; name: string }>(`/api/trash/projects/${id}/restore`, { method: 'POST' })
@@ -386,11 +390,17 @@ export const httpApi = {
   restoreTask(id) {
     return request<{ id: string; title: string }>(`/api/trash/tasks/${id}/restore`, { method: 'POST' })
   },
+  restoreNote(id) {
+    return request<{ id: string; title: string }>(`/api/trash/notes/${id}/restore`, { method: 'POST' })
+  },
   async purgeProject(id) {
     await request<void>(`/api/trash/projects/${id}`, { method: 'DELETE' })
   },
   async purgeTask(id) {
     await request<void>(`/api/trash/tasks/${id}`, { method: 'DELETE' })
+  },
+  async purgeNote(id) {
+    await request<void>(`/api/trash/notes/${id}`, { method: 'DELETE' })
   },
   async emptyTrash() {
     await request<void>('/api/trash/empty', { method: 'POST' })

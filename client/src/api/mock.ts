@@ -1066,7 +1066,7 @@ export const mockApi = {
     return publicUser(user)
   },
   async listTrash() {
-    return { projects: [], tasks: [] }
+    return { projects: [], tasks: [], notes: [] }
   },
   async restoreProject(id: string) {
     return { id, name: 'Restored' }
@@ -1074,7 +1074,11 @@ export const mockApi = {
   async restoreTask(id: string) {
     return { id, title: 'Restored' }
   },
+  async restoreNote(id: string) {
+    return { id, title: 'Restored' }
+  },
   async purgeProject() {},
   async purgeTask() {},
+  async purgeNote() {},
   async emptyTrash() {},
 } satisfies AlignApi

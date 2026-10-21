@@ -1,6 +1,19 @@
+import { useState } from 'react'
 import { Button } from './ui.tsx'
 
 export function RecoveryKeyNotice({ recoveryKey, onSaved }: { recoveryKey: string; onSaved: () => void }) {
+  const [copied, setCopied] = useState(false)
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(recoveryKey)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2000)
+    } catch {
+      setCopied(false)
+    }
+  }
+
   function download() {
     const blob = new Blob(
       [
@@ -25,6 +38,9 @@ export function RecoveryKeyNotice({ recoveryKey, onSaved }: { recoveryKey: strin
         {recoveryKey}
       </p>
       <div className="flex flex-wrap gap-2">
+        <Button type="button" variant="secondary" onClick={() => void copy()}>
+          {copied ? 'Copied' : 'Copy key'}
+        </Button>
         <Button type="button" variant="secondary" onClick={download}>
           Download key
         </Button>

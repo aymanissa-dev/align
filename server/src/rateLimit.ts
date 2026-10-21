@@ -2,12 +2,15 @@ import type { RequestHandler } from 'express'
 import { clientIp } from './clientIp.ts'
 import { HttpError } from './errors.ts'
 import { RateLimit } from './models.ts'
+import { coarseIp } from './session.ts'
 
 export const WINDOW_MS = 15 * 60 * 1000
 export const REGISTER_WINDOW_MS = 60 * 60 * 1000
 export const REGISTER_DAY_MS = 24 * 60 * 60 * 1000
 const REGISTER_HOUR_MAX = 5
 const REGISTER_DAY_MAX = 20
+const REGISTER_SUBNET_MAX = 20
+const REGISTER_GLOBAL_MAX = 200
 const SUCCESS_WINDOW_MS = 60 * 1000
 const SUCCESS_MAX = 30
 const MFA_MAX = 5
@@ -110,16 +113,13 @@ async function hit(key: string, windowMs = WINDOW_MS): Promise<Bucket> {
   await ensureRateLimitIndexes()
   const start = bucketStart(windowMs)
   const expiresAt = new Date(start + windowMs)
+  const update = { $inc: { count: 1 }, $set: { expiresAt } }
   try {
-    const doc = await RateLimit.findOneAndUpdate(
-      { key, windowStart: start },
-      { $inc: { count: 1 }, $setOnInsert: { expiresAt } },
-      { upsert: true, new: true },
-    )
+    const doc = await RateLimit.findOneAndUpdate({ key, windowStart: start }, update, { upsert: true, new: true })
     return { count: doc?.count ?? 1, expiresAt: doc?.expiresAt ?? expiresAt }
   } catch (error) {
     if (!duplicateKey(error)) throw error
-    const doc = await RateLimit.findOneAndUpdate({ key, windowStart: start }, { $inc: { count: 1 } }, { new: true })
+    const doc = await RateLimit.findOneAndUpdate({ key, windowStart: start }, update, { new: true })
     return { count: doc?.count ?? 1, expiresAt: doc?.expiresAt ?? expiresAt }
   }
 }
@@ -208,29 +208,48 @@ export async function delayFailedAttempt(count: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, delay))
 }
 
+/** IPv4 /24 or IPv6 /64. A rotating address inside that block shares this bucket. */
+function registerNetKey(ip: string): string {
+  return `register:net:${coarseIp(ip) || 'unknown'}`
+}
+
+function limitedHeaders(buckets: Bucket[]): Record<string, string> {
+  const now = Date.now()
+  const remainingMs = Math.max(...buckets.map((entry) => entry.expiresAt.getTime() - now))
+  const seconds = String(Math.max(1, Math.ceil(remainingMs / 1000)))
+  return { 'Retry-After': seconds, 'RateLimit-Reset': seconds }
+}
+
 /**
- * Registration is counted per IP only. An email key would 429 one address and
+ * Registration is not counted per email. An email key would 429 one address and
  * still accept another, which reveals which address is being throttled.
- * Production allows 5 an hour and 20 a day. Callers apply the same progressive
- * delay on the new-account and duplicate paths.
+ * Production allows 5 per IP per hour, 20 per IP per day, 20 per IPv4 /24 or
+ * IPv6 /64 per hour, and 200 per hour across every address. Each window is
+ * fixed to the epoch, and Retry-After is the time left in the window that
+ * blocked the request. Callers apply the same progressive delay on the
+ * new-account and duplicate paths.
  */
 async function enforceRegisterLimit(ip: string): Promise<number> {
   const production = process.env.NODE_ENV === 'production'
   const hourMax = production ? REGISTER_HOUR_MAX : 1000
   const dayMax = production ? REGISTER_DAY_MAX : 1000
+  const subnetMax = production ? REGISTER_SUBNET_MAX : 1000
+  const globalMax = production ? REGISTER_GLOBAL_MAX : 1000
   const safeIp = ip || 'unknown'
-  const [hour, day] = await Promise.all([
+  const [hour, day, subnet, global] = await Promise.all([
     hit(`register:ip:${safeIp}`, REGISTER_WINDOW_MS),
     hit(`register:ip:${safeIp}:day`, REGISTER_DAY_MS),
+    hit(registerNetKey(safeIp), REGISTER_WINDOW_MS),
+    hit('register:global', REGISTER_WINDOW_MS),
   ])
-  const blocked = [hour.count > hourMax ? hour : null, day.count > dayMax ? day : null].filter(
-    (entry): entry is Bucket => entry !== null,
-  )
+  const blocked = [
+    hour.count > hourMax ? hour : null,
+    day.count > dayMax ? day : null,
+    subnet.count > subnetMax ? subnet : null,
+    global.count > globalMax ? global : null,
+  ].filter((entry): entry is Bucket => entry !== null)
   if (blocked.length > 0) {
-    const now = Date.now()
-    const remainingMs = Math.max(...blocked.map((entry) => entry.expiresAt.getTime() - now))
-    const seconds = Math.max(1, Math.ceil(remainingMs / 1000))
-    throw new HttpError(429, 'Too many attempts. Try again later.', { headers: { 'Retry-After': String(seconds) } })
+    throw new HttpError(429, 'Too many attempts. Try again later.', { headers: limitedHeaders(blocked) })
   }
   return hour.count
 }

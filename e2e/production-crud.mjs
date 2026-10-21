@@ -25,6 +25,7 @@ const context = await browser.newContext({
   timezoneId: 'Asia/Riyadh',
   serviceWorkers: 'block',
   viewport: { width: 1280, height: 800 },
+  permissions: ['clipboard-read', 'clipboard-write'],
 })
 const page = await context.newPage()
 page.setDefaultTimeout(20_000)
@@ -33,6 +34,8 @@ page.on('dialog', (dialog) => void dialog.accept())
 async function continuePastRecoveryKey(target) {
   const key = (await target.locator('#recovery-key').innerText()).trim()
   if (!/^[0-9a-f]{4}(?:-[0-9a-f]{4}){7}$/i.test(key)) throw new Error('recovery key was not shown')
+  await target.getByRole('button', { name: 'Copy key' }).click()
+  await target.getByRole('button', { name: 'Copied' }).waitFor()
   await target.getByRole('button', { name: "I've saved this key" }).click()
   return key
 }
@@ -712,7 +715,20 @@ try {
   await page.getByRole('status').filter({ hasText: 'Saved' }).waitFor()
   pass('create note')
 
-  await page.goBack()
+  await page.getByRole('button', { name: 'Delete note' }).click()
+  const deleteNote = page.getByRole('dialog', { name: 'Delete note' })
+  await deleteNote.waitFor()
+  await deleteNote.getByRole('button', { name: 'Delete' }).click()
+  await page.getByRole('heading', { name: 'Notes', exact: true }).waitFor()
+  pass('delete note')
+  await page.getByLabel('Primary').getByRole('link', { name: 'Trash' }).click()
+  await page.getByRole('heading', { name: 'Trash', exact: true }).waitFor()
+  await page.getByRole('button', { name: `Restore ${noteTitle}` }).click()
+  await page.getByRole('button', { name: `Restore ${noteTitle}` }).waitFor({ state: 'detached' })
+  pass('restore note')
+  await page.getByLabel('Primary').getByRole('link', { name: 'Projects' }).click()
+  await page.getByRole('link', { name: projectName, exact: true }).click()
+  await page.getByRole('heading', { name: projectName }).waitFor()
   await page.getByRole('tab', { name: 'Activity' }).click()
   await page.getByText(/Created/).first().waitFor()
   pass('activity')
@@ -1010,6 +1026,7 @@ try {
   await page.getByRole('button', { name: 'Sign out', exact: true }).click()
   await page.getByRole('heading', { name: 'Keep your work in alignment.' }).waitFor()
   await page.goto(`${base}/login`)
+  await page.getByRole('button', { name: 'Sign in with a passkey' }).waitFor()
   await page.locator('#email').fill(email)
   await page.locator('#password').fill(password)
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
@@ -1034,7 +1051,13 @@ try {
   await page.goto(`${base}/settings`)
   await page.getByRole('button', { name: 'Sign out', exact: true }).click()
   await page.getByRole('heading', { name: 'Keep your work in alignment.' }).waitFor()
-  await page.goto(`${base}/forgot`)
+  await page.goto(`${base}/forgot-password`)
+  await page.waitForURL(/\/forgot$/)
+  await page.goto(`${base}/reset`)
+  await page.waitForURL(/\/forgot$/)
+  await page.goto(`${base}/reset-password`)
+  await page.waitForURL(/\/forgot$/)
+  await page.getByRole('button', { name: 'Use a passkey instead' }).waitFor()
   const resetPassword = 'AlignLamp-reset-2026x'
   await page.locator('#email').fill(email)
   await page.locator('#password').fill(resetPassword)
@@ -1056,6 +1079,8 @@ try {
   await page.locator('#step-up-password').fill(password)
   await page.getByRole('dialog', { name: "Verify it's you" }).getByRole('button', { name: 'Continue' }).click()
   await page.waitForURL(/\/login|\/$/)
+  await page.getByText('Your account and all its data were deleted.').waitFor()
+  pass('deleted notice')
   const session = await context.request.get(`${base}/api/auth/session`)
   const body = await session.json()
   if (body.user) throw new Error('account still signed in')

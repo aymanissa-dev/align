@@ -5,8 +5,10 @@ import { ApiError } from '../api/errors.ts'
 import { useAuth } from '../auth/auth-context.ts'
 import { AuthFrame } from '../components/AuthFrame.tsx'
 import { Button, Field, Input } from '../components/ui.tsx'
+import { accountWasDeleted } from '../lib/accountDeleted.ts'
 import { consumeForcedSignOut } from '../lib/forceSignOut.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
+import { conditionalPasskey, passkeyErrorMessage, signInWithPasskey } from '../lib/passkey.ts'
 import { preloadDashboard } from '../lib/preloadDashboard.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
@@ -45,6 +47,9 @@ export function LoginPage() {
   const [google, setGoogle] = useState(false)
   const [params] = useSearchParams()
   const [signedOut] = useState(() => params.get('signedOut') === '1' || consumeForcedSignOut())
+  const [deleted] = useState(() => accountWasDeleted(window.location.search))
+  const [passkeyError, setPasskeyError] = useState('')
+  const [passkeyPending, setPasskeyPending] = useState(false)
   useDocumentTitle('Sign in')
 
   useEffect(() => {
@@ -71,6 +76,16 @@ export function LoginPage() {
     }
     setPending(false)
   }
+
+  useEffect(() => {
+    let cancelled = false
+    void conditionalPasskey().then((user) => {
+      if (!cancelled && user) acceptSession(user)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [acceptSession])
 
   useEffect(() => {
     let cancelled = false
@@ -114,7 +129,12 @@ export function LoginPage() {
 
   return (
     <AuthFrame title="Sign in" lede="Welcome back to your workspace.">
-        {signedOut ? (
+        {deleted ? (
+          <p role="status" className="mb-4 border border-neutral-200 px-3 py-2 text-sm text-neutral-800">
+            Your account and all its data were deleted.
+          </p>
+        ) : null}
+        {signedOut && !deleted ? (
           <p role="status" className="mb-4 border border-neutral-200 px-3 py-2 text-sm text-neutral-800">
             You were signed out.
           </p>
@@ -170,7 +190,7 @@ export function LoginPage() {
               id="email"
               name="email"
               type="email"
-              autoComplete="email"
+              autoComplete="email webauthn"
               inputMode="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
@@ -197,6 +217,30 @@ export function LoginPage() {
             {pending ? 'Signing in…' : 'Sign in'}
           </Button>
         </form>
+        <Button
+          type="button"
+          variant="secondary"
+          className="mt-3 w-full"
+          disabled={passkeyPending || pending}
+          onClick={() => {
+            setPasskeyError('')
+            setPasskeyPending(true)
+            void signInWithPasskey()
+              .then((user) => acceptSession(user))
+              .catch((caught: unknown) => {
+                if (caught instanceof DOMException && caught.name === 'AbortError') return
+                setPasskeyError(passkeyErrorMessage(caught))
+              })
+              .finally(() => setPasskeyPending(false))
+          }}
+        >
+          {passkeyPending ? 'Waiting for passkey…' : 'Sign in with a passkey'}
+        </Button>
+        {passkeyError ? (
+          <p role="alert" className="mt-3 text-sm text-neutral-800">
+            {passkeyError}
+          </p>
+        ) : null}
         {google ? (
           <a
             href="/api/auth/google"
