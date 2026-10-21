@@ -12,7 +12,8 @@ import { signJwt, verifyJwt } from '../keys.ts'
 import { deliverMail } from '../mail.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { checkPassword, dummyPasswordHash, hashPassword } from '../password.ts'
-import { delayFailedAttempt, enforceAuthLimit } from '../rateLimit.ts'
+import { clearLoginFailures, delayFailedAttempt, enforceAuthLimit, guardLogin, recordLoginFailure, recordLoginSuccess } from '../rateLimit.ts'
+import { markTiming } from '../serverTiming.ts'
 import { publicUser } from '../serialize.ts'
 import {
   IDLE_MS,
@@ -115,10 +116,16 @@ export function authRouter(limiter: RequestHandler): Router {
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(loginSchema, req.body)
-      const [attempts, user] = await Promise.all([
-        enforceAuthLimit('login', clientIp(req), input.email),
-        users.byEmailSecret(input.email),
-      ])
+      const ip = clientIp(req)
+      const lookupStarted = performance.now()
+      let user: Awaited<ReturnType<typeof users.byEmailSecret>>
+      try {
+        ;[, user] = await Promise.all([guardLogin(ip, input.email), users.byEmailSecret(input.email)])
+      } catch (error) {
+        markTiming(res, 'user', performance.now() - lookupStarted)
+        throw error
+      }
+      markTiming(res, 'user', performance.now() - lookupStarted)
       if (user?.lockUntil && user.lockUntil.getTime() > Date.now()) {
         const seconds = Math.max(1, Math.ceil((user.lockUntil.getTime() - Date.now()) / 1000))
         throw new HttpError(429, 'Too many attempts. Try again later.', {
@@ -126,9 +133,12 @@ export function authRouter(limiter: RequestHandler): Router {
         })
       }
       const dashboardPromise = (user ? dashboardForUser(user) : Promise.resolve(null)).catch(() => null)
+      const bcryptStarted = performance.now()
       const hash = user?.passwordHash ?? (await dummyPasswordHash())
       const matches = await checkPassword(input.password, hash)
+      markTiming(res, 'bcrypt', performance.now() - bcryptStarted)
       if (!user || !matches) {
+        const failures = await recordLoginFailure(ip, input.email)
         if (user) {
           user.failedLogins = (user.failedLogins ?? 0) + 1
           if (user.failedLogins >= LOCK_AFTER) user.lockUntil = new Date(Date.now() + lockDelay(user.failedLogins))
@@ -140,11 +150,21 @@ export function authRouter(limiter: RequestHandler): Router {
             ...requestAudit(req),
           }).catch(() => undefined)
         }
-        await delayFailedAttempt(attempts)
+        await delayFailedAttempt(failures)
         throw new HttpError(401, 'Email or password is incorrect.')
       }
+      const resetFailures = clearLoginFailures(input.email).then(async () => {
+        if (!user.failedLogins && !user.lockUntil) return
+        user.failedLogins = 0
+        user.lockUntil = null
+        await user.save()
+      })
       if (user.totpEnabledAt) {
+        await Promise.all([resetFailures, recordLoginSuccess(ip, input.email)])
+        const signStarted = performance.now()
         const pending = signJwt({ sub: user.id, typ: 'pending' }, '5m')
+        markTiming(res, 'jwt', performance.now() - signStarted)
+        markTiming(res, 'session', 0)
         res.cookie('pending', pending, {
           httpOnly: true,
           secure: process.env.NODE_ENV === 'production',
@@ -156,15 +176,14 @@ export function authRouter(limiter: RequestHandler): Router {
         void watchBreachedPassword(user.id, input.password)
         return
       }
-      if (user.failedLogins || user.lockUntil) {
-        user.failedLogins = 0
-        user.lockUntil = null
-        await user.save()
-      }
       const [started, dashboard] = await Promise.all([
         startSession(req, res, user.id, ownerClaims(user)),
         dashboardPromise,
+        resetFailures,
+        recordLoginSuccess(ip, input.email),
       ])
+      markTiming(res, 'session', started.sessionMs)
+      markTiming(res, 'jwt', started.signMs)
       res.json({
         ...publicUser(user),
         newDevice: started.newDevice,

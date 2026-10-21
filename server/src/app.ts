@@ -5,7 +5,9 @@ import helmet from 'helmet'
 import mongoose from 'mongoose'
 import type { HealthReport } from '../../shared/contract.ts'
 import { csrfProtection } from './csrf.ts'
+import { atlasCloudRegion } from './dbRegion.ts'
 import { connectDb } from './db.ts'
+import { markTiming } from './serverTiming.ts'
 import { privateRevalidate } from './httpCache.ts'
 import { errorHandler } from './middleware.ts'
 import { guardOrigin } from './security.ts'
@@ -66,7 +68,10 @@ export function createApp(options: AppOptions = {}): Express {
         const migration = await db.collection<{ id: string; counts?: Record<string, number> }>('migrations').findOne({ id: '001_personal_workspaces' })
         return migration?.counts ? { id: migration.id, counts: migration.counts } : undefined
       })
-      .then((migration) => {
+      .then(async (migration) => {
+        const region = await atlasCloudRegion().catch(() => null)
+        if (region) res.setHeader('X-Align-Db-Region', region)
+        markTiming(res, 'db', Date.now() - started)
         const body: HealthReport = { ok: true, db: 'up', latencyMs: Date.now() - started, ...(migration ? { migration } : {}) }
         res.json(body)
       })
@@ -76,11 +81,16 @@ export function createApp(options: AppOptions = {}): Express {
         res.status(503).json(body)
       })
   })
-  app.use((req, _res, next) => {
+  app.use((req, res, next) => {
     const logout = req.method === 'POST' && req.path === '/api/auth/logout'
+    const started = performance.now()
     connectDb().then(
-      () => next(),
+      () => {
+        markTiming(res, 'db', performance.now() - started)
+        next()
+      },
       (error: unknown) => {
+        markTiming(res, 'db', performance.now() - started)
         if (logout) next()
         else next(error)
       },

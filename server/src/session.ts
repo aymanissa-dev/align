@@ -103,31 +103,35 @@ export async function startSession(
   res: Response,
   userId: string,
   knownClaims?: AccessClaims | null,
-): Promise<{ newDevice: boolean }> {
+): Promise<{ newDevice: boolean; sessionMs: number; signMs: number }> {
   const before = new Date()
   const noticed = noticeNewDevice(req, userId, before)
   const claims = await claimsFor(userId, knownClaims)
-  const sessionId = await issueSession(req, res, userId, randomBytes(16).toString('hex'), claims)
+  const issued = await issueSession(req, res, userId, randomBytes(16).toString('hex'), claims)
   const newDevice = await noticed
   if (newDevice) {
     const audit = requestAudit(req)
-    await recordSecurity({
-      userId,
-      type: 'new-device',
-      summary: `New sign-in from ${audit.device}.`,
-      ...audit,
-    })
-    await Notification.create({
-      userId,
-      kind: 'new-device',
-      title: `New sign-in from ${audit.device}`,
-      projectName: [audit.deviceType, audit.location].filter(Boolean).join(' · '),
-      dueDate: '',
-      key: `new-device:${sessionId}`,
-      read: false,
-    })
+    const followUp = Promise.all([
+      recordSecurity({
+        userId,
+        type: 'new-device',
+        summary: `New sign-in from ${audit.device}.`,
+        ...audit,
+      }),
+      Notification.create({
+        userId,
+        kind: 'new-device',
+        title: `New sign-in from ${audit.device}`,
+        projectName: [audit.deviceType, audit.location].filter(Boolean).join(' · '),
+        dueDate: '',
+        key: `new-device:${issued.id}`,
+        read: false,
+      }),
+    ])
+    if (process.env.NODE_ENV === 'test') await followUp
+    else void followUp.catch(() => undefined)
   }
-  return { newDevice }
+  return { newDevice, sessionMs: issued.sessionMs, signMs: issued.signMs }
 }
 
 type PreviousSession = {
@@ -143,10 +147,11 @@ async function issueSession(
   familyId: string,
   claims: AccessClaims,
   previous?: PreviousSession,
-): Promise<string> {
+): Promise<{ id: string; sessionMs: number; signMs: number }> {
   const refresh = randomBytes(32).toString('hex')
   const userAgent = previous ? (previous.userAgent ?? '') : (req.get('user-agent') ?? '')
   const now = new Date()
+  const sessionStarted = performance.now()
   const session = await Session.create({
     userId,
     familyId,
@@ -162,8 +167,10 @@ async function issueSession(
   if (previous) {
     await Session.updateOne({ _id: previous._id }, { replacedBy: session._id, rotatedAt: now })
   }
+  const sessionMs = performance.now() - sessionStarted
+  const signStarted = performance.now()
   writeCookies(res, userId, session.id, refresh, claims)
-  return session.id
+  return { id: session.id, sessionMs, signMs: performance.now() - signStarted }
 }
 
 export type Access = {

@@ -3,7 +3,7 @@ import compression from "compression";
 import express from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import mongoose5 from "mongoose";
+import mongoose6 from "mongoose";
 
 // src/csrf.ts
 import { randomBytes as randomBytes2, timingSafeEqual } from "node:crypto";
@@ -714,32 +714,37 @@ async function startSession(req, res, userId, knownClaims) {
   const before = /* @__PURE__ */ new Date();
   const noticed = noticeNewDevice(req, userId, before);
   const claims = await claimsFor(userId, knownClaims);
-  const sessionId = await issueSession(req, res, userId, randomBytes(16).toString("hex"), claims);
+  const issued = await issueSession(req, res, userId, randomBytes(16).toString("hex"), claims);
   const newDevice = await noticed;
   if (newDevice) {
     const audit = requestAudit(req);
-    await recordSecurity({
-      userId,
-      type: "new-device",
-      summary: `New sign-in from ${audit.device}.`,
-      ...audit
-    });
-    await Notification.create({
-      userId,
-      kind: "new-device",
-      title: `New sign-in from ${audit.device}`,
-      projectName: [audit.deviceType, audit.location].filter(Boolean).join(" \xB7 "),
-      dueDate: "",
-      key: `new-device:${sessionId}`,
-      read: false
-    });
+    const followUp = Promise.all([
+      recordSecurity({
+        userId,
+        type: "new-device",
+        summary: `New sign-in from ${audit.device}.`,
+        ...audit
+      }),
+      Notification.create({
+        userId,
+        kind: "new-device",
+        title: `New sign-in from ${audit.device}`,
+        projectName: [audit.deviceType, audit.location].filter(Boolean).join(" \xB7 "),
+        dueDate: "",
+        key: `new-device:${issued.id}`,
+        read: false
+      })
+    ]);
+    if (process.env.NODE_ENV === "test") await followUp;
+    else void followUp.catch(() => void 0);
   }
-  return { newDevice };
+  return { newDevice, sessionMs: issued.sessionMs, signMs: issued.signMs };
 }
 async function issueSession(req, res, userId, familyId, claims, previous) {
   const refresh = randomBytes(32).toString("hex");
   const userAgent = previous ? previous.userAgent ?? "" : req.get("user-agent") ?? "";
   const now = /* @__PURE__ */ new Date();
+  const sessionStarted = performance.now();
   const session = await Session.create({
     userId,
     familyId,
@@ -755,8 +760,10 @@ async function issueSession(req, res, userId, familyId, claims, previous) {
   if (previous) {
     await Session.updateOne({ _id: previous._id }, { replacedBy: session._id, rotatedAt: now });
   }
+  const sessionMs = performance.now() - sessionStarted;
+  const signStarted = performance.now();
   writeCookies(res, userId, session.id, refresh, claims);
-  return session.id;
+  return { id: session.id, sessionMs, signMs: performance.now() - signStarted };
 }
 function accessFromRequest(req) {
   const token = readCookie(req.headers.cookie);
@@ -912,11 +919,79 @@ var csrfProtection = (req, res, next) => {
   next();
 };
 
+// src/dbRegion.ts
+import { lookup } from "node:dns/promises";
+import mongoose3 from "mongoose";
+var cached = null;
+var pending = null;
+function ipv4ToInt(ip) {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  let value = 0;
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) return null;
+    const octet = Number(part);
+    if (octet > 255) return null;
+    value = value * 256 + octet >>> 0;
+  }
+  return value;
+}
+function inCidr(ip, prefix) {
+  const [base, bitsText] = prefix.split("/");
+  const bits = Number(bitsText);
+  if (!base || !Number.isInteger(bits) || bits < 0 || bits > 32) return false;
+  const network = ipv4ToInt(base);
+  if (network === null) return false;
+  if (bits === 0) return true;
+  const mask = bits === 32 ? 4294967295 : 4294967295 << 32 - bits >>> 0;
+  return (ip & mask) === (network & mask);
+}
+function isPrivate(ip) {
+  const value = ipv4ToInt(ip);
+  if (value === null) return true;
+  const first = value >>> 24;
+  const second = value >>> 16 & 255;
+  if (first === 10 || first === 127) return true;
+  if (first === 192 && second === 168) return true;
+  return first === 172 && second >= 16 && second <= 31;
+}
+async function detect() {
+  const host = mongoose3.connection.host;
+  if (!host) return null;
+  const { address } = await lookup(host, { family: 4 });
+  if (isPrivate(address)) return null;
+  const ip = ipv4ToInt(address);
+  if (ip === null) return null;
+  const response = await fetch("https://ip-ranges.amazonaws.com/ip-ranges.json", { signal: AbortSignal.timeout(4e3) });
+  if (!response.ok) return null;
+  const body = await response.json();
+  let best = null;
+  for (const prefix of body.prefixes ?? []) {
+    if (!prefix.ip_prefix || !prefix.region || !inCidr(ip, prefix.ip_prefix)) continue;
+    const bits = Number(prefix.ip_prefix.split("/")[1]);
+    const ec2 = prefix.service === "EC2";
+    if (!best || bits > best.bits || bits === best.bits && ec2 && !best.ec2) {
+      best = { bits, region: prefix.region, ec2 };
+    }
+  }
+  return best?.region ?? null;
+}
+function atlasCloudRegion() {
+  if (cached) return Promise.resolve(cached);
+  pending ??= detect().then((region) => {
+    if (region) cached = region;
+    return region;
+  }).finally(() => {
+    pending = null;
+  });
+  return pending;
+}
+
 // src/db.ts
-import mongoose4 from "mongoose";
+import mongoose5 from "mongoose";
 
 // src/migrate/runner.ts
-import mongoose3 from "mongoose";
+import mongoose4 from "mongoose";
 
 // src/migrate/personalWorkspaces.ts
 var RETENTION_MS = 90 * 24 * 60 * 60 * 1e3;
@@ -1026,7 +1101,7 @@ function runMigrations(options) {
   return execute(options);
 }
 async function execute(options) {
-  const db = mongoose3.connection.db;
+  const db = mongoose4.connection.db;
   if (!db) return [];
   const collection = db.collection("migrations");
   const applied = new Set((await collection.find({}, { projection: { id: 1 } }).toArray()).map((doc) => doc.id));
@@ -1163,8 +1238,8 @@ async function connectDb(options) {
     return state.conn;
   }
   if (!state.promise) {
-    mongoose4.set("bufferCommands", false);
-    state.promise = mongoose4.connect(uri, {
+    mongoose5.set("bufferCommands", false);
+    state.promise = mongoose5.connect(uri, {
       retryWrites: true,
       retryReads: true,
       serverSelectionTimeoutMS: 5e3,
@@ -1193,6 +1268,25 @@ async function connectDb(options) {
   await runMigrations();
   if (shouldSync(options)) await ensureIndexes();
   return state.conn;
+}
+
+// src/serverTiming.ts
+function markTiming(res, name, dur, desc) {
+  const marks = res.locals.serverTiming ??= [];
+  const existing = marks.find((mark) => mark.name === name);
+  if (existing) {
+    existing.dur = dur;
+    if (desc !== void 0) existing.desc = desc;
+  } else {
+    marks.push({ name, dur, desc });
+  }
+  res.setHeader(
+    "Server-Timing",
+    marks.map((mark) => {
+      const description2 = mark.desc ? `;desc="${mark.desc.replace(/[^a-z0-9_.:-]/gi, "")}"` : "";
+      return `${mark.name};dur=${Math.max(0, mark.dur).toFixed(1)}${description2}`;
+    }).join(", ")
+  );
 }
 
 // src/httpCache.ts
@@ -2799,6 +2893,8 @@ async function deliverMail(input) {
 
 // src/rateLimit.ts
 var WINDOW_MS = 15 * 60 * 1e3;
+var SUCCESS_WINDOW_MS = 60 * 1e3;
+var SUCCESS_MAX = 30;
 var PRODUCTION_MAX = {
   login: 10,
   register: 5,
@@ -2808,9 +2904,21 @@ var PRODUCTION_MAX = {
 function duplicateKey(error) {
   return typeof error === "object" && error !== null && "code" in error && error.code === 11e3;
 }
-async function hit(key) {
+function loginFailureMax() {
+  return process.env.NODE_ENV === "production" ? PRODUCTION_MAX.login : 1e3;
+}
+function loginSuccessMax() {
+  return process.env.NODE_ENV === "production" ? SUCCESS_MAX : 1e3;
+}
+function failureKeys(ip, email2) {
+  return [`login:fail:ip:${ip || "unknown"}`, `login:fail:email:${email2}`];
+}
+function successKeys(ip, email2) {
+  return [`login:ok:ip:${ip || "unknown"}`, `login:ok:email:${email2}`];
+}
+async function hit(key, windowMs = WINDOW_MS) {
   const now = Date.now();
-  const expiresAt = new Date(now + WINDOW_MS);
+  const expiresAt = new Date(now + windowMs);
   let doc;
   try {
     doc = await RateLimit.findOneAndUpdate(
@@ -2826,6 +2934,35 @@ async function hit(key) {
     doc = await RateLimit.findOneAndUpdate({ key }, { $set: { count: 1, expiresAt } }, { new: true });
   }
   return { count: doc?.count ?? 1, expiresAt: doc?.expiresAt ?? expiresAt };
+}
+async function readActive(key) {
+  const doc = await RateLimit.findOne({ key }).lean();
+  if (!doc || doc.expiresAt.getTime() <= Date.now()) return null;
+  return { count: doc.count, expiresAt: doc.expiresAt };
+}
+function rejectIfAtLeast(hits, max) {
+  const now = Date.now();
+  const blocked = hits.filter((entry) => entry !== null && entry.count >= max);
+  if (blocked.length === 0) return;
+  const remainingMs = Math.max(...blocked.map((entry) => entry.expiresAt.getTime() - now));
+  const seconds = Math.max(1, Math.ceil(remainingMs / 1e3));
+  throw new HttpError(429, "Too many attempts. Try again later.", { headers: { "Retry-After": String(seconds) } });
+}
+async function guardLogin(ip, email2) {
+  const keys = [...failureKeys(ip, email2), ...successKeys(ip, email2)];
+  const [failIp, failEmail, okIp, okEmail] = await Promise.all(keys.map((key) => readActive(key)));
+  rejectIfAtLeast([failIp ?? null, failEmail ?? null], loginFailureMax());
+  rejectIfAtLeast([okIp ?? null, okEmail ?? null], loginSuccessMax());
+}
+async function recordLoginFailure(ip, email2) {
+  const [, emailHit] = await Promise.all(failureKeys(ip, email2).map((key) => hit(key)));
+  return emailHit?.count ?? 1;
+}
+async function clearLoginFailures(email2) {
+  await RateLimit.deleteOne({ key: `login:fail:email:${email2}` });
+}
+async function recordLoginSuccess(ip, email2) {
+  await Promise.all(successKeys(ip, email2).map((key) => hit(key, SUCCESS_WINDOW_MS)));
 }
 async function delayFailedAttempt(count) {
   if (process.env.NODE_ENV === "test" || count <= 2) return;
@@ -2935,10 +3072,17 @@ ${link}`
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(loginSchema, req.body);
-      const [attempts, user] = await Promise.all([
-        enforceAuthLimit("login", clientIp(req), input.email),
-        users.byEmailSecret(input.email)
-      ]);
+      const ip = clientIp(req);
+      const lookupStarted = performance.now();
+      let user;
+      try {
+        ;
+        [, user] = await Promise.all([guardLogin(ip, input.email), users.byEmailSecret(input.email)]);
+      } catch (error) {
+        markTiming(res, "user", performance.now() - lookupStarted);
+        throw error;
+      }
+      markTiming(res, "user", performance.now() - lookupStarted);
       if (user?.lockUntil && user.lockUntil.getTime() > Date.now()) {
         const seconds = Math.max(1, Math.ceil((user.lockUntil.getTime() - Date.now()) / 1e3));
         throw new HttpError(429, "Too many attempts. Try again later.", {
@@ -2946,9 +3090,12 @@ ${link}`
         });
       }
       const dashboardPromise = (user ? dashboardForUser(user) : Promise.resolve(null)).catch(() => null);
+      const bcryptStarted = performance.now();
       const hash = user?.passwordHash ?? await dummyPasswordHash();
       const matches = await checkPassword(input.password, hash);
+      markTiming(res, "bcrypt", performance.now() - bcryptStarted);
       if (!user || !matches) {
+        const failures = await recordLoginFailure(ip, input.email);
         if (user) {
           user.failedLogins = (user.failedLogins ?? 0) + 1;
           if (user.failedLogins >= LOCK_AFTER) user.lockUntil = new Date(Date.now() + lockDelay(user.failedLogins));
@@ -2960,12 +3107,22 @@ ${link}`
             ...requestAudit(req)
           }).catch(() => void 0);
         }
-        await delayFailedAttempt(attempts);
+        await delayFailedAttempt(failures);
         throw new HttpError(401, "Email or password is incorrect.");
       }
+      const resetFailures = clearLoginFailures(input.email).then(async () => {
+        if (!user.failedLogins && !user.lockUntil) return;
+        user.failedLogins = 0;
+        user.lockUntil = null;
+        await user.save();
+      });
       if (user.totpEnabledAt) {
-        const pending = signJwt({ sub: user.id, typ: "pending" }, "5m");
-        res.cookie("pending", pending, {
+        await Promise.all([resetFailures, recordLoginSuccess(ip, input.email)]);
+        const signStarted = performance.now();
+        const pending2 = signJwt({ sub: user.id, typ: "pending" }, "5m");
+        markTiming(res, "jwt", performance.now() - signStarted);
+        markTiming(res, "session", 0);
+        res.cookie("pending", pending2, {
           httpOnly: true,
           secure: process.env.NODE_ENV === "production",
           sameSite: "lax",
@@ -2976,15 +3133,14 @@ ${link}`
         void watchBreachedPassword(user.id, input.password);
         return;
       }
-      if (user.failedLogins || user.lockUntil) {
-        user.failedLogins = 0;
-        user.lockUntil = null;
-        await user.save();
-      }
       const [started, dashboard] = await Promise.all([
         startSession(req, res, user.id, ownerClaims(user)),
-        dashboardPromise
+        dashboardPromise,
+        resetFailures,
+        recordLoginSuccess(ip, input.email)
       ]);
+      markTiming(res, "session", started.sessionMs);
+      markTiming(res, "jwt", started.signMs);
       res.json({
         ...publicUser(user),
         newDevice: started.newDevice,
@@ -4475,12 +4631,15 @@ function createApp(options = {}) {
   app2.get("/api/health", (_req, res) => {
     const started = Date.now();
     connectDb().then(async () => {
-      const db = mongoose5.connection.db;
+      const db = mongoose6.connection.db;
       if (!db) throw new Error("Database is not connected.");
       await db.command({ ping: 1 });
       const migration = await db.collection("migrations").findOne({ id: "001_personal_workspaces" });
       return migration?.counts ? { id: migration.id, counts: migration.counts } : void 0;
-    }).then((migration) => {
+    }).then(async (migration) => {
+      const region = await atlasCloudRegion().catch(() => null);
+      if (region) res.setHeader("X-Align-Db-Region", region);
+      markTiming(res, "db", Date.now() - started);
       const body = { ok: true, db: "up", latencyMs: Date.now() - started, ...migration ? { migration } : {} };
       res.json(body);
     }).catch(() => {
@@ -4489,11 +4648,16 @@ function createApp(options = {}) {
       res.status(503).json(body);
     });
   });
-  app2.use((req, _res, next) => {
+  app2.use((req, res, next) => {
     const logout = req.method === "POST" && req.path === "/api/auth/logout";
+    const started = performance.now();
     connectDb().then(
-      () => next(),
+      () => {
+        markTiming(res, "db", performance.now() - started);
+        next();
+      },
       (error) => {
+        markTiming(res, "db", performance.now() - started);
         if (logout) next();
         else next(error);
       }

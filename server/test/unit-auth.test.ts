@@ -7,7 +7,7 @@ import { assertPasswordNotBreached, HIBP_TIMEOUT_MS, noteBreachedPassword, passw
 import { signJwt, verifyJwt } from '../src/keys.ts'
 import { isMediumPassword } from '../src/passwordPolicy.ts'
 import { HttpError } from '../src/errors.ts'
-import { enforceAuthLimit } from '../src/rateLimit.ts'
+import { clearLoginFailures, enforceAuthLimit, guardLogin, recordLoginFailure, recordLoginSuccess } from '../src/rateLimit.ts'
 import { RateLimit, SecurityEvent } from '../src/models.ts'
 import { accessFromRequest, coarseIp, deviceLabel, sessionExpired, stepUpFresh } from '../src/session.ts'
 import { generateRecoveryCodes, generateTotpSecret, totpAt, verifyTotp } from '../src/totp.ts'
@@ -142,6 +142,85 @@ describe('auth units', () => {
     process.env.NODE_ENV = 'production'
     try {
       await expect(enforceAuthLimit('login', ip, 'person@align.test')).rejects.toMatchObject({ status: 429 })
+    } finally {
+      process.env.NODE_ENV = previous
+    }
+  })
+
+  it('lets thirty successful sign-ins through without touching the failure lock', async () => {
+    const ip = `203.0.113.${Math.floor(Math.random() * 200) + 1}`
+    const email = `ok-${crypto.randomUUID()}@align.test`
+    const previous = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    try {
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await guardLogin(ip, email)
+        await recordLoginSuccess(ip, email)
+      }
+      expect(await RateLimit.findOne({ key: `login:fail:email:${email}` })).toBeNull()
+      expect(await RateLimit.findOne({ key: `login:fail:ip:${ip}` })).toBeNull()
+      try {
+        await guardLogin(ip, email)
+        throw new Error('expected the per-minute success budget to reject one more sign-in')
+      } catch (error) {
+        expect(error).toBeInstanceOf(HttpError)
+        const limited = error as HttpError
+        expect(limited.status).toBe(429)
+        const retryAfter = Number(limited.headers['Retry-After'])
+        expect(retryAfter).toBeGreaterThan(0)
+        expect(retryAfter).toBeLessThanOrEqual(60)
+      }
+    } finally {
+      process.env.NODE_ENV = previous
+    }
+  })
+
+  it('locks an address after repeated failed sign-ins', async () => {
+    const ip = `198.51.100.${Math.floor(Math.random() * 200) + 1}`
+    const email = `fail-${crypto.randomUUID()}@align.test`
+    const previous = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    try {
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await guardLogin(ip, email)
+        expect(await recordLoginFailure(ip, email)).toBe(attempt + 1)
+      }
+      try {
+        await guardLogin(ip, email)
+        throw new Error('expected the failure window to reject the next sign-in')
+      } catch (error) {
+        expect(error).toBeInstanceOf(HttpError)
+        const locked = error as HttpError
+        expect(locked.status).toBe(429)
+        const retryAfter = Number(locked.headers['Retry-After'])
+        expect(retryAfter).toBeGreaterThan(10 * 60)
+        expect(retryAfter).toBeLessThanOrEqual(15 * 60)
+      }
+    } finally {
+      process.env.NODE_ENV = previous
+    }
+  })
+
+  it('clears the per-email failure counter after a successful sign-in', async () => {
+    const ip = `192.0.2.${Math.floor(Math.random() * 200) + 1}`
+    const ip2 = `192.0.2.${Math.floor(Math.random() * 50) + 201}`
+    const email = `reset-${crypto.randomUUID()}@align.test`
+    const previous = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    try {
+      for (let attempt = 0; attempt < 9; attempt += 1) await recordLoginFailure(ip, email)
+      await clearLoginFailures(email)
+      expect(await RateLimit.findOne({ key: `login:fail:email:${email}` })).toBeNull()
+      expect((await RateLimit.findOne({ key: `login:fail:ip:${ip}` }))?.count).toBe(9)
+      await guardLogin(ip, email)
+      for (let attempt = 0; attempt < 9; attempt += 1) {
+        await guardLogin(ip2, email)
+        await recordLoginFailure(ip2, email)
+      }
+      expect((await RateLimit.findOne({ key: `login:fail:email:${email}` }))?.count).toBe(9)
+      await guardLogin(ip2, email)
+      await recordLoginFailure(ip2, email)
+      await expect(guardLogin(ip2, email)).rejects.toMatchObject({ status: 429 })
     } finally {
       process.env.NODE_ENV = previous
     }

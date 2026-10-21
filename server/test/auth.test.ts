@@ -295,6 +295,33 @@ describe('auth', () => {
     expect((await agent.get('/api/auth/me')).status).toBe(401)
   })
 
+  it('does not lock an account that only signs in successfully', async () => {
+    const { email, password } = await registerUser('Steady')
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const response = await request(app).post('/api/auth/login').send({ email, password })
+      expect(response.status).toBe(200)
+      const timing = String(response.headers['server-timing'] ?? '')
+      expect(timing).toMatch(/db;dur=/)
+      expect(timing).toMatch(/user;dur=/)
+      expect(timing).toMatch(/bcrypt;dur=/)
+      expect(timing).toMatch(/session;dur=/)
+      expect(timing).toMatch(/jwt;dur=/)
+    }
+  })
+
+  it('lets a successful login reset the failure count', async () => {
+    const email = `reset-lock-${crypto.randomUUID()}@align.test`
+    await registerUser('Reset', email)
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      expect((await request(app).post('/api/auth/login').send({ email, password: 'wrong-password' })).status).toBe(401)
+    }
+    expect((await request(app).post('/api/auth/login').send({ email, password: 'password12' })).status).toBe(200)
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      expect((await request(app).post('/api/auth/login').send({ email, password: 'wrong-password' })).status).toBe(401)
+    }
+    expect((await request(app).post('/api/auth/login').send({ email, password: 'password12' })).status).toBe(200)
+  })
+
   it('locks an account after repeated failed logins', async () => {
     const email = `lock-${crypto.randomUUID()}@align.test`
     await registerUser('Lock', email)
