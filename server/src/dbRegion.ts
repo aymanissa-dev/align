@@ -4,7 +4,7 @@ import mongoose from 'mongoose'
 type Prefix = { ip_prefix?: string; region?: string; service?: string }
 
 let cached: string | null = null
-let pending: Promise<string | null> | null = null
+let pending: Promise<string> | null = null
 
 function ipv4ToInt(ip: string): number | null {
   const parts = ip.split('.')
@@ -40,15 +40,25 @@ function isPrivate(ip: string): boolean {
   return first === 172 && second >= 16 && second <= 31
 }
 
-async function detect(): Promise<string | null> {
+async function detect(): Promise<string> {
   const host = mongoose.connection.host
-  if (!host) return null
-  const { address } = await lookup(host, { family: 4 })
-  if (isPrivate(address)) return null
+  if (!host) return 'err:no-host'
+  let address: string
+  try {
+    address = (await lookup(host, { family: 4 })).address
+  } catch {
+    return 'err:lookup'
+  }
+  if (isPrivate(address)) return 'err:private'
   const ip = ipv4ToInt(address)
-  if (ip === null) return null
-  const response = await fetch('https://ip-ranges.amazonaws.com/ip-ranges.json', { signal: AbortSignal.timeout(4_000) })
-  if (!response.ok) return null
+  if (ip === null) return 'err:ip'
+  let response: Response
+  try {
+    response = await fetch('https://ip-ranges.amazonaws.com/ip-ranges.json', { signal: AbortSignal.timeout(4_000) })
+  } catch {
+    return 'err:fetch'
+  }
+  if (!response.ok) return `err:fetch-${response.status}`
   const body = (await response.json()) as { prefixes?: Prefix[] }
   let best: { bits: number; region: string; ec2: boolean } | null = null
   for (const prefix of body.prefixes ?? []) {
@@ -59,15 +69,15 @@ async function detect(): Promise<string | null> {
       best = { bits, region: prefix.region, ec2 }
     }
   }
-  return best?.region ?? null
+  return best?.region ?? 'unmatched'
 }
 
-/** AWS region of the connected Atlas primary, without exposing the host. */
-export function atlasCloudRegion(): Promise<string | null> {
+/** AWS region of the connected Atlas primary, or a short error code. The host is never returned. */
+export function atlasCloudRegion(): Promise<string> {
   if (cached) return Promise.resolve(cached)
   pending ??= detect()
     .then((region) => {
-      if (region) cached = region
+      cached = region
       return region
     })
     .finally(() => {

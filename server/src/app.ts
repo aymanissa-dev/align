@@ -69,10 +69,11 @@ export function createApp(options: AppOptions = {}): Express {
         return migration?.counts ? { id: migration.id, counts: migration.counts } : undefined
       })
       .then(async (migration) => {
-        const region = await atlasCloudRegion().catch(() => null)
-        if (region) res.setHeader('X-Align-Db-Region', region)
-        markTiming(res, 'db', Date.now() - started)
-        const body: HealthReport = { ok: true, db: 'up', latencyMs: Date.now() - started, ...(migration ? { migration } : {}) }
+        const dbMs = Date.now() - started
+        const region = await atlasCloudRegion().catch(() => 'err:probe')
+        res.setHeader('X-Align-Db-Region', region)
+        markTiming(res, 'db', dbMs)
+        const body: HealthReport = { ok: true, db: 'up', latencyMs: dbMs, ...(migration ? { migration } : {}) }
         res.json(body)
       })
       .catch(() => {

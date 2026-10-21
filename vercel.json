@@ -3,6 +3,7 @@
   "installCommand": "MONGOMS_DISABLE_POSTINSTALL=1 npm install",
   "buildCommand": "npm run build",
   "outputDirectory": "client/dist",
+  "fluid": true,
   "rewrites": [
     {
       "source": "/api/:path*",

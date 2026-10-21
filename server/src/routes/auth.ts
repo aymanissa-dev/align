@@ -30,6 +30,7 @@ import {
   revokeSessions,
   rotateRefresh,
   sessionExpired,
+  prepareNewDevice,
   startSession,
 } from '../session.ts'
 import { consumeAuthToken, issueAuthToken } from '../tokens.ts'
@@ -133,6 +134,7 @@ export function authRouter(limiter: RequestHandler): Router {
         })
       }
       const dashboardPromise = (user ? dashboardForUser(user) : Promise.resolve(null)).catch(() => null)
+      const deviceCheck = user ? prepareNewDevice(req, user.id) : undefined
       const bcryptStarted = performance.now()
       const hash = user?.passwordHash ?? (await dummyPasswordHash())
       const matches = await checkPassword(input.password, hash)
@@ -177,7 +179,7 @@ export function authRouter(limiter: RequestHandler): Router {
         return
       }
       const [started, dashboard] = await Promise.all([
-        startSession(req, res, user.id, ownerClaims(user)),
+        startSession(req, res, user.id, ownerClaims(user), deviceCheck),
         dashboardPromise,
         resetFailures,
         recordLoginSuccess(ip, input.email),

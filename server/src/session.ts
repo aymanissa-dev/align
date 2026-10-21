@@ -88,6 +88,10 @@ async function claimsFor(userId: string, known?: AccessClaims | null): Promise<A
   return { workspaceId: tenant.workspaceId, role: tenant.role, membershipVersion: user?.membershipVersion ?? 0 }
 }
 
+export function prepareNewDevice(req: Request, userId: string): Promise<boolean> {
+  return noticeNewDevice(req, userId, new Date())
+}
+
 function noticeNewDevice(req: Request, userId: string, before: Date): Promise<boolean> {
   const userAgent = (req.get('user-agent') ?? '').slice(0, 300)
   const deviceName = deviceLabel(userAgent)
@@ -103,12 +107,12 @@ export async function startSession(
   res: Response,
   userId: string,
   knownClaims?: AccessClaims | null,
+  noticed?: Promise<boolean>,
 ): Promise<{ newDevice: boolean; sessionMs: number; signMs: number }> {
-  const before = new Date()
-  const noticed = noticeNewDevice(req, userId, before)
+  const pendingNotice = noticed ?? noticeNewDevice(req, userId, new Date())
   const claims = await claimsFor(userId, knownClaims)
   const issued = await issueSession(req, res, userId, randomBytes(16).toString('hex'), claims)
-  const newDevice = await noticed
+  const newDevice = await pendingNotice
   if (newDevice) {
     const audit = requestAudit(req)
     const followUp = Promise.all([

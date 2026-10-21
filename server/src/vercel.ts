@@ -4,9 +4,19 @@ import { connectDb } from './db.ts'
 import { resolveRequestUrl } from './requestPath.ts'
 
 const app = createApp()
-void connectDb({ indexes: true }).catch((error: unknown) => {
-  console.error(error)
-})
+// Connect immediately, but wait to sync indexes until the first request has the pool.
+void connectDb()
+  .then(() => {
+    const timer = setTimeout(() => {
+      void connectDb({ indexes: true }).catch((error: unknown) => {
+        console.error(error)
+      })
+    }, 15_000)
+    timer.unref()
+  })
+  .catch((error: unknown) => {
+    console.error(error)
+  })
 
 export default function handler(req: IncomingMessage, res: ServerResponse): void {
   req.url = resolveRequestUrl(req.url, (name) => {

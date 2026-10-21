@@ -701,6 +701,9 @@ async function claimsFor(userId, known) {
   const tenant = await ensurePersonalWorkspace(userId);
   return { workspaceId: tenant.workspaceId, role: tenant.role, membershipVersion: user?.membershipVersion ?? 0 };
 }
+function prepareNewDevice(req, userId) {
+  return noticeNewDevice(req, userId, /* @__PURE__ */ new Date());
+}
 function noticeNewDevice(req, userId, before) {
   const userAgent = (req.get("user-agent") ?? "").slice(0, 300);
   const deviceName = deviceLabel(userAgent);
@@ -710,12 +713,11 @@ function noticeNewDevice(req, userId, before) {
     Session.exists({ userId, createdAt: { $lt: before } })
   ]).then(([seen, any]) => Boolean(any && !seen));
 }
-async function startSession(req, res, userId, knownClaims) {
-  const before = /* @__PURE__ */ new Date();
-  const noticed = noticeNewDevice(req, userId, before);
+async function startSession(req, res, userId, knownClaims, noticed) {
+  const pendingNotice = noticed ?? noticeNewDevice(req, userId, /* @__PURE__ */ new Date());
   const claims = await claimsFor(userId, knownClaims);
   const issued = await issueSession(req, res, userId, randomBytes(16).toString("hex"), claims);
-  const newDevice = await noticed;
+  const newDevice = await pendingNotice;
   if (newDevice) {
     const audit = requestAudit(req);
     const followUp = Promise.all([
@@ -957,13 +959,23 @@ function isPrivate(ip) {
 }
 async function detect() {
   const host = mongoose3.connection.host;
-  if (!host) return null;
-  const { address } = await lookup(host, { family: 4 });
-  if (isPrivate(address)) return null;
+  if (!host) return "err:no-host";
+  let address;
+  try {
+    address = (await lookup(host, { family: 4 })).address;
+  } catch {
+    return "err:lookup";
+  }
+  if (isPrivate(address)) return "err:private";
   const ip = ipv4ToInt(address);
-  if (ip === null) return null;
-  const response = await fetch("https://ip-ranges.amazonaws.com/ip-ranges.json", { signal: AbortSignal.timeout(4e3) });
-  if (!response.ok) return null;
+  if (ip === null) return "err:ip";
+  let response;
+  try {
+    response = await fetch("https://ip-ranges.amazonaws.com/ip-ranges.json", { signal: AbortSignal.timeout(4e3) });
+  } catch {
+    return "err:fetch";
+  }
+  if (!response.ok) return `err:fetch-${response.status}`;
   const body = await response.json();
   let best = null;
   for (const prefix of body.prefixes ?? []) {
@@ -974,12 +986,12 @@ async function detect() {
       best = { bits, region: prefix.region, ec2 };
     }
   }
-  return best?.region ?? null;
+  return best?.region ?? "unmatched";
 }
 function atlasCloudRegion() {
   if (cached) return Promise.resolve(cached);
   pending ??= detect().then((region) => {
-    if (region) cached = region;
+    cached = region;
     return region;
   }).finally(() => {
     pending = null;
@@ -3090,6 +3102,7 @@ ${link}`
         });
       }
       const dashboardPromise = (user ? dashboardForUser(user) : Promise.resolve(null)).catch(() => null);
+      const deviceCheck = user ? prepareNewDevice(req, user.id) : void 0;
       const bcryptStarted = performance.now();
       const hash = user?.passwordHash ?? await dummyPasswordHash();
       const matches = await checkPassword(input.password, hash);
@@ -3134,7 +3147,7 @@ ${link}`
         return;
       }
       const [started, dashboard] = await Promise.all([
-        startSession(req, res, user.id, ownerClaims(user)),
+        startSession(req, res, user.id, ownerClaims(user), deviceCheck),
         dashboardPromise,
         resetFailures,
         recordLoginSuccess(ip, input.email)
@@ -4637,10 +4650,11 @@ function createApp(options = {}) {
       const migration = await db.collection("migrations").findOne({ id: "001_personal_workspaces" });
       return migration?.counts ? { id: migration.id, counts: migration.counts } : void 0;
     }).then(async (migration) => {
-      const region = await atlasCloudRegion().catch(() => null);
-      if (region) res.setHeader("X-Align-Db-Region", region);
-      markTiming(res, "db", Date.now() - started);
-      const body = { ok: true, db: "up", latencyMs: Date.now() - started, ...migration ? { migration } : {} };
+      const dbMs = Date.now() - started;
+      const region = await atlasCloudRegion().catch(() => "err:probe");
+      res.setHeader("X-Align-Db-Region", region);
+      markTiming(res, "db", dbMs);
+      const body = { ok: true, db: "up", latencyMs: dbMs, ...migration ? { migration } : {} };
       res.json(body);
     }).catch(() => {
       const body = { ok: false, db: "down", latencyMs: Date.now() - started };
@@ -4734,7 +4748,14 @@ function resolveRequestUrl(url, header) {
 
 // src/vercel.ts
 var app = createApp();
-void connectDb({ indexes: true }).catch((error) => {
+void connectDb().then(() => {
+  const timer = setTimeout(() => {
+    void connectDb({ indexes: true }).catch((error) => {
+      console.error(error);
+    });
+  }, 15e3);
+  timer.unref();
+}).catch((error) => {
   console.error(error);
 });
 function handler(req, res) {
