@@ -1676,21 +1676,21 @@ function assertRole(tenant, minimum) {
 var OPEN_LIMIT = 40;
 async function dashboardPayload(tenant) {
   const db = bind(tenant);
-  const projects = await db.projects.find({ status: "active" }).select("name description").sort({ updatedAt: -1 }).lean();
-  const activeIds = projects.map((project) => project._id);
-  const datedFilter = {
-    completed: false,
-    projectId: { $in: activeIds },
-    dueDate: { $gte: "0000-01-01" }
-  };
-  const [counts, dated, undated, datedOpenCount] = await Promise.all([
+  const datedLimit = OPEN_LIMIT * 2;
+  const [projects, counts, dated, undated, datedIds] = await Promise.all([
+    db.projects.find({ status: "active" }).select("name description").sort({ updatedAt: -1 }).lean(),
     db.tasks.aggregate([
       { $group: { _id: { projectId: "$projectId", completed: "$completed" }, n: { $sum: 1 } } }
     ]),
-    db.tasks.find(datedFilter).select("title dueDate priority projectId").sort({ dueDate: 1, title: 1 }).limit(OPEN_LIMIT * 2).lean(),
-    db.tasks.find({ completed: false, projectId: { $in: activeIds }, dueDate: null }).select("title dueDate priority projectId").sort({ title: 1 }).limit(OPEN_LIMIT).lean(),
-    db.tasks.find(datedFilter).countDocuments()
+    db.tasks.find({ completed: false, dueDate: { $gte: "0000-01-01" } }).select("title dueDate priority projectId").sort({ dueDate: 1, title: 1 }).limit(datedLimit).lean(),
+    db.tasks.find({ completed: false, dueDate: null }).select("title dueDate priority projectId").sort({ title: 1 }).limit(OPEN_LIMIT).lean(),
+    db.tasks.find({ completed: false, dueDate: { $gte: "0000-01-01" } }).select("projectId").lean()
   ]);
+  const activeIds = projects.map((project) => project._id);
+  const active = new Set(activeIds.map((id) => id.toString()));
+  const datedRows = dated.length < datedLimit ? dated.filter((task) => active.has(task.projectId.toString())) : await db.tasks.find({ completed: false, projectId: { $in: activeIds }, dueDate: { $gte: "0000-01-01" } }).select("title dueDate priority projectId").sort({ dueDate: 1, title: 1 }).limit(datedLimit).lean();
+  const undatedRows = undated.length < OPEN_LIMIT ? undated.filter((task) => active.has(task.projectId.toString())) : await db.tasks.find({ completed: false, projectId: { $in: activeIds }, dueDate: null }).select("title dueDate priority projectId").sort({ title: 1 }).limit(OPEN_LIMIT).lean();
+  const datedOpenCount = datedIds.filter((task) => active.has(task.projectId.toString())).length;
   const names = new Map(projects.map((project) => [project._id.toString(), project.name]));
   const tally = /* @__PURE__ */ new Map();
   for (const row of counts) {
@@ -1705,7 +1705,7 @@ async function dashboardPayload(tenant) {
     if (!names.has(id)) continue;
     openTaskCount += bucket.total - bucket.done;
   }
-  const open = [...dated, ...undated].flatMap((task) => {
+  const open = [...datedRows, ...undatedRows].flatMap((task) => {
     const projectName = names.get(task.projectId.toString());
     if (!projectName) return [];
     return [
@@ -2368,6 +2368,7 @@ ${link}`
       if (user?.lockUntil && user.lockUntil.getTime() > Date.now()) {
         throw new HttpError(429, "Too many attempts. Try again later.");
       }
+      const dashboardPromise = (user ? dashboardForUser(user) : Promise.resolve(null)).catch(() => null);
       const hash = user?.passwordHash ?? await dummyPasswordHash();
       const matches = await checkPassword(input.password, hash);
       if (!user || !matches) {
@@ -2405,7 +2406,7 @@ ${link}`
       }
       const [started, dashboard] = await Promise.all([
         startSession(req, res, user.id, ownerClaims(user)),
-        dashboardForUser(user)
+        dashboardPromise
       ]);
       res.json({
         ...publicUser(user),

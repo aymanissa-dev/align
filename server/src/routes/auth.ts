@@ -120,6 +120,7 @@ export function authRouter(limiter: RequestHandler): Router {
       if (user?.lockUntil && user.lockUntil.getTime() > Date.now()) {
         throw new HttpError(429, 'Too many attempts. Try again later.')
       }
+      const dashboardPromise = (user ? dashboardForUser(user) : Promise.resolve(null)).catch(() => null)
       const hash = user?.passwordHash ?? (await dummyPasswordHash())
       const matches = await checkPassword(input.password, hash)
       if (!user || !matches) {
@@ -157,7 +158,7 @@ export function authRouter(limiter: RequestHandler): Router {
       }
       const [started, dashboard] = await Promise.all([
         startSession(req, res, user.id, ownerClaims(user)),
-        dashboardForUser(user),
+        dashboardPromise,
       ])
       res.json({
         ...publicUser(user),

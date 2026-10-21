@@ -22,31 +22,47 @@ type OpenRow = {
 
 export async function dashboardPayload(tenant: Tenant) {
   const db = bind(tenant)
-  const projects = await db.projects.find({ status: 'active' }).select('name description').sort({ updatedAt: -1 }).lean()
+  const datedLimit = OPEN_LIMIT * 2
+  const [projects, counts, dated, undated, datedIds] = await Promise.all([
+    db.projects.find({ status: 'active' }).select('name description').sort({ updatedAt: -1 }).lean(),
+    db.tasks.aggregate<CountRow>([
+      { $group: { _id: { projectId: '$projectId', completed: '$completed' }, n: { $sum: 1 } } },
+    ]),
+    db.tasks
+      .find({ completed: false, dueDate: { $gte: '0000-01-01' } })
+      .select('title dueDate priority projectId')
+      .sort({ dueDate: 1, title: 1 })
+      .limit(datedLimit)
+      .lean<OpenRow[]>(),
+    db.tasks
+      .find({ completed: false, dueDate: null })
+      .select('title dueDate priority projectId')
+      .sort({ title: 1 })
+      .limit(OPEN_LIMIT)
+      .lean<OpenRow[]>(),
+    db.tasks.find({ completed: false, dueDate: { $gte: '0000-01-01' } }).select('projectId').lean(),
+  ])
   const activeIds = projects.map((project) => project._id)
-      const datedFilter = {
-        completed: false,
-        projectId: { $in: activeIds },
-        dueDate: { $gte: '0000-01-01' },
-      }
-      const [counts, dated, undated, datedOpenCount] = await Promise.all([
-        db.tasks.aggregate<CountRow>([
-          { $group: { _id: { projectId: '$projectId', completed: '$completed' }, n: { $sum: 1 } } },
-        ]),
-        db.tasks
-          .find(datedFilter)
+  const active = new Set(activeIds.map((id) => id.toString()))
+  const datedRows =
+    dated.length < datedLimit
+      ? dated.filter((task) => active.has(task.projectId.toString()))
+      : await db.tasks
+          .find({ completed: false, projectId: { $in: activeIds }, dueDate: { $gte: '0000-01-01' } })
           .select('title dueDate priority projectId')
           .sort({ dueDate: 1, title: 1 })
-          .limit(OPEN_LIMIT * 2)
-          .lean<OpenRow[]>(),
-        db.tasks
+          .limit(datedLimit)
+          .lean<OpenRow[]>()
+  const undatedRows =
+    undated.length < OPEN_LIMIT
+      ? undated.filter((task) => active.has(task.projectId.toString()))
+      : await db.tasks
           .find({ completed: false, projectId: { $in: activeIds }, dueDate: null })
           .select('title dueDate priority projectId')
           .sort({ title: 1 })
           .limit(OPEN_LIMIT)
-          .lean<OpenRow[]>(),
-        db.tasks.find(datedFilter).countDocuments(),
-      ])
+          .lean<OpenRow[]>()
+  const datedOpenCount = datedIds.filter((task) => active.has(task.projectId.toString())).length
       const names = new Map(projects.map((project) => [project._id.toString(), project.name]))
 
       const tally = new Map<string, { total: number; done: number }>()
@@ -63,7 +79,7 @@ export async function dashboardPayload(tenant: Tenant) {
         openTaskCount += bucket.total - bucket.done
       }
 
-      const open = [...dated, ...undated].flatMap((task) => {
+      const open = [...datedRows, ...undatedRows].flatMap((task) => {
         const projectName = names.get(task.projectId.toString())
         if (!projectName) return []
         return [
