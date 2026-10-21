@@ -95,8 +95,9 @@ async function asnLabel(address: string): Promise<string> {
     const text = records[0]?.join('') ?? ''
     const asn = text.split('|')[0]?.trim()
     const country = text.split('|')[2]?.trim()
+    const block = text.split('|')[1]?.trim().split('.').slice(0, 2).join('.')
     if (!asn) return 'unmatched'
-    return `asn:${asn}:${country || 'unknown'}`
+    return `asn:${asn}:${country || 'unknown'}:${block || 'unknown'}`
   } catch {
     return 'unmatched'
   }

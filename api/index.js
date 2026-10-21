@@ -1010,8 +1010,9 @@ async function asnLabel(address) {
     const text2 = records[0]?.join("") ?? "";
     const asn = text2.split("|")[0]?.trim();
     const country = text2.split("|")[2]?.trim();
+    const block = text2.split("|")[1]?.trim().split(".").slice(0, 2).join(".");
     if (!asn) return "unmatched";
-    return `asn:${asn}:${country || "unknown"}`;
+    return `asn:${asn}:${country || "unknown"}:${block || "unknown"}`;
   } catch {
     return "unmatched";
   }
