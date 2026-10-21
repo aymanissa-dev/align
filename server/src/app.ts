@@ -6,6 +6,7 @@ import mongoose from 'mongoose'
 import type { HealthReport } from '../../shared/contract.ts'
 import { csrfProtection } from './csrf.ts'
 import { connectDb } from './db.ts'
+import { FULL_WIPE } from './migrate/fullWipe.ts'
 import { markTiming } from './serverTiming.ts'
 import { privateRevalidate } from './httpCache.ts'
 import { errorHandler } from './middleware.ts'
@@ -78,6 +79,31 @@ export function createApp(options: AppOptions = {}): Express {
         const body: HealthReport = { ok: false, db: 'down' }
         res.setHeader('Retry-After', '5')
         res.status(503).json(body)
+      })
+  })
+  app.get('/api/maintenance/wipe', (_req, res) => {
+    connectDb()
+      .then(async () => {
+        const db = mongoose.connection.db
+        if (!db) throw new Error('Database is not connected.')
+        const record = await db.collection('migrations').findOne(
+          { id: FULL_WIPE },
+          { projection: { _id: 0, id: 1, appliedAt: 1, counts: 1 } },
+        )
+        const counts = record?.counts && typeof record.counts === 'object' ? record.counts : {}
+        const numeric: Record<string, number> = {}
+        for (const [key, value] of Object.entries(counts)) {
+          if (typeof value === 'number') numeric[key] = value
+        }
+        res.json({
+          id: FULL_WIPE,
+          applied: Boolean(record),
+          appliedAt: record?.appliedAt instanceof Date ? record.appliedAt.toISOString() : null,
+          counts: numeric,
+        })
+      })
+      .catch(() => {
+        res.status(503).json({ id: FULL_WIPE, applied: false, appliedAt: null, counts: {} })
       })
   })
   app.use((req, res, next) => {

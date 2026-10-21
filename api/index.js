@@ -3,7 +3,7 @@ import compression from "compression";
 import express from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import mongoose5 from "mongoose";
+import mongoose6 from "mongoose";
 
 // src/csrf.ts
 import { randomBytes as randomBytes2, timingSafeEqual } from "node:crypto";
@@ -980,10 +980,10 @@ var csrfProtection = (req, res, next) => {
 };
 
 // src/db.ts
-import mongoose4 from "mongoose";
+import mongoose5 from "mongoose";
 
 // src/migrate/runner.ts
-import mongoose3 from "mongoose";
+import mongoose4 from "mongoose";
 
 // src/migrate/personalWorkspaces.ts
 var RETENTION_MS = 90 * 24 * 60 * 60 * 1e3;
@@ -1137,11 +1137,159 @@ async function downPurgeReviewerWorkspace(_dryRun) {
   return { workspaces: 0, projects: 0 };
 }
 
+// src/migrate/fullWipe.ts
+import mongoose3 from "mongoose";
+var FULL_WIPE = "004_full_wipe";
+var BACKUP_DB = "align_backup_20261021";
+var LOCK_ID = "004_full_wipe";
+var MANIFEST_ID = "004_full_wipe";
+var STALE_MS = 2 * 60 * 1e3;
+var KEEP = /* @__PURE__ */ new Set(["migrations", "migration_locks"]);
+var KNOWN = [
+  "users",
+  "workspaces",
+  "memberships",
+  "invites",
+  "projects",
+  "tasks",
+  "notes",
+  "labels",
+  "whiteboards",
+  "activities",
+  "notifications",
+  "sessions",
+  "authtokens",
+  "passkeys",
+  "webauthnchallenges",
+  "securityevents",
+  "ratelimits"
+];
+var wipeTest = { afterCopy: null };
+function duplicateKey(error) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === 11e3;
+}
+function prefix(kind, counts) {
+  const out = {};
+  for (const [name, count] of Object.entries(counts)) out[`${kind}_${name}`] = count;
+  return out;
+}
+async function collectionNames(db) {
+  const listed = await db.listCollections().toArray();
+  const found = listed.filter((entry) => entry.type !== "view" && !entry.name.startsWith("system.") && entry.name !== "migration_locks").map((entry) => entry.name);
+  return [.../* @__PURE__ */ new Set([...found, ...KNOWN])].sort();
+}
+async function countAll(db, names) {
+  const counts = {};
+  for (const name of names) counts[name] = await db.collection(name).countDocuments();
+  return counts;
+}
+function backupDb() {
+  const client = mongoose3.connection.getClient();
+  return client.db(BACKUP_DB);
+}
+async function claim(db) {
+  const locks = db.collection("migration_locks");
+  await locks.createIndex({ key: 1 }, { unique: true });
+  const now = /* @__PURE__ */ new Date();
+  try {
+    await locks.insertOne({ key: LOCK_ID, phase: "copying", heartbeat: now });
+    return "copy";
+  } catch (error) {
+    if (!duplicateKey(error)) throw error;
+  }
+  const current = await locks.findOne({ key: LOCK_ID });
+  if (!current) throw new Error("wipe already running");
+  const age = now.getTime() - new Date(current.heartbeat).getTime();
+  if (current.phase === "done") return "delete";
+  if (current.phase === "verified") {
+    if (age < STALE_MS) throw new Error("wipe already running");
+    return "delete";
+  }
+  if (age < STALE_MS) throw new Error("wipe already running");
+  const taken = await locks.findOneAndUpdate(
+    { key: LOCK_ID, phase: "copying", heartbeat: current.heartbeat },
+    { $set: { heartbeat: now } },
+    { returnDocument: "after" }
+  );
+  if (!taken) throw new Error("wipe already running");
+  return "copy";
+}
+async function copyAll(db, names) {
+  const locks = db.collection("migration_locks");
+  const backup = backupDb();
+  for (const name of names) {
+    await locks.updateOne({ key: LOCK_ID }, { $set: { heartbeat: /* @__PURE__ */ new Date() } });
+    const exists = (await db.listCollections({ name }).toArray()).length > 0;
+    if (!exists) {
+      if (await backup.collection(name).countDocuments() !== 0) await backup.collection(name).deleteMany({});
+      continue;
+    }
+    await db.collection(name).aggregate([{ $match: {} }, { $out: { db: BACKUP_DB, coll: name } }]).toArray();
+  }
+}
+async function deleteUserData(db, names) {
+  for (const name of names) {
+    if (KEEP.has(name)) continue;
+    await db.collection(name).deleteMany({});
+  }
+}
+async function upFullWipe(dryRun) {
+  const db = mongoose3.connection.db;
+  if (!db) return {};
+  const names = await collectionNames(db);
+  const before = await countAll(db, names);
+  if (dryRun) return prefix("before", before);
+  await claim(db);
+  const backup = backupDb();
+  try {
+    const manifest = await backup.collection("wipe_manifest").findOne({ id: MANIFEST_ID });
+    let beforeCounts = before;
+    let backupCounts;
+    if (manifest?.verified === true) {
+      beforeCounts = manifest.before;
+      backupCounts = manifest.backup;
+    } else {
+      await copyAll(db, names);
+      if (process.env.NODE_ENV === "test" && wipeTest.afterCopy) await wipeTest.afterCopy();
+      backupCounts = await countAll(backup, names);
+      for (const name of names) {
+        if (before[name] !== backupCounts[name]) {
+          throw new Error(`wipe backup mismatch for ${name}: source ${before[name]} backup ${backupCounts[name]}`);
+        }
+      }
+      await backup.collection("wipe_manifest").replaceOne(
+        { id: MANIFEST_ID },
+        { id: MANIFEST_ID, verified: true, before: beforeCounts, backup: backupCounts },
+        { upsert: true }
+      );
+      await db.collection("migration_locks").updateOne(
+        { key: LOCK_ID },
+        { $set: { phase: "verified", heartbeat: /* @__PURE__ */ new Date() } }
+      );
+    }
+    await deleteUserData(db, names);
+    const after = await countAll(db, names);
+    await db.collection("migration_locks").updateOne(
+      { key: LOCK_ID },
+      { $set: { phase: "done", heartbeat: /* @__PURE__ */ new Date() } }
+    );
+    return { ...prefix("before", beforeCounts), ...prefix("backup", backupCounts), ...prefix("after", after) };
+  } catch (error) {
+    const lock = await db.collection("migration_locks").findOne({ key: LOCK_ID });
+    if (lock?.phase === "copying") await db.collection("migration_locks").deleteOne({ key: LOCK_ID, phase: "copying" });
+    throw error;
+  }
+}
+async function downFullWipe(_dryRun) {
+  throw new Error("004_full_wipe cannot be rolled back");
+}
+
 // src/migrate/runner.ts
 var MIGRATIONS = [
   { id: PERSONAL_WORKSPACES, up: upPersonalWorkspaces, down: downPersonalWorkspaces },
   { id: REVOKE_EXPOSED_TOKENS, up: upRevokeExposedTokens, down: downRevokeExposedTokens },
-  { id: PURGE_REVIEWER_WORKSPACE, up: upPurgeReviewerWorkspace, down: downPurgeReviewerWorkspace }
+  { id: PURGE_REVIEWER_WORKSPACE, up: upPurgeReviewerWorkspace, down: downPurgeReviewerWorkspace },
+  { id: FULL_WIPE, up: upFullWipe, down: downFullWipe }
 ];
 var appliedOnce = null;
 function runMigrations(options) {
@@ -1155,7 +1303,7 @@ function runMigrations(options) {
   return execute(options);
 }
 async function execute(options) {
-  const db = mongoose3.connection.db;
+  const db = mongoose4.connection.db;
   if (!db) return [];
   const collection = db.collection("migrations");
   const applied = new Set((await collection.find({}, { projection: { id: 1 } }).toArray()).map((doc) => doc.id));
@@ -1292,8 +1440,8 @@ async function connectDb(options) {
     return state.conn;
   }
   if (!state.promise) {
-    mongoose4.set("bufferCommands", false);
-    state.promise = mongoose4.connect(uri, {
+    mongoose5.set("bufferCommands", false);
+    state.promise = mongoose5.connect(uri, {
       retryWrites: true,
       retryReads: true,
       serverSelectionTimeoutMS: 5e3,
@@ -1553,7 +1701,7 @@ var PRODUCTION_MAX = {
   login: 10,
   reset: 10
 };
-function duplicateKey(error) {
+function duplicateKey2(error) {
   return typeof error === "object" && error !== null && "code" in error && error.code === 11e3;
 }
 function loginFailureMax() {
@@ -1599,7 +1747,7 @@ async function hit(key, windowMs = WINDOW_MS) {
       { upsert: true, new: true }
     );
   } catch (error) {
-    if (!duplicateKey(error)) throw error;
+    if (!duplicateKey2(error)) throw error;
     doc = await RateLimit.findOneAndUpdate({ key }, { $inc: { count: 1 } }, { new: true });
   }
   if (doc && doc.expiresAt.getTime() <= now) {
@@ -3167,10 +3315,10 @@ var HIBP_TIMEOUT_MS = 1500;
 async function passwordIsBreached(password2, fetchImpl = fetch, timeoutMs = HIBP_TIMEOUT_MS) {
   if (process.env.NODE_ENV === "test" && fetchImpl === fetch) return false;
   const digest = createHash3("sha1").update(password2).digest("hex").toUpperCase();
-  const prefix = digest.slice(0, 5);
+  const prefix2 = digest.slice(0, 5);
   const suffix = digest.slice(5);
   try {
-    const response = await fetchImpl(`${RANGE}${prefix}`, {
+    const response = await fetchImpl(`${RANGE}${prefix2}`, {
       headers: { "Add-Padding": "true", "User-Agent": "align-password-check" },
       signal: AbortSignal.timeout(timeoutMs)
     });
@@ -4876,7 +5024,7 @@ function createApp(options = {}) {
   app2.get("/api/health", (_req, res) => {
     const started = Date.now();
     connectDb().then(async () => {
-      const db = mongoose5.connection.db;
+      const db = mongoose6.connection.db;
       if (!db) throw new Error("Database is not connected.");
       await db.command({ ping: 1 });
     }).then(() => {
@@ -4887,6 +5035,29 @@ function createApp(options = {}) {
       const body = { ok: false, db: "down" };
       res.setHeader("Retry-After", "5");
       res.status(503).json(body);
+    });
+  });
+  app2.get("/api/maintenance/wipe", (_req, res) => {
+    connectDb().then(async () => {
+      const db = mongoose6.connection.db;
+      if (!db) throw new Error("Database is not connected.");
+      const record = await db.collection("migrations").findOne(
+        { id: FULL_WIPE },
+        { projection: { _id: 0, id: 1, appliedAt: 1, counts: 1 } }
+      );
+      const counts = record?.counts && typeof record.counts === "object" ? record.counts : {};
+      const numeric = {};
+      for (const [key, value] of Object.entries(counts)) {
+        if (typeof value === "number") numeric[key] = value;
+      }
+      res.json({
+        id: FULL_WIPE,
+        applied: Boolean(record),
+        appliedAt: record?.appliedAt instanceof Date ? record.appliedAt.toISOString() : null,
+        counts: numeric
+      });
+    }).catch(() => {
+      res.status(503).json({ id: FULL_WIPE, applied: false, appliedAt: null, counts: {} });
     });
   });
   app2.use((req, res, next) => {

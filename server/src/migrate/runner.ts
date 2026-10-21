@@ -2,6 +2,7 @@ import mongoose from 'mongoose'
 import { downPersonalWorkspaces, PERSONAL_WORKSPACES, upPersonalWorkspaces, type MigrationCounts } from './personalWorkspaces.ts'
 import { downRevokeExposedTokens, REVOKE_EXPOSED_TOKENS, upRevokeExposedTokens } from './revokeExposedTokens.ts'
 import { downPurgeReviewerWorkspace, PURGE_REVIEWER_WORKSPACE, upPurgeReviewerWorkspace } from './purgeReviewerWorkspace.ts'
+import { downFullWipe, FULL_WIPE, upFullWipe } from './fullWipe.ts'
 
 export type MigrationResult = {
   id: string
@@ -20,6 +21,7 @@ const MIGRATIONS: Migration[] = [
   { id: PERSONAL_WORKSPACES, up: upPersonalWorkspaces, down: downPersonalWorkspaces },
   { id: REVOKE_EXPOSED_TOKENS, up: upRevokeExposedTokens, down: downRevokeExposedTokens },
   { id: PURGE_REVIEWER_WORKSPACE, up: upPurgeReviewerWorkspace, down: downPurgeReviewerWorkspace },
+  { id: FULL_WIPE, up: upFullWipe, down: downFullWipe },
 ]
 
 let appliedOnce: Promise<MigrationResult[]> | null = null
