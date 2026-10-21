@@ -964,7 +964,7 @@ try {
       'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
   })
   await page.goto(`${base}/settings`)
-  await page.getByText('This device').waitFor()
+  await page.getByRole('listitem').filter({ hasText: 'This device' }).waitFor()
   await page.getByRole('button', { name: /Notifications/ }).click()
   const secondLogin = await other.request.post(`${base}/api/auth/login`, {
     data: { email, password },
@@ -976,7 +976,7 @@ try {
   await page.keyboard.press('Escape')
   await page.getByRole('dialog', { name: 'Notifications' }).waitFor({ state: 'hidden' })
   await page.reload()
-  await page.getByText('This device').waitFor()
+  await page.getByRole('listitem').filter({ hasText: 'This device' }).waitFor()
   const otherRow = page.getByRole('listitem').filter({ has: page.getByRole('button', { name: 'Revoke' }) }).filter({ hasNotText: 'This device' })
   await otherRow.waitFor()
   const revoked = page.waitForResponse(
