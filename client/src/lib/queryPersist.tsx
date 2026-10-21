@@ -167,20 +167,17 @@ export function QueryCache({ userId, children }: { userId: string | null; childr
         shouldDehydrateQuery: (query: Query) => shouldPersistQuery(query, userId),
       },
     })
-    void restored.then(() => {
-      if (!cancelled) setIsRestoring(false)
-    })
-    const flush = () => flushPersistedCache()
-    window.addEventListener('pagehide', flush)
-    const onHide = () => {
-      if (document.visibilityState === 'hidden') flush()
-    }
-    document.addEventListener('visibilitychange', onHide)
+    void restored.then(
+      () => {
+        if (!cancelled) setIsRestoring(false)
+      },
+      () => {
+        if (!cancelled) setIsRestoring(false)
+      },
+    )
     return () => {
       cancelled = true
       unsubscribe()
-      window.removeEventListener('pagehide', flush)
-      document.removeEventListener('visibilitychange', onHide)
       if (clearUserId !== userId) return
       clearUserId = null
       removePersisted(userId)
