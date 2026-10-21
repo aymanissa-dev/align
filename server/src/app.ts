@@ -5,7 +5,6 @@ import helmet from 'helmet'
 import mongoose from 'mongoose'
 import type { HealthReport } from '../../shared/contract.ts'
 import { csrfProtection } from './csrf.ts'
-import { atlasCloudRegion } from './dbRegion.ts'
 import { connectDb } from './db.ts'
 import { markTiming } from './serverTiming.ts'
 import { privateRevalidate } from './httpCache.ts'
@@ -68,10 +67,8 @@ export function createApp(options: AppOptions = {}): Express {
         const migration = await db.collection<{ id: string; counts?: Record<string, number> }>('migrations').findOne({ id: '001_personal_workspaces' })
         return migration?.counts ? { id: migration.id, counts: migration.counts } : undefined
       })
-      .then(async (migration) => {
+      .then((migration) => {
         const dbMs = Date.now() - started
-        const region = await atlasCloudRegion().catch(() => 'err:probe')
-        res.setHeader('X-Align-Db-Region', region)
         markTiming(res, 'db', dbMs)
         const body: HealthReport = { ok: true, db: 'up', latencyMs: dbMs, ...(migration ? { migration } : {}) }
         res.json(body)

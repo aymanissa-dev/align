@@ -4,6 +4,7 @@
   "buildCommand": "npm run build",
   "outputDirectory": "client/dist",
   "fluid": true,
+  "regions": ["dub1"],
   "rewrites": [
     {
       "source": "/api/:path*",

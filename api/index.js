@@ -3,7 +3,7 @@ import compression from "compression";
 import express from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import mongoose6 from "mongoose";
+import mongoose5 from "mongoose";
 
 // src/csrf.ts
 import { randomBytes as randomBytes2, timingSafeEqual } from "node:crypto";
@@ -921,118 +921,11 @@ var csrfProtection = (req, res, next) => {
   next();
 };
 
-// src/dbRegion.ts
-import { lookup, resolveTxt } from "node:dns/promises";
-import mongoose3 from "mongoose";
-var cached = null;
-var pending = null;
-function ipv4ToInt(ip) {
-  const parts = ip.split(".");
-  if (parts.length !== 4) return null;
-  let value = 0;
-  for (const part of parts) {
-    if (!/^\d+$/.test(part)) return null;
-    const octet = Number(part);
-    if (octet > 255) return null;
-    value = value * 256 + octet >>> 0;
-  }
-  return value;
-}
-function inCidr(ip, prefix) {
-  const [base, bitsText] = prefix.split("/");
-  const bits = Number(bitsText);
-  if (!base || !Number.isInteger(bits) || bits < 0 || bits > 32) return false;
-  const network = ipv4ToInt(base);
-  if (network === null) return false;
-  if (bits === 0) return true;
-  const mask = bits === 32 ? 4294967295 : 4294967295 << 32 - bits >>> 0;
-  return (ip & mask) === (network & mask);
-}
-function isPrivate(ip) {
-  const value = ipv4ToInt(ip);
-  if (value === null) return true;
-  const first = value >>> 24;
-  const second = value >>> 16 & 255;
-  if (first === 10 || first === 127) return true;
-  if (first === 192 && second === 168) return true;
-  return first === 172 && second >= 16 && second <= 31;
-}
-async function detect() {
-  const host = mongoose3.connection.host;
-  if (!host) return "err:no-host";
-  let address;
-  try {
-    address = (await lookup(host, { family: 4 })).address;
-  } catch {
-    return "err:lookup";
-  }
-  if (isPrivate(address)) return "err:private";
-  const ip = ipv4ToInt(address);
-  if (ip === null) return "err:ip";
-  let response;
-  try {
-    response = await fetch("https://ip-ranges.amazonaws.com/ip-ranges.json", { signal: AbortSignal.timeout(4e3) });
-  } catch {
-    return "err:fetch";
-  }
-  if (!response.ok) return `err:fetch-${response.status}`;
-  const body = await response.json();
-  let best = null;
-  for (const prefix of body.prefixes ?? []) {
-    if (!prefix.ip_prefix || !prefix.region || !inCidr(ip, prefix.ip_prefix)) continue;
-    const bits = Number(prefix.ip_prefix.split("/")[1]);
-    const ec2 = prefix.service === "EC2";
-    if (!best || bits > best.bits || bits === best.bits && ec2 && !best.ec2) {
-      best = { bits, region: prefix.region, ec2 };
-    }
-  }
-  if (best) return best.region;
-  const gcp = await matchGcp(ip).catch(() => null);
-  if (gcp) return gcp;
-  return asnLabel(address);
-}
-async function matchGcp(ip) {
-  const response = await fetch("https://www.gstatic.com/ipranges/cloud.json", { signal: AbortSignal.timeout(4e3) });
-  if (!response.ok) return null;
-  const body = await response.json();
-  let best = null;
-  for (const prefix of body.prefixes ?? []) {
-    if (!prefix.ipv4Prefix || !prefix.scope || prefix.scope === "global" || !inCidr(ip, prefix.ipv4Prefix)) continue;
-    const bits = Number(prefix.ipv4Prefix.split("/")[1]);
-    if (!best || bits > best.bits) best = { bits, scope: prefix.scope };
-  }
-  return best ? `gcp:${best.scope}` : null;
-}
-async function asnLabel(address) {
-  try {
-    const reversed = address.split(".").reverse().join(".");
-    const records = await resolveTxt(`${reversed}.origin.asn.cymru.com`);
-    const text2 = records[0]?.join("") ?? "";
-    const asn = text2.split("|")[0]?.trim();
-    const country = text2.split("|")[2]?.trim();
-    const block = text2.split("|")[1]?.trim().split("/")[0]?.split(".").slice(0, 3).join(".");
-    if (!asn) return "unmatched";
-    return `asn:${asn}:${country || "unknown"}:${block || "unknown"}`;
-  } catch {
-    return "unmatched";
-  }
-}
-function atlasCloudRegion() {
-  if (cached) return Promise.resolve(cached);
-  pending ??= detect().then((region) => {
-    cached = region;
-    return region;
-  }).finally(() => {
-    pending = null;
-  });
-  return pending;
-}
-
 // src/db.ts
-import mongoose5 from "mongoose";
+import mongoose4 from "mongoose";
 
 // src/migrate/runner.ts
-import mongoose4 from "mongoose";
+import mongoose3 from "mongoose";
 
 // src/migrate/personalWorkspaces.ts
 var RETENTION_MS = 90 * 24 * 60 * 60 * 1e3;
@@ -1142,7 +1035,7 @@ function runMigrations(options) {
   return execute(options);
 }
 async function execute(options) {
-  const db = mongoose4.connection.db;
+  const db = mongoose3.connection.db;
   if (!db) return [];
   const collection = db.collection("migrations");
   const applied = new Set((await collection.find({}, { projection: { id: 1 } }).toArray()).map((doc) => doc.id));
@@ -1279,8 +1172,8 @@ async function connectDb(options) {
     return state.conn;
   }
   if (!state.promise) {
-    mongoose5.set("bufferCommands", false);
-    state.promise = mongoose5.connect(uri, {
+    mongoose4.set("bufferCommands", false);
+    state.promise = mongoose4.connect(uri, {
       retryWrites: true,
       retryReads: true,
       serverSelectionTimeoutMS: 5e3,
@@ -3161,10 +3054,10 @@ ${link}`
       if (user.totpEnabledAt) {
         await Promise.all([resetFailures, recordLoginSuccess(ip, input.email)]);
         const signStarted = performance.now();
-        const pending2 = signJwt({ sub: user.id, typ: "pending" }, "5m");
+        const pending = signJwt({ sub: user.id, typ: "pending" }, "5m");
         markTiming(res, "jwt", performance.now() - signStarted);
         markTiming(res, "session", 0);
-        res.cookie("pending", pending2, {
+        res.cookie("pending", pending, {
           httpOnly: true,
           secure: process.env.NODE_ENV === "production",
           sameSite: "lax",
@@ -4673,15 +4566,13 @@ function createApp(options = {}) {
   app2.get("/api/health", (_req, res) => {
     const started = Date.now();
     connectDb().then(async () => {
-      const db = mongoose6.connection.db;
+      const db = mongoose5.connection.db;
       if (!db) throw new Error("Database is not connected.");
       await db.command({ ping: 1 });
       const migration = await db.collection("migrations").findOne({ id: "001_personal_workspaces" });
       return migration?.counts ? { id: migration.id, counts: migration.counts } : void 0;
-    }).then(async (migration) => {
+    }).then((migration) => {
       const dbMs = Date.now() - started;
-      const region = await atlasCloudRegion().catch(() => "err:probe");
-      res.setHeader("X-Align-Db-Region", region);
       markTiming(res, "db", dbMs);
       const body = { ok: true, db: "up", latencyMs: dbMs, ...migration ? { migration } : {} };
       res.json(body);
