@@ -163,9 +163,19 @@ async function fetchResponse(path: string, init: RequestInit = {}, refreshed = f
     } catch {
       // Non-JSON error bodies fall back to the generic message.
     }
-    throw new ApiError(response.status, message, false, code)
+    throw new ApiError(response.status, message, false, code, retryAfterSeconds(response))
   }
   return response
+}
+
+function retryAfterSeconds(response: Response): number | undefined {
+  const header = response.headers.get('Retry-After')
+  if (!header) return undefined
+  const numeric = Number(header)
+  if (Number.isFinite(numeric)) return Math.max(0, Math.ceil(numeric))
+  const when = Date.parse(header)
+  if (Number.isNaN(when)) return undefined
+  return Math.max(0, Math.ceil((when - Date.now()) / 1000))
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {

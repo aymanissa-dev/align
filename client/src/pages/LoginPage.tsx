@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api/index.ts'
+import { ApiError } from '../api/errors.ts'
 import { useAuth } from '../auth/auth-context.ts'
 import { AuthFrame } from '../components/AuthFrame.tsx'
 import { Button, Field, Input } from '../components/ui.tsx'
@@ -11,11 +12,32 @@ import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 const DEMO_EMAIL = 'demo@align.app'
 const DEMO_PASSWORD = 'password'
 
+function retryClock(totalSeconds: number): string {
+  const whole = Math.max(0, Math.ceil(totalSeconds))
+  const hours = Math.floor(whole / 3600)
+  const minutes = Math.floor((whole % 3600) / 60)
+  const seconds = whole % 60
+  const mm = String(minutes).padStart(2, '0')
+  const ss = String(seconds).padStart(2, '0')
+  return hours > 0 ? `${hours}:${mm}:${ss}` : `${minutes}:${ss}`
+}
+
+function lockoutText(message: string, remaining: number | null): string {
+  if (remaining === null) return message
+  if (!message.startsWith('Too many attempts')) {
+    return remaining > 0 ? `${message} Try again in ${retryClock(remaining)}.` : message
+  }
+  if (remaining <= 0) return 'Too many attempts. You can try again now.'
+  return `Too many attempts. Try again in ${retryClock(remaining)}.`
+}
+
 export function LoginPage() {
   const { login, acceptSession } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [retryUntil, setRetryUntil] = useState<number | null>(null)
+  const [now, setNow] = useState(() => Date.now())
   const [pending, setPending] = useState(false)
   const [mfa, setMfa] = useState(false)
   const [code, setCode] = useState('')
@@ -24,6 +46,31 @@ export function LoginPage() {
   const [params] = useSearchParams()
   const [signedOut] = useState(() => params.get('signedOut') === '1' || consumeForcedSignOut())
   useDocumentTitle('Sign in')
+
+  useEffect(() => {
+    if (retryUntil === null) return
+    const timer = window.setInterval(() => {
+      const current = Date.now()
+      setNow(current)
+      if (current >= retryUntil) window.clearInterval(timer)
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [retryUntil])
+
+  const remaining = retryUntil === null ? null : Math.max(0, Math.ceil((retryUntil - now) / 1000))
+  const alertText = error ? lockoutText(error, remaining) : ''
+
+  function noteFailure(caught: unknown) {
+    setError(errorMessage(caught))
+    if (caught instanceof ApiError && typeof caught.retryAfter === 'number') {
+      const current = Date.now()
+      setNow(current)
+      setRetryUntil(current + caught.retryAfter * 1000)
+    } else {
+      setRetryUntil(null)
+    }
+    setPending(false)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -42,6 +89,7 @@ export function LoginPage() {
 
   async function signIn(nextEmail: string, nextPassword: string) {
     setError('')
+    setRetryUntil(null)
     setPending(true)
     try {
       const result = await login({ email: nextEmail, password: nextPassword })
@@ -50,14 +98,14 @@ export function LoginPage() {
         setPending(false)
       }
     } catch (caught) {
-      setError(errorMessage(caught))
-      setPending(false)
+      noteFailure(caught)
     }
   }
 
   function onSubmit(event: FormEvent) {
     event.preventDefault()
     if (!email.trim() || !password) {
+      setRetryUntil(null)
       setError('Email and password are required.')
       return
     }
@@ -84,8 +132,7 @@ export function LoginPage() {
                   acceptSession(user)
                 })
                 .catch((caught: unknown) => {
-                  setError(errorMessage(caught))
-                  setPending(false)
+                  noteFailure(caught)
                 })
             }}
           >
@@ -99,9 +146,9 @@ export function LoginPage() {
                 required
               />
             </Field>
-            {error ? (
+            {alertText ? (
               <p role="alert" className="text-sm text-neutral-800">
-                {error}
+                {alertText}
               </p>
             ) : null}
             <Button type="submit" disabled={pending}>
@@ -138,9 +185,9 @@ export function LoginPage() {
               required
             />
           </Field>
-          {error ? (
+          {alertText ? (
             <p role="alert" className="text-sm text-neutral-800">
-              {error}
+              {alertText}
             </p>
           ) : null}
           <Button type="submit" className="w-full" disabled={pending}>

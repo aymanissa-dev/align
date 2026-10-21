@@ -241,8 +241,8 @@ export const emailChangeSchema = z.object({
 })
 
 export const stepUpSchema = z.object({
-  password: z.string().min(1).max(128).optional(),
-  code: z.string().trim().min(6).max(32).optional(),
+  password: z.string().max(128, 'Confirm it is you to continue.').optional(),
+  code: z.string().trim().max(32, 'That code is not valid.').optional(),
   method: z.enum(['password', 'totp', 'recovery']).optional(),
 })
 

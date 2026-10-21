@@ -69,8 +69,9 @@ export function SecurityPanel() {
 
   async function onDisable() {
     setBusy(true)
+    const credential = { password }
     const save = async () => {
-      await api.totpDisable({})
+      await api.totpDisable(credential)
       setCodes([])
       setEvents(await api.listSecurityEvents())
       toast('Two-factor authentication is off')
@@ -90,8 +91,9 @@ export function SecurityPanel() {
 
   async function onRegenerate() {
     setBusy(true)
+    const credential = { password }
     const save = async () => {
-      const next = await api.regenerateRecoveryCodes({})
+      const next = await api.regenerateRecoveryCodes(credential)
       setCodes(next.recoveryCodes)
       setEvents(await api.listSecurityEvents())
     }
@@ -163,6 +165,9 @@ export function SecurityPanel() {
         </ul>
       ) : null}
       <div className="mt-4 space-y-3">
+        <p className="text-sm leading-6 text-neutral-500">
+          Enter your current password to turn off the authenticator or replace recovery codes. A recent sign-in is not enough.
+        </p>
         <Field label="Current password" htmlFor="security-password">
           <Input
             id="security-password"
@@ -189,8 +194,9 @@ export function SecurityPanel() {
               <Button
                 variant="secondary"
                 onClick={() => {
+                  const credential = { password }
                   const save = async () => {
-                    await api.passkeyDelete(passkey.id, {})
+                    await api.passkeyDelete(passkey.id, credential)
                     setPasskeys((current) => current.filter((item) => item.id !== passkey.id))
                     setEvents(await api.listSecurityEvents())
                   }

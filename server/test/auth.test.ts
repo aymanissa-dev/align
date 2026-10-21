@@ -159,7 +159,7 @@ describe('auth', () => {
     const newLogin = await request(app).post('/api/auth/login').send({ email, password: 'password123' })
     expect(newLogin.status).toBe(200)
 
-    const removed = await agent.delete('/api/auth/me')
+    const removed = await agent.delete('/api/auth/me').send({ password: 'password123' })
     expect(removed.status).toBe(204)
     expect(await Project.countDocuments({ _id: project.body.id })).toBe(0)
     const gone = await request(app).post('/api/auth/login').send({ email, password: 'password123' })
@@ -229,6 +229,7 @@ describe('auth', () => {
     const blocked = await request(limited).post('/api/auth/login').send({ email, password: 'password12' })
     expect(blocked.status).toBe(429)
     expect(blocked.body).toEqual({ error: 'Too many attempts. Try again later.' })
+    expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0)
   })
 
   it('verifies email with a single-use token', async () => {
@@ -290,7 +291,7 @@ describe('auth', () => {
     expect((await agent.delete(`/api/auth/sessions/${other.id}`)).status).toBe(204)
     expect((await agent.get('/api/auth/sessions')).body).toHaveLength(1)
 
-    expect((await agent.post('/api/auth/sessions/revoke-all')).status).toBe(204)
+    expect((await agent.post('/api/auth/sessions/revoke-all').send({ password })).status).toBe(204)
     expect((await agent.get('/api/auth/me')).status).toBe(401)
   })
 
@@ -303,5 +304,8 @@ describe('auth', () => {
     const locked = await request(app).post('/api/auth/login').send({ email, password: 'password12' })
     expect(locked.status).toBe(429)
     expect(locked.body).toEqual({ error: 'Too many attempts. Try again later.' })
+    const retryAfter = Number(locked.headers['retry-after'])
+    expect(retryAfter).toBeGreaterThan(0)
+    expect(retryAfter).toBeLessThanOrEqual(120)
   })
 })

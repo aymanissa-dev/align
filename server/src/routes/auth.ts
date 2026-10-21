@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { Router, type Request, type RequestHandler } from 'express'
 import { deleteAccount } from '../data/content.ts'
 import { dashboardForUser } from './dashboard.ts'
+import { assertCredentialPresent, requireSensitiveCredential } from './mfa.ts'
 import { ensurePersonalWorkspace, ownerClaims } from '../data/workspaces.ts'
 import { users } from '../data/users.ts'
 import { recordSecurity } from '../data/securityLog.ts'
@@ -41,6 +42,7 @@ import {
   registerSchema,
   resetSchema,
   sessionRenameSchema,
+  stepUpSchema,
   verifySchema,
 } from '../validate.ts'
 
@@ -118,7 +120,10 @@ export function authRouter(limiter: RequestHandler): Router {
         users.byEmailSecret(input.email),
       ])
       if (user?.lockUntil && user.lockUntil.getTime() > Date.now()) {
-        throw new HttpError(429, 'Too many attempts. Try again later.')
+        const seconds = Math.max(1, Math.ceil((user.lockUntil.getTime() - Date.now()) / 1000))
+        throw new HttpError(429, 'Too many attempts. Try again later.', {
+          headers: { 'Retry-After': String(seconds) },
+        })
       }
       const dashboardPromise = (user ? dashboardForUser(user) : Promise.resolve(null)).catch(() => null)
       const hash = user?.passwordHash ?? (await dummyPasswordHash())
@@ -344,7 +349,10 @@ export function authRouter(limiter: RequestHandler): Router {
     '/sessions/revoke-all',
     requireAuth,
     asyncHandler(async (req, res) => {
+      const body = parseBody(stepUpSchema, req.body)
+      assertCredentialPresent(body)
       await requireFreshStepUp(req.sessionId)
+      await requireSensitiveCredential(currentUserId(req), body)
       await revokeSessions(currentUserId(req))
       await recordSecurity({
         userId: currentUserId(req),
@@ -484,6 +492,9 @@ export function authRouter(limiter: RequestHandler): Router {
     requireAuth,
     asyncHandler(async (req, res) => {
       const input = parseBody(emailChangeSchema, req.body)
+      if (!input.password.trim()) {
+        throw new HttpError(400, 'Enter your current password or a verification code.')
+      }
       const userId = currentUserId(req)
       await requireFreshStepUp(req.sessionId)
       const secret = await users.byIdSecret(userId)
@@ -518,6 +529,9 @@ export function authRouter(limiter: RequestHandler): Router {
     requireAuth,
     asyncHandler(async (req, res) => {
       const input = parseBody(passwordSchema, req.body)
+      if (!input.currentPassword.trim()) {
+        throw new HttpError(400, 'Enter your current password or a verification code.')
+      }
       await requireFreshStepUp(req.sessionId)
       const user = await users.byIdSecret(currentUserId(req))
       if (!user?.passwordHash) throw new HttpError(401, 'Sign in to continue.')
@@ -542,8 +556,11 @@ export function authRouter(limiter: RequestHandler): Router {
     '/me',
     requireAuth,
     asyncHandler(async (req, res) => {
+      const body = parseBody(stepUpSchema, req.body)
+      assertCredentialPresent(body)
       const userId = currentUserId(req)
       await requireFreshStepUp(req.sessionId)
+      await requireSensitiveCredential(userId, body)
       await deleteAccount(userId)
       clearSession(res)
       res.status(204).send()

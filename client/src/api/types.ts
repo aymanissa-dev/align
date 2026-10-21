@@ -296,7 +296,7 @@ export interface AlignApi {
   totpSetup(): Promise<{ secret: string; otpauth: string; qr: string }>
   totpConfirm(code: string): Promise<{ recoveryCodes: string[] }>
   totpDisable(input: { password?: string; code?: string }): Promise<void>
-  regenerateRecoveryCodes(input: { password?: string }): Promise<{ recoveryCodes: string[] }>
+  regenerateRecoveryCodes(input: { password?: string; code?: string }): Promise<{ recoveryCodes: string[] }>
   completeMfa(input: { code: string; method: 'totp' | 'recovery' }): Promise<User & { dashboard?: DashboardData; newDevice?: boolean }>
   stepUp(input: { password?: string; code?: string; method?: 'password' | 'totp' | 'recovery' }): Promise<void>
   listSecurityEvents(): Promise<SecurityEvent[]>
@@ -304,7 +304,7 @@ export interface AlignApi {
   listPasskeys(): Promise<Passkey[]>
   passkeyRegisterOptions(): Promise<unknown>
   passkeyRegisterVerify(body: unknown): Promise<void>
-  passkeyDelete(id: string, input?: { password?: string }): Promise<void>
+  passkeyDelete(id: string, input?: { password?: string; code?: string }): Promise<void>
   passkeyLoginOptions(): Promise<unknown>
   passkeyLoginVerify(body: unknown): Promise<User & { dashboard?: DashboardData; newDevice?: boolean }>
   passkeyStepUpOptions(): Promise<unknown>

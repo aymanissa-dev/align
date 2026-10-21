@@ -1386,8 +1386,8 @@ var APP_VERSION = 2;
 var MINIMUM_CLIENT_VERSION = 2;
 
 // src/routes/auth.ts
-import { randomBytes as randomBytes4 } from "node:crypto";
-import { Router as Router2 } from "express";
+import { randomBytes as randomBytes5 } from "node:crypto";
+import { Router as Router3 } from "express";
 
 // src/data/content.ts
 import { Types as Types3 } from "mongoose";
@@ -1754,6 +1754,274 @@ function dashboardRouter() {
   return router;
 }
 
+// src/routes/mfa.ts
+import { Router as Router2 } from "express";
+import QRCode from "qrcode";
+
+// src/data/factors.ts
+import {
+  generateAuthenticationOptions,
+  generateRegistrationOptions,
+  verifyAuthenticationResponse,
+  verifyRegistrationResponse
+} from "@simplewebauthn/server";
+
+// src/totp.ts
+import { createHmac, randomBytes as randomBytes3, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+var ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+var STEP_SECONDS = 30;
+var DIGITS = 6;
+function generateTotpSecret() {
+  return base32Encode(randomBytes3(20));
+}
+function totpAt(secret, counter) {
+  const buffer = Buffer.alloc(8);
+  buffer.writeBigUInt64BE(BigInt(counter));
+  const hmac = createHmac("sha1", base32Decode(secret)).update(buffer).digest();
+  const offset = hmac[hmac.length - 1] & 15;
+  const binary = (hmac.readUInt32BE(offset) & 2147483647) % 10 ** DIGITS;
+  return binary.toString().padStart(DIGITS, "0");
+}
+function verifyTotp(secret, token, now = Date.now(), window = 1) {
+  const trimmed = token.replace(/\s+/g, "");
+  if (!/^\d{6}$/.test(trimmed)) return false;
+  const counter = Math.floor(now / 1e3 / STEP_SECONDS);
+  for (let delta = -window; delta <= window; delta += 1) {
+    const expected = totpAt(secret, counter + delta);
+    if (safeEqual2(expected, trimmed)) return true;
+  }
+  return false;
+}
+function otpauthUrl(secret, email2) {
+  const label = encodeURIComponent(`Align:${email2}`);
+  return `otpauth://totp/${label}?secret=${secret}&issuer=${encodeURIComponent("Align")}&algorithm=SHA1&digits=6&period=30`;
+}
+function generateRecoveryCodes(count = 10) {
+  return Array.from({ length: count }, () => {
+    const raw = randomBytes3(5).toString("hex");
+    return `${raw.slice(0, 5)}-${raw.slice(5)}`;
+  });
+}
+function safeEqual2(left, right) {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual2(a, b);
+}
+function base32Encode(bytes) {
+  let bits = 0;
+  let value = 0;
+  let output = "";
+  for (const byte of bytes) {
+    value = value << 8 | byte;
+    bits += 8;
+    while (bits >= 5) {
+      output += ALPHABET[value >>> bits - 5 & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) output += ALPHABET[value << 5 - bits & 31];
+  return output;
+}
+function base32Decode(secret) {
+  const cleaned = secret.replace(/=+$/g, "").toUpperCase().replace(/[^A-Z2-7]/g, "");
+  let bits = 0;
+  let value = 0;
+  const bytes = [];
+  for (const char of cleaned) {
+    const index = ALPHABET.indexOf(char);
+    if (index === -1) continue;
+    value = value << 5 | index;
+    bits += 5;
+    if (bits >= 8) {
+      bytes.push(value >>> bits - 8 & 255);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(bytes);
+}
+
+// src/data/factors.ts
+var authenticators = {
+  verifyRegistrationResponse,
+  verifyAuthenticationResponse
+};
+function recoveryHash(code) {
+  return hashToken(code.replace(/\s+/g, "").toLowerCase());
+}
+function webAuthnConfig(req) {
+  const headerOrigin = req.get("origin");
+  const origin = (process.env.APP_ORIGIN || headerOrigin || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+  const rpID = process.env.WEBAUTHN_RP_ID || safeHost(origin);
+  return { rpID, origin };
+}
+function safeHost(origin) {
+  try {
+    return new URL(origin).hostname;
+  } catch {
+    return "localhost";
+  }
+}
+async function beginTotp(userId, email2) {
+  const user = await User.findById(userId).select("+totpSecret");
+  if (!user) throw new HttpError(401, "Sign in to continue.");
+  if (user.totpEnabledAt) throw new HttpError(409, "Two-factor authentication is already on.");
+  const secret = generateTotpSecret();
+  user.totpSecret = secret;
+  await user.save();
+  return { secret, otpauth: otpauthUrl(secret, email2) };
+}
+async function confirmTotp(userId, code) {
+  const user = await User.findById(userId).select("+totpSecret +recoveryCodes");
+  if (!user?.totpSecret) throw new HttpError(400, "Start two-factor setup first.");
+  if (!verifyTotp(user.totpSecret, code)) throw new HttpError(400, "That code is not valid.");
+  const codes = generateRecoveryCodes();
+  user.set(
+    "recoveryCodes",
+    codes.map((value) => ({ hash: recoveryHash(value), usedAt: null }))
+  );
+  user.totpEnabledAt = /* @__PURE__ */ new Date();
+  await user.save();
+  return codes;
+}
+async function disableTotp(userId) {
+  const user = await User.findById(userId).select("+totpSecret +recoveryCodes");
+  if (!user) throw new HttpError(401, "Sign in to continue.");
+  user.totpSecret = null;
+  user.totpEnabledAt = null;
+  user.set("recoveryCodes", []);
+  await user.save();
+}
+async function regenerateRecoveryCodes(userId) {
+  const user = await User.findById(userId).select("+recoveryCodes");
+  if (!user?.totpEnabledAt) throw new HttpError(400, "Turn on two-factor authentication first.");
+  const codes = generateRecoveryCodes();
+  user.set(
+    "recoveryCodes",
+    codes.map((value) => ({ hash: recoveryHash(value), usedAt: null }))
+  );
+  await user.save();
+  return codes;
+}
+async function consumeRecoveryCode(userId, code) {
+  const user = await User.findById(userId).select("+recoveryCodes");
+  if (!user) return false;
+  const hash = recoveryHash(code);
+  const match = user.recoveryCodes?.find((entry) => entry.hash === hash && !entry.usedAt);
+  if (!match) return false;
+  match.usedAt = /* @__PURE__ */ new Date();
+  await user.save();
+  return true;
+}
+async function userHasPasskey(userId) {
+  return Boolean(await Passkey.exists({ userId }));
+}
+async function storeChallenge(userId, challenge, kind) {
+  await WebAuthnChallenge.deleteMany({ userId, kind });
+  await WebAuthnChallenge.create({
+    userId,
+    challenge,
+    kind,
+    expiresAt: new Date(Date.now() + 5 * 60 * 1e3)
+  });
+}
+async function takeChallenge(kind, expected) {
+  const found = await WebAuthnChallenge.findOne({ challenge: expected, kind, expiresAt: { $gt: /* @__PURE__ */ new Date() } });
+  if (!found) throw new HttpError(400, "That passkey ceremony expired. Try again.");
+  await found.deleteOne();
+}
+async function registrationOptions(req, userId, email2) {
+  const { rpID } = webAuthnConfig(req);
+  const existing = await Passkey.find({ userId }).select("credentialId transports");
+  const options = await generateRegistrationOptions({
+    rpName: "Align",
+    rpID,
+    userName: email2,
+    userID: Buffer.from(userId),
+    attestationType: "none",
+    excludeCredentials: existing.map((passkey) => ({
+      id: passkey.credentialId,
+      transports: passkey.transports
+    })),
+    authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" }
+  });
+  await storeChallenge(userId, options.challenge, "register");
+  return options;
+}
+async function verifyRegistration(req, userId, response, name) {
+  const { rpID, origin } = webAuthnConfig(req);
+  const challenge = response.response.clientDataJSON;
+  const client = JSON.parse(Buffer.from(challenge, "base64url").toString("utf8"));
+  if (!client.challenge) throw new HttpError(400, "Passkey response is invalid.");
+  await takeChallenge("register", client.challenge);
+  const verified = await authenticators.verifyRegistrationResponse({
+    response,
+    expectedChallenge: client.challenge,
+    expectedOrigin: origin,
+    expectedRPID: rpID,
+    requireUserVerification: false
+  });
+  if (!verified.verified) throw new HttpError(400, "Passkey could not be verified.");
+  const credential = verified.registrationInfo.credential;
+  await Passkey.create({
+    userId,
+    credentialId: credential.id,
+    publicKey: Buffer.from(credential.publicKey),
+    counter: credential.counter,
+    transports: credential.transports ?? [],
+    name: name.slice(0, 80) || "Passkey"
+  });
+}
+async function authenticationOptions(req, userId) {
+  const { rpID } = webAuthnConfig(req);
+  const existing = userId ? await Passkey.find({ userId }).select("credentialId transports") : [];
+  const options = await generateAuthenticationOptions({
+    rpID,
+    userVerification: userId ? "discouraged" : "preferred",
+    allowCredentials: existing.map((passkey) => ({
+      id: passkey.credentialId,
+      transports: passkey.transports
+    }))
+  });
+  await storeChallenge(userId ?? null, options.challenge, userId ? "stepup" : "login");
+  return options;
+}
+async function verifyPasskey(req, response, kind) {
+  const { rpID, origin } = webAuthnConfig(req);
+  const client = JSON.parse(Buffer.from(response.response.clientDataJSON, "base64url").toString("utf8"));
+  if (!client.challenge) throw new HttpError(400, "Passkey response is invalid.");
+  await takeChallenge(kind, client.challenge);
+  const passkey = await Passkey.findOne({ credentialId: response.id });
+  if (!passkey) throw new HttpError(401, "Passkey not recognized.");
+  const verified = await authenticators.verifyAuthenticationResponse({
+    response,
+    expectedChallenge: client.challenge,
+    expectedOrigin: origin,
+    expectedRPID: rpID,
+    requireUserVerification: false,
+    credential: {
+      id: passkey.credentialId,
+      publicKey: new Uint8Array(passkey.publicKey),
+      counter: passkey.counter,
+      transports: passkey.transports
+    }
+  });
+  if (!verified.verified) throw new HttpError(401, "Passkey could not be verified.");
+  passkey.counter = verified.authenticationInfo.newCounter;
+  await passkey.save();
+  return { userId: passkey.userId.toString() };
+}
+async function listPasskeys(userId) {
+  return Passkey.find({ userId }).sort({ createdAt: -1 }).lean();
+}
+async function deletePasskey(userId, id) {
+  const removed = await Passkey.deleteOne({ _id: id, userId });
+  return removed.deletedCount === 1;
+}
+async function listSecurityEvents(userId) {
+  return SecurityEvent.find({ userId }).sort({ createdAt: -1 }).limit(50).lean();
+}
+
 // src/data/users.ts
 var SECRET = "+passwordHash +totpSecret +recoveryCodes";
 var users = {
@@ -1779,76 +2047,6 @@ var users = {
     return User.findByIdAndUpdate(id, update, { new: true });
   }
 };
-
-// src/hibp.ts
-import { createHash as createHash2 } from "node:crypto";
-var RANGE = "https://api.pwnedpasswords.com/range/";
-var HIBP_TIMEOUT_MS = 1500;
-async function passwordIsBreached(password2, fetchImpl = fetch, timeoutMs = HIBP_TIMEOUT_MS) {
-  if (process.env.NODE_ENV === "test" && fetchImpl === fetch) return false;
-  const digest = createHash2("sha1").update(password2).digest("hex").toUpperCase();
-  const prefix = digest.slice(0, 5);
-  const suffix = digest.slice(5);
-  try {
-    const response = await fetchImpl(`${RANGE}${prefix}`, {
-      headers: { "Add-Padding": "true", "User-Agent": "align-password-check" },
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-    if (!response.ok) return false;
-    const body = await response.text();
-    for (const line of body.split("\n")) {
-      const [hash, count] = line.trim().split(":");
-      if (hash === suffix && Number(count) > 0) return true;
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-async function assertPasswordNotBreached(password2, fetchImpl = fetch) {
-  if (await passwordIsBreached(password2, fetchImpl)) {
-    throw new HttpError(400, "This password has appeared in a data breach. Choose a different one.");
-  }
-}
-async function noteBreachedPassword(userId, password2, fetchImpl = fetch) {
-  if (!await passwordIsBreached(password2, fetchImpl)) return;
-  const existing = await SecurityEvent.exists({ userId, type: "password-breached" });
-  if (existing) return;
-  await recordSecurity({
-    userId,
-    type: "password-breached",
-    summary: "This password has appeared in a data breach. Change your password."
-  });
-}
-function watchBreachedPassword(userId, password2, fetchImpl = fetch) {
-  void noteBreachedPassword(userId, password2, fetchImpl).catch(() => void 0);
-}
-
-// src/mail.ts
-async function deliverMail(input) {
-  const key = process.env.RESEND_API_KEY;
-  const from = process.env.MAIL_FROM;
-  if (!key || !from) return false;
-  try {
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ from, to: [input.to], subject: input.subject, text: input.text }),
-      signal: AbortSignal.timeout(8e3)
-    });
-    if (!response.ok) {
-      console.error(JSON.stringify({ msg: "mail-failed", status: response.status }));
-      return false;
-    }
-    return true;
-  } catch (error) {
-    console.error(error);
-    return false;
-  }
-}
 
 // src/password.ts
 var loaded = null;
@@ -1881,53 +2079,6 @@ var dummyHash = null;
 function dummyPasswordHash() {
   dummyHash ??= hashPassword("not-a-real-password");
   return dummyHash;
-}
-
-// src/rateLimit.ts
-var WINDOW_MS = 15 * 60 * 1e3;
-var PRODUCTION_MAX = {
-  login: 10,
-  register: 5,
-  forgot: 5,
-  reset: 10
-};
-function duplicateKey(error) {
-  return typeof error === "object" && error !== null && "code" in error && error.code === 11e3;
-}
-async function hit(key) {
-  const now = Date.now();
-  const expiresAt = new Date(now + WINDOW_MS);
-  let doc;
-  try {
-    doc = await RateLimit.findOneAndUpdate(
-      { key },
-      { $inc: { count: 1 }, $setOnInsert: { expiresAt } },
-      { upsert: true, new: true }
-    );
-  } catch (error) {
-    if (!duplicateKey(error)) throw error;
-    doc = await RateLimit.findOneAndUpdate({ key }, { $inc: { count: 1 } }, { new: true });
-  }
-  if (doc && doc.expiresAt.getTime() <= now) {
-    doc = await RateLimit.findOneAndUpdate({ key }, { $set: { count: 1, expiresAt } }, { new: true });
-  }
-  return doc?.count ?? 1;
-}
-async function delayFailedAttempt(count) {
-  if (process.env.NODE_ENV === "test" || count <= 2) return;
-  const delay = Math.min(5e3, (count - 2) * 250);
-  await new Promise((resolve) => setTimeout(resolve, delay));
-}
-async function enforceAuthLimit(route, ip, email2) {
-  const max = process.env.NODE_ENV === "production" ? PRODUCTION_MAX[route] : 1e3;
-  const keys = [`${route}:ip:${ip || "unknown"}`];
-  if (email2) keys.push(`${route}:email:${email2}`);
-  const counts = await Promise.all(keys.map((key) => hit(key)));
-  const count = Math.max(0, ...counts);
-  if (count > max) {
-    throw new HttpError(429, "Too many attempts. Try again later.", { headers: { "Retry-After": "60" } });
-  }
-  return count;
 }
 
 // src/serialize.ts
@@ -2017,34 +2168,6 @@ function publicNote(note) {
     createdAt: note.createdAt.toISOString(),
     updatedAt: note.updatedAt.toISOString()
   };
-}
-
-// src/tokens.ts
-import { randomBytes as randomBytes3 } from "node:crypto";
-var HOUR_MS = 60 * 60 * 1e3;
-async function issueAuthToken(userId, type) {
-  const token = randomBytes3(32).toString("hex");
-  const ttl = type === "verify" ? 24 * HOUR_MS : HOUR_MS;
-  await AuthToken.deleteMany({ userId, type, usedAt: null });
-  await AuthToken.create({
-    userId,
-    type,
-    tokenHash: hashToken(token),
-    expiresAt: new Date(Date.now() + ttl)
-  });
-  return token;
-}
-async function consumeAuthToken(token, type) {
-  const found = await AuthToken.findOne({
-    tokenHash: hashToken(token),
-    type,
-    usedAt: null,
-    expiresAt: { $gt: /* @__PURE__ */ new Date() }
-  });
-  if (!found) return null;
-  found.usedAt = /* @__PURE__ */ new Date();
-  await found.save();
-  return found.userId.toString();
 }
 
 // ../shared/schemas.ts
@@ -2262,8 +2385,8 @@ var emailChangeSchema = z.object({
   password: z.string().min(1, "Confirm it is you to continue.").max(128, "Confirm it is you to continue.")
 });
 var stepUpSchema = z.object({
-  password: z.string().min(1).max(128).optional(),
-  code: z.string().trim().min(6).max(32).optional(),
+  password: z.string().max(128, "Confirm it is you to continue.").optional(),
+  code: z.string().trim().max(32, "That code is not valid.").optional(),
   method: z.enum(["password", "totp", "recovery"]).optional()
 });
 var workspaceCreateSchema = z.object({
@@ -2303,6 +2426,452 @@ function normalizeDueDate(value) {
   return value;
 }
 
+// src/routes/mfa.ts
+function pendingUser(req) {
+  const token = readCookie(req.headers.cookie, "pending");
+  const payload = token ? verifyJwt(token) : null;
+  if (!payload || payload.typ !== "pending" || typeof payload.sub !== "string") {
+    throw new HttpError(401, "Sign in to continue.");
+  }
+  return payload.sub;
+}
+async function noteStepUp(req, userId, summary) {
+  if (req.sessionId) await markStepUp(req.sessionId);
+  await recordSecurity({
+    userId,
+    type: "step-up",
+    summary,
+    ...requestAudit(req)
+  });
+}
+function credentialText(value) {
+  return value?.trim() ?? "";
+}
+function assertCredentialPresent(body) {
+  if (!credentialText(body.password) && !credentialText(body.code)) {
+    throw new HttpError(400, "Enter your current password or a verification code.");
+  }
+}
+async function requireSensitiveCredential(userId, body) {
+  const password2 = credentialText(body.password);
+  const code = credentialText(body.code);
+  assertCredentialPresent(body);
+  const user = await users.byIdSecret(userId);
+  if (password2 && user?.passwordHash && await checkPassword(password2, user.passwordHash)) return;
+  if (code && user?.totpSecret && verifyTotp(user.totpSecret, code)) return;
+  if (code && await consumeRecoveryCode(userId, code)) return;
+  throw new HttpError(400, code ? "That code is not valid." : "Current password is incorrect.");
+}
+function mfaRouter() {
+  const router = Router2();
+  router.post(
+    "/totp/setup",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const user = await users.byId(currentUserId(req));
+      if (!user) throw new HttpError(401, "Sign in to continue.");
+      const started = await beginTotp(user.id, user.email);
+      const qr = await QRCode.toDataURL(started.otpauth);
+      res.json({ secret: started.secret, otpauth: started.otpauth, qr });
+    })
+  );
+  router.post(
+    "/totp/confirm",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const input = parseBody(totpCodeSchema, req.body);
+      const codes = await confirmTotp(currentUserId(req), input.code);
+      if (req.sessionId) await markStepUp(req.sessionId);
+      await recordSecurity({
+        userId: currentUserId(req),
+        type: "totp-enabled",
+        summary: "Two-factor authentication was turned on.",
+        ...requestAudit(req)
+      });
+      res.json({ recoveryCodes: codes });
+    })
+  );
+  router.post(
+    "/totp/disable",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const body = parseBody(stepUpSchema, req.body);
+      assertCredentialPresent(body);
+      await requireFreshStepUp(req.sessionId);
+      await requireSensitiveCredential(currentUserId(req), body);
+      await disableTotp(currentUserId(req));
+      await recordSecurity({
+        userId: currentUserId(req),
+        type: "totp-disabled",
+        summary: "Two-factor authentication was turned off.",
+        ...requestAudit(req)
+      });
+      res.status(204).send();
+    })
+  );
+  router.post(
+    "/recovery/regenerate",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const body = parseBody(stepUpSchema, req.body);
+      assertCredentialPresent(body);
+      await requireFreshStepUp(req.sessionId);
+      await requireSensitiveCredential(currentUserId(req), body);
+      const codes = await regenerateRecoveryCodes(currentUserId(req));
+      await recordSecurity({
+        userId: currentUserId(req),
+        type: "recovery-regenerated",
+        summary: "Recovery codes were replaced.",
+        ...requestAudit(req)
+      });
+      res.json({ recoveryCodes: codes });
+    })
+  );
+  router.post(
+    "/login/mfa",
+    asyncHandler(async (req, res) => {
+      const input = parseBody(mfaSchema, req.body);
+      const userId = pendingUser(req);
+      const user = await users.byIdSecret(userId);
+      if (!user) throw new HttpError(401, "Sign in to continue.");
+      const ok = input.method === "totp" ? Boolean(user.totpSecret && verifyTotp(user.totpSecret, input.code)) : await consumeRecoveryCode(user.id, input.code);
+      if (!ok) {
+        await recordSecurity({
+          userId: user.id,
+          type: "mfa-failed",
+          summary: "A two-factor code was rejected.",
+          ...requestAudit(req)
+        });
+        throw new HttpError(401, "That code is not valid.");
+      }
+      res.clearCookie("pending", { path: "/" });
+      await ensurePersonalWorkspace(user.id);
+      const fresh = await users.byId(user.id) ?? user;
+      const [started, dashboard] = await Promise.all([
+        startSession(req, res, user.id),
+        dashboardForUser(fresh)
+      ]);
+      await recordSecurity({
+        userId: user.id,
+        type: "sign-in",
+        summary: input.method === "totp" ? "Signed in with an authenticator code." : "Signed in with a recovery code.",
+        ...requestAudit(req)
+      });
+      res.json({ ...publicUser(user), newDevice: started.newDevice, ...dashboard ? { dashboard } : {} });
+    })
+  );
+  router.post(
+    "/step-up",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const body = parseBody(stepUpSchema, req.body);
+      const userId = currentUserId(req);
+      if (!req.sessionId) throw new HttpError(401, "Sign in to continue.");
+      if (body.password) {
+        const user = await users.byIdSecret(userId);
+        if (!user?.passwordHash || !await checkPassword(body.password, user.passwordHash)) {
+          throw new HttpError(403, "That password is not valid.");
+        }
+        await noteStepUp(req, userId, "Confirmed this session with a password.");
+        res.status(204).send();
+        return;
+      }
+      if (body.code && body.method !== "recovery") {
+        const user = await users.byIdSecret(userId);
+        if (!user?.totpSecret || !verifyTotp(user.totpSecret, body.code)) {
+          throw new HttpError(400, "That code is not valid.");
+        }
+        await noteStepUp(req, userId, "Confirmed this session with an authenticator code.");
+        res.status(204).send();
+        return;
+      }
+      if (body.code) {
+        const ok = await consumeRecoveryCode(userId, body.code);
+        if (!ok) throw new HttpError(400, "That code is not valid.");
+        await noteStepUp(req, userId, "Confirmed this session with a recovery code.");
+        res.status(204).send();
+        return;
+      }
+      throw new HttpError(400, "Confirm it is you to continue.");
+    })
+  );
+  router.get(
+    "/security-events",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const events = await listSecurityEvents(currentUserId(req));
+      res.json(
+        events.map((event) => ({
+          id: event._id.toString(),
+          type: event.type,
+          summary: event.summary,
+          ip: event.ipCoarse,
+          device: event.device ?? "",
+          deviceType: event.deviceType ?? "",
+          location: event.location ?? "",
+          createdAt: event.createdAt.toISOString()
+        }))
+      );
+    })
+  );
+  router.post(
+    "/passkeys/register/options",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const user = await users.byId(currentUserId(req));
+      if (!user) throw new HttpError(401, "Sign in to continue.");
+      res.json(await registrationOptions(req, user.id, user.email));
+    })
+  );
+  router.post(
+    "/passkeys/register/verify",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const name = typeof req.body?.name === "string" ? req.body.name : "Passkey";
+      await verifyRegistration(req, currentUserId(req), req.body, name);
+      await recordSecurity({
+        userId: currentUserId(req),
+        type: "passkey-added",
+        summary: "A passkey was added.",
+        ...requestAudit(req)
+      });
+      res.status(204).send();
+    })
+  );
+  router.get(
+    "/passkeys",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const passkeys = await listPasskeys(currentUserId(req));
+      res.json(
+        passkeys.map((passkey) => ({
+          id: passkey._id.toString(),
+          name: passkey.name,
+          createdAt: passkey.createdAt.toISOString()
+        }))
+      );
+    })
+  );
+  router.delete(
+    "/passkeys/:id",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const body = parseBody(stepUpSchema, req.body ?? {});
+      assertCredentialPresent(body);
+      await requireFreshStepUp(req.sessionId);
+      await requireSensitiveCredential(currentUserId(req), body);
+      const removed = await deletePasskey(currentUserId(req), req.params.id);
+      if (!removed) throw new HttpError(404, "Passkey not found.");
+      await recordSecurity({
+        userId: currentUserId(req),
+        type: "passkey-removed",
+        summary: "A passkey was removed.",
+        ...requestAudit(req)
+      });
+      res.status(204).send();
+    })
+  );
+  router.post(
+    "/passkeys/login/options",
+    asyncHandler(async (req, res) => {
+      res.json(await authenticationOptions(req));
+    })
+  );
+  router.post(
+    "/passkeys/login/verify",
+    asyncHandler(async (req, res) => {
+      const verified = await verifyPasskey(req, req.body, "login");
+      const user = await users.byId(verified.userId);
+      if (!user) throw new HttpError(401, "Sign in to continue.");
+      await ensurePersonalWorkspace(user.id);
+      const fresh = await users.byId(user.id) ?? user;
+      const [started, dashboard] = await Promise.all([
+        startSession(req, res, user.id),
+        dashboardForUser(fresh)
+      ]);
+      await recordSecurity({
+        userId: user.id,
+        type: "sign-in",
+        summary: "Signed in with a passkey.",
+        ...requestAudit(req)
+      });
+      res.json({ ...publicUser(user), newDevice: started.newDevice, ...dashboard ? { dashboard } : {} });
+    })
+  );
+  router.post(
+    "/passkeys/step-up/options",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      res.json(await authenticationOptions(req, currentUserId(req)));
+    })
+  );
+  router.post(
+    "/passkeys/step-up/verify",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const verified = await verifyPasskey(req, req.body, "stepup");
+      if (verified.userId !== currentUserId(req)) throw new HttpError(401, "Passkey not recognized.");
+      await noteStepUp(req, currentUserId(req), "Confirmed this session with a passkey.");
+      res.status(204).send();
+    })
+  );
+  router.get(
+    "/mfa",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const user = await users.byId(currentUserId(req));
+      if (!user) throw new HttpError(401, "Sign in to continue.");
+      res.json({ totp: Boolean(user.totpEnabledAt), passkey: await userHasPasskey(user.id) });
+    })
+  );
+  return router;
+}
+
+// src/hibp.ts
+import { createHash as createHash2 } from "node:crypto";
+var RANGE = "https://api.pwnedpasswords.com/range/";
+var HIBP_TIMEOUT_MS = 1500;
+async function passwordIsBreached(password2, fetchImpl = fetch, timeoutMs = HIBP_TIMEOUT_MS) {
+  if (process.env.NODE_ENV === "test" && fetchImpl === fetch) return false;
+  const digest = createHash2("sha1").update(password2).digest("hex").toUpperCase();
+  const prefix = digest.slice(0, 5);
+  const suffix = digest.slice(5);
+  try {
+    const response = await fetchImpl(`${RANGE}${prefix}`, {
+      headers: { "Add-Padding": "true", "User-Agent": "align-password-check" },
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!response.ok) return false;
+    const body = await response.text();
+    for (const line of body.split("\n")) {
+      const [hash, count] = line.trim().split(":");
+      if (hash === suffix && Number(count) > 0) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+async function assertPasswordNotBreached(password2, fetchImpl = fetch) {
+  if (await passwordIsBreached(password2, fetchImpl)) {
+    throw new HttpError(400, "This password has appeared in a data breach. Choose a different one.");
+  }
+}
+async function noteBreachedPassword(userId, password2, fetchImpl = fetch) {
+  if (!await passwordIsBreached(password2, fetchImpl)) return;
+  const existing = await SecurityEvent.exists({ userId, type: "password-breached" });
+  if (existing) return;
+  await recordSecurity({
+    userId,
+    type: "password-breached",
+    summary: "This password has appeared in a data breach. Change your password."
+  });
+}
+function watchBreachedPassword(userId, password2, fetchImpl = fetch) {
+  void noteBreachedPassword(userId, password2, fetchImpl).catch(() => void 0);
+}
+
+// src/mail.ts
+async function deliverMail(input) {
+  const key = process.env.RESEND_API_KEY;
+  const from = process.env.MAIL_FROM;
+  if (!key || !from) return false;
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ from, to: [input.to], subject: input.subject, text: input.text }),
+      signal: AbortSignal.timeout(8e3)
+    });
+    if (!response.ok) {
+      console.error(JSON.stringify({ msg: "mail-failed", status: response.status }));
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error(error);
+    return false;
+  }
+}
+
+// src/rateLimit.ts
+var WINDOW_MS = 15 * 60 * 1e3;
+var PRODUCTION_MAX = {
+  login: 10,
+  register: 5,
+  forgot: 5,
+  reset: 10
+};
+function duplicateKey(error) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === 11e3;
+}
+async function hit(key) {
+  const now = Date.now();
+  const expiresAt = new Date(now + WINDOW_MS);
+  let doc;
+  try {
+    doc = await RateLimit.findOneAndUpdate(
+      { key },
+      { $inc: { count: 1 }, $setOnInsert: { expiresAt } },
+      { upsert: true, new: true }
+    );
+  } catch (error) {
+    if (!duplicateKey(error)) throw error;
+    doc = await RateLimit.findOneAndUpdate({ key }, { $inc: { count: 1 } }, { new: true });
+  }
+  if (doc && doc.expiresAt.getTime() <= now) {
+    doc = await RateLimit.findOneAndUpdate({ key }, { $set: { count: 1, expiresAt } }, { new: true });
+  }
+  return doc?.count ?? 1;
+}
+async function delayFailedAttempt(count) {
+  if (process.env.NODE_ENV === "test" || count <= 2) return;
+  const delay = Math.min(5e3, (count - 2) * 250);
+  await new Promise((resolve) => setTimeout(resolve, delay));
+}
+async function enforceAuthLimit(route, ip, email2) {
+  const max = process.env.NODE_ENV === "production" ? PRODUCTION_MAX[route] : 1e3;
+  const keys = [`${route}:ip:${ip || "unknown"}`];
+  if (email2) keys.push(`${route}:email:${email2}`);
+  const counts = await Promise.all(keys.map((key) => hit(key)));
+  const count = Math.max(0, ...counts);
+  if (count > max) {
+    throw new HttpError(429, "Too many attempts. Try again later.", { headers: { "Retry-After": "60" } });
+  }
+  return count;
+}
+
+// src/tokens.ts
+import { randomBytes as randomBytes4 } from "node:crypto";
+var HOUR_MS = 60 * 60 * 1e3;
+async function issueAuthToken(userId, type) {
+  const token = randomBytes4(32).toString("hex");
+  const ttl = type === "verify" ? 24 * HOUR_MS : HOUR_MS;
+  await AuthToken.deleteMany({ userId, type, usedAt: null });
+  await AuthToken.create({
+    userId,
+    type,
+    tokenHash: hashToken(token),
+    expiresAt: new Date(Date.now() + ttl)
+  });
+  return token;
+}
+async function consumeAuthToken(token, type) {
+  const found = await AuthToken.findOne({
+    tokenHash: hashToken(token),
+    type,
+    usedAt: null,
+    expiresAt: { $gt: /* @__PURE__ */ new Date() }
+  });
+  if (!found) return null;
+  found.usedAt = /* @__PURE__ */ new Date();
+  await found.save();
+  return found.userId.toString();
+}
+
 // src/routes/auth.ts
 var LOCK_AFTER = 5;
 function clientIp(req) {
@@ -2324,7 +2893,7 @@ function lockDelay(failures) {
   return Math.min(60, 2 ** steps) * 60 * 1e3;
 }
 function authRouter(limiter) {
-  const router = Router2();
+  const router = Router3();
   router.get("/providers", (_req, res) => {
     res.json({ google: googleConfigured() });
   });
@@ -2366,7 +2935,10 @@ ${link}`
         users.byEmailSecret(input.email)
       ]);
       if (user?.lockUntil && user.lockUntil.getTime() > Date.now()) {
-        throw new HttpError(429, "Too many attempts. Try again later.");
+        const seconds = Math.max(1, Math.ceil((user.lockUntil.getTime() - Date.now()) / 1e3));
+        throw new HttpError(429, "Too many attempts. Try again later.", {
+          headers: { "Retry-After": String(seconds) }
+        });
       }
       const dashboardPromise = (user ? dashboardForUser(user) : Promise.resolve(null)).catch(() => null);
       const hash = user?.passwordHash ?? await dummyPasswordHash();
@@ -2578,7 +3150,10 @@ ${link}`
     "/sessions/revoke-all",
     requireAuth,
     asyncHandler(async (req, res) => {
+      const body = parseBody(stepUpSchema, req.body);
+      assertCredentialPresent(body);
       await requireFreshStepUp(req.sessionId);
+      await requireSensitiveCredential(currentUserId(req), body);
       await revokeSessions(currentUserId(req));
       await recordSecurity({
         userId: currentUserId(req),
@@ -2671,7 +3246,7 @@ ${link}`
         user = await users.create({
           name: (profile.name || email2.split("@")[0] || "Align").slice(0, 80),
           email: email2,
-          passwordHash: await hashPassword(randomBytes4(32).toString("hex")),
+          passwordHash: await hashPassword(randomBytes5(32).toString("hex")),
           emailVerifiedAt: /* @__PURE__ */ new Date(),
           googleId: profile.sub
         });
@@ -2708,6 +3283,9 @@ ${link}`
     requireAuth,
     asyncHandler(async (req, res) => {
       const input = parseBody(emailChangeSchema, req.body);
+      if (!input.password.trim()) {
+        throw new HttpError(400, "Enter your current password or a verification code.");
+      }
       const userId = currentUserId(req);
       await requireFreshStepUp(req.sessionId);
       const secret = await users.byIdSecret(userId);
@@ -2742,6 +3320,9 @@ ${link}`
     requireAuth,
     asyncHandler(async (req, res) => {
       const input = parseBody(passwordSchema, req.body);
+      if (!input.currentPassword.trim()) {
+        throw new HttpError(400, "Enter your current password or a verification code.");
+      }
       await requireFreshStepUp(req.sessionId);
       const user = await users.byIdSecret(currentUserId(req));
       if (!user?.passwordHash) throw new HttpError(401, "Sign in to continue.");
@@ -2765,8 +3346,11 @@ ${link}`
     "/me",
     requireAuth,
     asyncHandler(async (req, res) => {
+      const body = parseBody(stepUpSchema, req.body);
+      assertCredentialPresent(body);
       const userId = currentUserId(req);
       await requireFreshStepUp(req.sessionId);
+      await requireSensitiveCredential(userId, body);
       await deleteAccount(userId);
       clearSession(res);
       res.status(204).send();
@@ -2792,7 +3376,7 @@ ${link}`
 }
 
 // src/routes/labels.ts
-import { Router as Router3 } from "express";
+import { Router as Router4 } from "express";
 
 // src/activity.ts
 function quoteTitle(title) {
@@ -2832,7 +3416,7 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function labelsRouter() {
-  const router = Router3();
+  const router = Router4();
   router.use(requireAuth, requireWriter);
   router.get(
     "/",
@@ -2913,9 +3497,9 @@ function labelsRouter() {
 }
 
 // src/routes/notes.ts
-import { Router as Router4 } from "express";
+import { Router as Router5 } from "express";
 function notesRouter() {
-  const router = Router4();
+  const router = Router5();
   router.use(requireAuth, requireWriter);
   router.get(
     "/",
@@ -2981,7 +3565,7 @@ function notesRouter() {
 }
 
 // src/routes/notifications.ts
-import { Router as Router5 } from "express";
+import { Router as Router6 } from "express";
 import { Types as Types6 } from "mongoose";
 
 // src/dates.ts
@@ -3124,7 +3708,7 @@ function present(row) {
   };
 }
 function notificationsRouter() {
-  const router = Router5();
+  const router = Router6();
   router.use(requireAuth, requireWriter);
   router.get(
     "/",
@@ -3244,12 +3828,12 @@ function notificationsRouter() {
 }
 
 // src/routes/projects.ts
-import { Router as Router6 } from "express";
+import { Router as Router7 } from "express";
 function isDuplicateKey(error) {
   return typeof error === "object" && error !== null && "code" in error && error.code === 11e3;
 }
 function projectsRouter() {
-  const router = Router6();
+  const router = Router7();
   router.use(requireAuth, requireWriter);
   router.get(
     "/",
@@ -3485,7 +4069,7 @@ function projectsRouter() {
 }
 
 // src/routes/search.ts
-import { Router as Router7 } from "express";
+import { Router as Router8 } from "express";
 var RESULT_LIMIT = 20;
 var CANDIDATE_LIMIT = 60;
 var TIME_MS = 800;
@@ -3505,7 +4089,7 @@ function byScore(items) {
   return [...items].sort((a, b) => b.score - a.score).slice(0, RESULT_LIMIT);
 }
 function searchRouter() {
-  const router = Router7();
+  const router = Router8();
   router.use(requireAuth);
   router.get(
     "/",
@@ -3587,9 +4171,9 @@ function searchRouter() {
 }
 
 // src/routes/tasks.ts
-import { Router as Router8 } from "express";
+import { Router as Router9 } from "express";
 function tasksRouter() {
-  const router = Router8();
+  const router = Router9();
   router.use(requireAuth, requireWriter);
   router.patch(
     "/:id",
@@ -3651,557 +4235,6 @@ function tasksRouter() {
         summary: `Deleted task ${quoteTitle(title)}`
       });
       res.status(204).send();
-    })
-  );
-  return router;
-}
-
-// src/routes/mfa.ts
-import { Router as Router9 } from "express";
-import QRCode from "qrcode";
-
-// src/data/factors.ts
-import {
-  generateAuthenticationOptions,
-  generateRegistrationOptions,
-  verifyAuthenticationResponse,
-  verifyRegistrationResponse
-} from "@simplewebauthn/server";
-
-// src/totp.ts
-import { createHmac, randomBytes as randomBytes5, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
-var ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-var STEP_SECONDS = 30;
-var DIGITS = 6;
-function generateTotpSecret() {
-  return base32Encode(randomBytes5(20));
-}
-function totpAt(secret, counter) {
-  const buffer = Buffer.alloc(8);
-  buffer.writeBigUInt64BE(BigInt(counter));
-  const hmac = createHmac("sha1", base32Decode(secret)).update(buffer).digest();
-  const offset = hmac[hmac.length - 1] & 15;
-  const binary = (hmac.readUInt32BE(offset) & 2147483647) % 10 ** DIGITS;
-  return binary.toString().padStart(DIGITS, "0");
-}
-function verifyTotp(secret, token, now = Date.now(), window = 1) {
-  const trimmed = token.replace(/\s+/g, "");
-  if (!/^\d{6}$/.test(trimmed)) return false;
-  const counter = Math.floor(now / 1e3 / STEP_SECONDS);
-  for (let delta = -window; delta <= window; delta += 1) {
-    const expected = totpAt(secret, counter + delta);
-    if (safeEqual2(expected, trimmed)) return true;
-  }
-  return false;
-}
-function otpauthUrl(secret, email2) {
-  const label = encodeURIComponent(`Align:${email2}`);
-  return `otpauth://totp/${label}?secret=${secret}&issuer=${encodeURIComponent("Align")}&algorithm=SHA1&digits=6&period=30`;
-}
-function generateRecoveryCodes(count = 10) {
-  return Array.from({ length: count }, () => {
-    const raw = randomBytes5(5).toString("hex");
-    return `${raw.slice(0, 5)}-${raw.slice(5)}`;
-  });
-}
-function safeEqual2(left, right) {
-  const a = Buffer.from(left);
-  const b = Buffer.from(right);
-  if (a.length !== b.length) return false;
-  return timingSafeEqual2(a, b);
-}
-function base32Encode(bytes) {
-  let bits = 0;
-  let value = 0;
-  let output = "";
-  for (const byte of bytes) {
-    value = value << 8 | byte;
-    bits += 8;
-    while (bits >= 5) {
-      output += ALPHABET[value >>> bits - 5 & 31];
-      bits -= 5;
-    }
-  }
-  if (bits > 0) output += ALPHABET[value << 5 - bits & 31];
-  return output;
-}
-function base32Decode(secret) {
-  const cleaned = secret.replace(/=+$/g, "").toUpperCase().replace(/[^A-Z2-7]/g, "");
-  let bits = 0;
-  let value = 0;
-  const bytes = [];
-  for (const char of cleaned) {
-    const index = ALPHABET.indexOf(char);
-    if (index === -1) continue;
-    value = value << 5 | index;
-    bits += 5;
-    if (bits >= 8) {
-      bytes.push(value >>> bits - 8 & 255);
-      bits -= 8;
-    }
-  }
-  return Buffer.from(bytes);
-}
-
-// src/data/factors.ts
-var authenticators = {
-  verifyRegistrationResponse,
-  verifyAuthenticationResponse
-};
-function recoveryHash(code) {
-  return hashToken(code.replace(/\s+/g, "").toLowerCase());
-}
-function webAuthnConfig(req) {
-  const headerOrigin = req.get("origin");
-  const origin = (process.env.APP_ORIGIN || headerOrigin || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
-  const rpID = process.env.WEBAUTHN_RP_ID || safeHost(origin);
-  return { rpID, origin };
-}
-function safeHost(origin) {
-  try {
-    return new URL(origin).hostname;
-  } catch {
-    return "localhost";
-  }
-}
-async function beginTotp(userId, email2) {
-  const user = await User.findById(userId).select("+totpSecret");
-  if (!user) throw new HttpError(401, "Sign in to continue.");
-  if (user.totpEnabledAt) throw new HttpError(409, "Two-factor authentication is already on.");
-  const secret = generateTotpSecret();
-  user.totpSecret = secret;
-  await user.save();
-  return { secret, otpauth: otpauthUrl(secret, email2) };
-}
-async function confirmTotp(userId, code) {
-  const user = await User.findById(userId).select("+totpSecret +recoveryCodes");
-  if (!user?.totpSecret) throw new HttpError(400, "Start two-factor setup first.");
-  if (!verifyTotp(user.totpSecret, code)) throw new HttpError(400, "That code is not valid.");
-  const codes = generateRecoveryCodes();
-  user.set(
-    "recoveryCodes",
-    codes.map((value) => ({ hash: recoveryHash(value), usedAt: null }))
-  );
-  user.totpEnabledAt = /* @__PURE__ */ new Date();
-  await user.save();
-  return codes;
-}
-async function disableTotp(userId) {
-  const user = await User.findById(userId).select("+totpSecret +recoveryCodes");
-  if (!user) throw new HttpError(401, "Sign in to continue.");
-  user.totpSecret = null;
-  user.totpEnabledAt = null;
-  user.set("recoveryCodes", []);
-  await user.save();
-}
-async function regenerateRecoveryCodes(userId) {
-  const user = await User.findById(userId).select("+recoveryCodes");
-  if (!user?.totpEnabledAt) throw new HttpError(400, "Turn on two-factor authentication first.");
-  const codes = generateRecoveryCodes();
-  user.set(
-    "recoveryCodes",
-    codes.map((value) => ({ hash: recoveryHash(value), usedAt: null }))
-  );
-  await user.save();
-  return codes;
-}
-async function consumeRecoveryCode(userId, code) {
-  const user = await User.findById(userId).select("+recoveryCodes");
-  if (!user) return false;
-  const hash = recoveryHash(code);
-  const match = user.recoveryCodes?.find((entry) => entry.hash === hash && !entry.usedAt);
-  if (!match) return false;
-  match.usedAt = /* @__PURE__ */ new Date();
-  await user.save();
-  return true;
-}
-async function userHasPasskey(userId) {
-  return Boolean(await Passkey.exists({ userId }));
-}
-async function storeChallenge(userId, challenge, kind) {
-  await WebAuthnChallenge.deleteMany({ userId, kind });
-  await WebAuthnChallenge.create({
-    userId,
-    challenge,
-    kind,
-    expiresAt: new Date(Date.now() + 5 * 60 * 1e3)
-  });
-}
-async function takeChallenge(kind, expected) {
-  const found = await WebAuthnChallenge.findOne({ challenge: expected, kind, expiresAt: { $gt: /* @__PURE__ */ new Date() } });
-  if (!found) throw new HttpError(400, "That passkey ceremony expired. Try again.");
-  await found.deleteOne();
-}
-async function registrationOptions(req, userId, email2) {
-  const { rpID } = webAuthnConfig(req);
-  const existing = await Passkey.find({ userId }).select("credentialId transports");
-  const options = await generateRegistrationOptions({
-    rpName: "Align",
-    rpID,
-    userName: email2,
-    userID: Buffer.from(userId),
-    attestationType: "none",
-    excludeCredentials: existing.map((passkey) => ({
-      id: passkey.credentialId,
-      transports: passkey.transports
-    })),
-    authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" }
-  });
-  await storeChallenge(userId, options.challenge, "register");
-  return options;
-}
-async function verifyRegistration(req, userId, response, name) {
-  const { rpID, origin } = webAuthnConfig(req);
-  const challenge = response.response.clientDataJSON;
-  const client = JSON.parse(Buffer.from(challenge, "base64url").toString("utf8"));
-  if (!client.challenge) throw new HttpError(400, "Passkey response is invalid.");
-  await takeChallenge("register", client.challenge);
-  const verified = await authenticators.verifyRegistrationResponse({
-    response,
-    expectedChallenge: client.challenge,
-    expectedOrigin: origin,
-    expectedRPID: rpID,
-    requireUserVerification: false
-  });
-  if (!verified.verified) throw new HttpError(400, "Passkey could not be verified.");
-  const credential = verified.registrationInfo.credential;
-  await Passkey.create({
-    userId,
-    credentialId: credential.id,
-    publicKey: Buffer.from(credential.publicKey),
-    counter: credential.counter,
-    transports: credential.transports ?? [],
-    name: name.slice(0, 80) || "Passkey"
-  });
-}
-async function authenticationOptions(req, userId) {
-  const { rpID } = webAuthnConfig(req);
-  const existing = userId ? await Passkey.find({ userId }).select("credentialId transports") : [];
-  const options = await generateAuthenticationOptions({
-    rpID,
-    userVerification: userId ? "discouraged" : "preferred",
-    allowCredentials: existing.map((passkey) => ({
-      id: passkey.credentialId,
-      transports: passkey.transports
-    }))
-  });
-  await storeChallenge(userId ?? null, options.challenge, userId ? "stepup" : "login");
-  return options;
-}
-async function verifyPasskey(req, response, kind) {
-  const { rpID, origin } = webAuthnConfig(req);
-  const client = JSON.parse(Buffer.from(response.response.clientDataJSON, "base64url").toString("utf8"));
-  if (!client.challenge) throw new HttpError(400, "Passkey response is invalid.");
-  await takeChallenge(kind, client.challenge);
-  const passkey = await Passkey.findOne({ credentialId: response.id });
-  if (!passkey) throw new HttpError(401, "Passkey not recognized.");
-  const verified = await authenticators.verifyAuthenticationResponse({
-    response,
-    expectedChallenge: client.challenge,
-    expectedOrigin: origin,
-    expectedRPID: rpID,
-    requireUserVerification: false,
-    credential: {
-      id: passkey.credentialId,
-      publicKey: new Uint8Array(passkey.publicKey),
-      counter: passkey.counter,
-      transports: passkey.transports
-    }
-  });
-  if (!verified.verified) throw new HttpError(401, "Passkey could not be verified.");
-  passkey.counter = verified.authenticationInfo.newCounter;
-  await passkey.save();
-  return { userId: passkey.userId.toString() };
-}
-async function listPasskeys(userId) {
-  return Passkey.find({ userId }).sort({ createdAt: -1 }).lean();
-}
-async function deletePasskey(userId, id) {
-  const removed = await Passkey.deleteOne({ _id: id, userId });
-  return removed.deletedCount === 1;
-}
-async function listSecurityEvents(userId) {
-  return SecurityEvent.find({ userId }).sort({ createdAt: -1 }).limit(50).lean();
-}
-
-// src/routes/mfa.ts
-function pendingUser(req) {
-  const token = readCookie(req.headers.cookie, "pending");
-  const payload = token ? verifyJwt(token) : null;
-  if (!payload || payload.typ !== "pending" || typeof payload.sub !== "string") {
-    throw new HttpError(401, "Sign in to continue.");
-  }
-  return payload.sub;
-}
-async function noteStepUp(req, userId, summary) {
-  if (req.sessionId) await markStepUp(req.sessionId);
-  await recordSecurity({
-    userId,
-    type: "step-up",
-    summary,
-    ...requestAudit(req)
-  });
-}
-function mfaRouter() {
-  const router = Router9();
-  router.post(
-    "/totp/setup",
-    requireAuth,
-    asyncHandler(async (req, res) => {
-      const user = await users.byId(currentUserId(req));
-      if (!user) throw new HttpError(401, "Sign in to continue.");
-      const started = await beginTotp(user.id, user.email);
-      const qr = await QRCode.toDataURL(started.otpauth);
-      res.json({ secret: started.secret, otpauth: started.otpauth, qr });
-    })
-  );
-  router.post(
-    "/totp/confirm",
-    requireAuth,
-    asyncHandler(async (req, res) => {
-      const input = parseBody(totpCodeSchema, req.body);
-      const codes = await confirmTotp(currentUserId(req), input.code);
-      if (req.sessionId) await markStepUp(req.sessionId);
-      await recordSecurity({
-        userId: currentUserId(req),
-        type: "totp-enabled",
-        summary: "Two-factor authentication was turned on.",
-        ...requestAudit(req)
-      });
-      res.json({ recoveryCodes: codes });
-    })
-  );
-  router.post(
-    "/totp/disable",
-    requireAuth,
-    asyncHandler(async (req, res) => {
-      const body = parseBody(stepUpSchema, req.body);
-      await requireFreshStepUp(req.sessionId);
-      if (body.code) {
-        const user = await users.byIdSecret(currentUserId(req));
-        if (!user?.totpSecret || !verifyTotp(user.totpSecret, body.code)) {
-          throw new HttpError(400, "That code is not valid.");
-        }
-      }
-      await disableTotp(currentUserId(req));
-      await recordSecurity({
-        userId: currentUserId(req),
-        type: "totp-disabled",
-        summary: "Two-factor authentication was turned off.",
-        ...requestAudit(req)
-      });
-      res.status(204).send();
-    })
-  );
-  router.post(
-    "/recovery/regenerate",
-    requireAuth,
-    asyncHandler(async (req, res) => {
-      parseBody(stepUpSchema, req.body);
-      await requireFreshStepUp(req.sessionId);
-      const codes = await regenerateRecoveryCodes(currentUserId(req));
-      await recordSecurity({
-        userId: currentUserId(req),
-        type: "recovery-regenerated",
-        summary: "Recovery codes were replaced.",
-        ...requestAudit(req)
-      });
-      res.json({ recoveryCodes: codes });
-    })
-  );
-  router.post(
-    "/login/mfa",
-    asyncHandler(async (req, res) => {
-      const input = parseBody(mfaSchema, req.body);
-      const userId = pendingUser(req);
-      const user = await users.byIdSecret(userId);
-      if (!user) throw new HttpError(401, "Sign in to continue.");
-      const ok = input.method === "totp" ? Boolean(user.totpSecret && verifyTotp(user.totpSecret, input.code)) : await consumeRecoveryCode(user.id, input.code);
-      if (!ok) {
-        await recordSecurity({
-          userId: user.id,
-          type: "mfa-failed",
-          summary: "A two-factor code was rejected.",
-          ...requestAudit(req)
-        });
-        throw new HttpError(401, "That code is not valid.");
-      }
-      res.clearCookie("pending", { path: "/" });
-      await ensurePersonalWorkspace(user.id);
-      const fresh = await users.byId(user.id) ?? user;
-      const [started, dashboard] = await Promise.all([
-        startSession(req, res, user.id),
-        dashboardForUser(fresh)
-      ]);
-      await recordSecurity({
-        userId: user.id,
-        type: "sign-in",
-        summary: input.method === "totp" ? "Signed in with an authenticator code." : "Signed in with a recovery code.",
-        ...requestAudit(req)
-      });
-      res.json({ ...publicUser(user), newDevice: started.newDevice, ...dashboard ? { dashboard } : {} });
-    })
-  );
-  router.post(
-    "/step-up",
-    requireAuth,
-    asyncHandler(async (req, res) => {
-      const body = parseBody(stepUpSchema, req.body);
-      const userId = currentUserId(req);
-      if (!req.sessionId) throw new HttpError(401, "Sign in to continue.");
-      if (body.password) {
-        const user = await users.byIdSecret(userId);
-        if (!user?.passwordHash || !await checkPassword(body.password, user.passwordHash)) {
-          throw new HttpError(403, "That password is not valid.");
-        }
-        await noteStepUp(req, userId, "Confirmed this session with a password.");
-        res.status(204).send();
-        return;
-      }
-      if (body.code && body.method !== "recovery") {
-        const user = await users.byIdSecret(userId);
-        if (!user?.totpSecret || !verifyTotp(user.totpSecret, body.code)) {
-          throw new HttpError(400, "That code is not valid.");
-        }
-        await noteStepUp(req, userId, "Confirmed this session with an authenticator code.");
-        res.status(204).send();
-        return;
-      }
-      if (body.code) {
-        const ok = await consumeRecoveryCode(userId, body.code);
-        if (!ok) throw new HttpError(400, "That code is not valid.");
-        await noteStepUp(req, userId, "Confirmed this session with a recovery code.");
-        res.status(204).send();
-        return;
-      }
-      throw new HttpError(400, "Confirm it is you to continue.");
-    })
-  );
-  router.get(
-    "/security-events",
-    requireAuth,
-    asyncHandler(async (req, res) => {
-      const events = await listSecurityEvents(currentUserId(req));
-      res.json(
-        events.map((event) => ({
-          id: event._id.toString(),
-          type: event.type,
-          summary: event.summary,
-          ip: event.ipCoarse,
-          device: event.device ?? "",
-          deviceType: event.deviceType ?? "",
-          location: event.location ?? "",
-          createdAt: event.createdAt.toISOString()
-        }))
-      );
-    })
-  );
-  router.post(
-    "/passkeys/register/options",
-    requireAuth,
-    asyncHandler(async (req, res) => {
-      const user = await users.byId(currentUserId(req));
-      if (!user) throw new HttpError(401, "Sign in to continue.");
-      res.json(await registrationOptions(req, user.id, user.email));
-    })
-  );
-  router.post(
-    "/passkeys/register/verify",
-    requireAuth,
-    asyncHandler(async (req, res) => {
-      const name = typeof req.body?.name === "string" ? req.body.name : "Passkey";
-      await verifyRegistration(req, currentUserId(req), req.body, name);
-      await recordSecurity({
-        userId: currentUserId(req),
-        type: "passkey-added",
-        summary: "A passkey was added.",
-        ...requestAudit(req)
-      });
-      res.status(204).send();
-    })
-  );
-  router.get(
-    "/passkeys",
-    requireAuth,
-    asyncHandler(async (req, res) => {
-      const passkeys = await listPasskeys(currentUserId(req));
-      res.json(
-        passkeys.map((passkey) => ({
-          id: passkey._id.toString(),
-          name: passkey.name,
-          createdAt: passkey.createdAt.toISOString()
-        }))
-      );
-    })
-  );
-  router.delete(
-    "/passkeys/:id",
-    requireAuth,
-    asyncHandler(async (req, res) => {
-      parseBody(stepUpSchema, req.body ?? {});
-      await requireFreshStepUp(req.sessionId);
-      const removed = await deletePasskey(currentUserId(req), req.params.id);
-      if (!removed) throw new HttpError(404, "Passkey not found.");
-      await recordSecurity({
-        userId: currentUserId(req),
-        type: "passkey-removed",
-        summary: "A passkey was removed.",
-        ...requestAudit(req)
-      });
-      res.status(204).send();
-    })
-  );
-  router.post(
-    "/passkeys/login/options",
-    asyncHandler(async (req, res) => {
-      res.json(await authenticationOptions(req));
-    })
-  );
-  router.post(
-    "/passkeys/login/verify",
-    asyncHandler(async (req, res) => {
-      const verified = await verifyPasskey(req, req.body, "login");
-      const user = await users.byId(verified.userId);
-      if (!user) throw new HttpError(401, "Sign in to continue.");
-      await ensurePersonalWorkspace(user.id);
-      const fresh = await users.byId(user.id) ?? user;
-      const [started, dashboard] = await Promise.all([
-        startSession(req, res, user.id),
-        dashboardForUser(fresh)
-      ]);
-      await recordSecurity({
-        userId: user.id,
-        type: "sign-in",
-        summary: "Signed in with a passkey.",
-        ...requestAudit(req)
-      });
-      res.json({ ...publicUser(user), newDevice: started.newDevice, ...dashboard ? { dashboard } : {} });
-    })
-  );
-  router.post(
-    "/passkeys/step-up/options",
-    requireAuth,
-    asyncHandler(async (req, res) => {
-      res.json(await authenticationOptions(req, currentUserId(req)));
-    })
-  );
-  router.post(
-    "/passkeys/step-up/verify",
-    requireAuth,
-    asyncHandler(async (req, res) => {
-      const verified = await verifyPasskey(req, req.body, "stepup");
-      if (verified.userId !== currentUserId(req)) throw new HttpError(401, "Passkey not recognized.");
-      await noteStepUp(req, currentUserId(req), "Confirmed this session with a passkey.");
-      res.status(204).send();
-    })
-  );
-  router.get(
-    "/mfa",
-    requireAuth,
-    asyncHandler(async (req, res) => {
-      const user = await users.byId(currentUserId(req));
-      if (!user) throw new HttpError(401, "Sign in to continue.");
-      res.json({ totp: Boolean(user.totpEnabledAt), passkey: await userHasPasskey(user.id) });
     })
   );
   return router;

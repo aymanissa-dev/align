@@ -54,6 +54,35 @@ async function noteStepUp(req: Request, userId: string, summary: string) {
   })
 }
 
+function credentialText(value: string | undefined): string {
+  return value?.trim() ?? ''
+}
+
+/** Reject a blank password and a blank code before any other sensitive check. */
+export function assertCredentialPresent(body: { password?: string; code?: string }): void {
+  if (!credentialText(body.password) && !credentialText(body.code)) {
+    throw new HttpError(400, 'Enter your current password or a verification code.')
+  }
+}
+
+/**
+ * A fresh step-up is not itself a credential. Password, authenticator code, or
+ * recovery code must still match, and a match here does not refresh stepUpAt.
+ */
+export async function requireSensitiveCredential(
+  userId: string,
+  body: { password?: string; code?: string },
+): Promise<void> {
+  const password = credentialText(body.password)
+  const code = credentialText(body.code)
+  assertCredentialPresent(body)
+  const user = await users.byIdSecret(userId)
+  if (password && user?.passwordHash && (await checkPassword(password, user.passwordHash))) return
+  if (code && user?.totpSecret && verifyTotp(user.totpSecret, code)) return
+  if (code && (await consumeRecoveryCode(userId, code))) return
+  throw new HttpError(400, code ? 'That code is not valid.' : 'Current password is incorrect.')
+}
+
 export function mfaRouter(): Router {
   const router = Router()
 
@@ -91,13 +120,9 @@ export function mfaRouter(): Router {
     requireAuth,
     asyncHandler(async (req, res) => {
       const body = parseBody(stepUpSchema, req.body)
+      assertCredentialPresent(body)
       await requireFreshStepUp(req.sessionId)
-      if (body.code) {
-        const user = await users.byIdSecret(currentUserId(req))
-        if (!user?.totpSecret || !verifyTotp(user.totpSecret, body.code)) {
-          throw new HttpError(400, 'That code is not valid.')
-        }
-      }
+      await requireSensitiveCredential(currentUserId(req), body)
       await disableTotp(currentUserId(req))
       await recordSecurity({
         userId: currentUserId(req),
@@ -113,8 +138,10 @@ export function mfaRouter(): Router {
     '/recovery/regenerate',
     requireAuth,
     asyncHandler(async (req, res) => {
-      parseBody(stepUpSchema, req.body)
+      const body = parseBody(stepUpSchema, req.body)
+      assertCredentialPresent(body)
       await requireFreshStepUp(req.sessionId)
+      await requireSensitiveCredential(currentUserId(req), body)
       const codes = await regenerateRecoveryCodes(currentUserId(req))
       await recordSecurity({
         userId: currentUserId(req),
@@ -264,8 +291,10 @@ export function mfaRouter(): Router {
     '/passkeys/:id',
     requireAuth,
     asyncHandler(async (req, res) => {
-      parseBody(stepUpSchema, req.body ?? {})
+      const body = parseBody(stepUpSchema, req.body ?? {})
+      assertCredentialPresent(body)
       await requireFreshStepUp(req.sessionId)
+      await requireSensitiveCredential(currentUserId(req), body)
       const removed = await deletePasskey(currentUserId(req), req.params.id)
       if (!removed) throw new HttpError(404, 'Passkey not found.')
       await recordSecurity({
