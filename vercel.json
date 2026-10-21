@@ -9,7 +9,12 @@
       "destination": "/api/index"
     },
     {
-      "source": "/((?!api/|assets/).*)",
+      "source": "/assets/(.*)",
+      "destination": "/asset-missing.txt",
+      "statusCode": 404
+    },
+    {
+      "source": "/((?!api/)(?!assets/).*)",
       "destination": "/index.html"
     }
   ],
@@ -24,6 +29,23 @@
       ]
     },
     {
+      "source": "/asset-missing.txt",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "text/plain; charset=utf-8"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        }
+      ]
+    },
+    {
       "source": "/assets/(.*)",
       "headers": [
         {
@@ -33,7 +55,7 @@
       ]
     },
     {
-      "source": "/((?!api/|assets/).*)",
+      "source": "/((?!api/)(?!assets/).*)",
       "headers": [
         {
           "key": "Cache-Control",
