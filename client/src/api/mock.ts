@@ -28,10 +28,10 @@ import type {
  * with bcrypt and never returns them. Session state mimics the httpOnly cookie.
  */
 
-const STORAGE_KEY = 'align.db.v1'
+const STORAGE_KEY = 'align.db.v2'
 const DELAY_MS = 120
 
-type StoredUser = User & { password: string; resetToken?: string | null; resetExpires?: string | null }
+type StoredUser = User & { password: string; recoveryKey?: string | null }
 type StoredProject = Omit<Project, 'version'> & { userId: string; version?: number }
 type StoredTask = Omit<Task, 'version'> & { userId: string; clientId?: string; version?: number }
 type StoredNote = Omit<Note, 'version'> & { userId: string; version?: number }
@@ -89,139 +89,17 @@ function isDb(value: unknown): value is Db {
 }
 
 function seed(): Db {
-  const created = '2026-04-02T15:00:00.000Z'
-  const userId = 'usr_demo'
-  const website = 'prj_website'
-  const launch = 'prj_launch'
-  const archive = 'prj_archive'
-
   return {
     sessionUserId: null,
-    users: [
-      {
-        id: userId,
-        name: 'Alex Rivera',
-        email: 'demo@align.app',
-        accent: '#171717',
-        password: 'password',
-        createdAt: created,
-      },
-    ],
-    projects: [
-      {
-        id: website,
-        userId,
-        name: 'Website refresh',
-        description: 'Quiet redesign of the marketing site. Fewer pages, clearer writing.',
-        status: 'active',
-        createdAt: '2026-09-02T15:00:00.000Z',
-        updatedAt: '2026-10-12T18:30:00.000Z',
-      },
-      {
-        id: launch,
-        userId,
-        name: 'October release',
-        description: 'Checklist for the launch: notes, changelog, and the walkthrough.',
-        status: 'active',
-        createdAt: '2026-10-01T15:00:00.000Z',
-        updatedAt: '2026-10-13T16:00:00.000Z',
-      },
-      {
-        id: archive,
-        userId,
-        name: 'Brand workshop',
-        description: 'Identity exercises from last year. Kept for reference.',
-        status: 'archived',
-        createdAt: '2025-11-14T15:00:00.000Z',
-        updatedAt: '2025-12-02T15:00:00.000Z',
-      },
-    ],
-    tasks: [
-      task(userId, website, 'tsk_audit', 'Audit the current pages', true, null, 1, '2026-09-03T15:00:00.000Z'),
-      task(userId, website, 'tsk_home', 'Rewrite the homepage', true, null, 2, '2026-09-18T15:00:00.000Z'),
-      task(userId, website, 'tsk_type', 'Set type and color tokens', false, '2026-10-18', 3, '2026-10-08T15:00:00.000Z'),
-      task(userId, website, 'tsk_cut', 'Remove unused sections', false, '2026-10-22', 4, '2026-10-10T15:00:00.000Z'),
-      task(userId, launch, 'tsk_log', 'Write the changelog', false, '2026-10-16', 1, '2026-10-02T15:00:00.000Z'),
-      task(userId, launch, 'tsk_note', 'Draft the launch note', false, '2026-10-17', 2, '2026-10-04T15:00:00.000Z'),
-      task(userId, launch, 'tsk_video', 'Record the walkthrough', true, null, 3, '2026-10-06T15:00:00.000Z'),
-    ],
+    users: [],
+    projects: [],
+    tasks: [],
+    notes: [],
     labels: [],
     activities: [],
     notifications: [],
     whiteboards: [],
-    notes: [
-      note(
-        userId,
-        website,
-        'nte_home',
-        'Homepage direction',
-        'Lead with the product, not the company story.\n\nKeep the first screen to a single sentence and one action. Move the feature grid below the fold, and cut the logo carousel.\n\nOpen questions:\n- Do we still need a pricing page for the beta?\n- Photography vs. product UI crops.',
-        '2026-10-11T15:00:00.000Z',
-      ),
-      note(
-        userId,
-        website,
-        'nte_nav',
-        'Navigation notes',
-        'Primary nav: Product, Notes, Pricing, Sign in.\n\nDrop the blog from the header until there are three posts worth reading.',
-        '2026-10-09T15:00:00.000Z',
-      ),
-      note(
-        userId,
-        launch,
-        'nte_tone',
-        'Launch tone',
-        'Tone: calm and specific. Say what shipped, who it helps, and what is intentionally not in this release.\n\nAvoid “excited to announce”.',
-        '2026-10-13T15:00:00.000Z',
-      ),
-      note(
-        userId,
-        archive,
-        'nte_brand',
-        'Workshop summary',
-        'The workshop settled on a black-and-white system and a single typeface. Color comes later, if at all.',
-        '2025-11-20T15:00:00.000Z',
-      ),
-    ],
   }
-}
-
-function task(
-  userId: string,
-  projectId: string,
-  id: string,
-  title: string,
-  completed: boolean,
-  dueDate: string | null,
-  order: number,
-  createdAt: string,
-): StoredTask {
-  return {
-    id,
-    userId,
-    projectId,
-    title,
-    completed,
-    dueDate,
-    priority: 'medium',
-    labelIds: [],
-    plannedFor: null,
-    completedOn: null,
-    order,
-    createdAt,
-    updatedAt: createdAt,
-  }
-}
-
-function note(
-  userId: string,
-  projectId: string,
-  id: string,
-  title: string,
-  body: string,
-  createdAt: string,
-): StoredNote {
-  return { id, userId, projectId, title, body, createdAt, updatedAt: createdAt }
 }
 
 function load(): Db {
@@ -491,18 +369,20 @@ export const mockApi = {
     if (state.users.some((user) => user.email === email)) {
       throw new ApiError(409, "We couldn't create an account with those details.")
     }
+    const recoveryKey = 'aaaa-bbbb-cccc-dddd-eeee-ffff-1111-2222'
     const user: StoredUser = {
       id: uid('usr'),
       name,
       email,
       accent: '#171717',
       password: input.password,
+      recoveryKey,
       createdAt: now(),
     }
     state.users.push(user)
     state.sessionUserId = user.id
     persist()
-    return publicUser(user)
+    return { ...publicUser(user), recoveryKey }
   },
 
   async login(input) {
@@ -525,17 +405,6 @@ export const mockApi = {
 
   async authProviders() {
     return { google: false }
-  },
-
-  async verifyEmail() {
-    await wait()
-    const state = load()
-    return publicUser(requireUser(state))
-  },
-
-  async sendVerification() {
-    await wait()
-    return { message: "We've sent a verification link." }
   },
 
   async listSessions() {
@@ -585,27 +454,51 @@ export const mockApi = {
     return user ? publicUser(user) : null
   },
 
-  async forgotPassword(email) {
-    await wait()
-    const normalized = email.trim().toLowerCase()
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) throw new ApiError(400, 'Enter a valid email.')
-    return { message: "If an account exists, we've sent a reset link." }
-  },
-
   async resetPassword(input) {
     await wait()
     const state = load()
-    const password = requirePassword(input.password ?? '', 'Password')
-    const user = state.users.find((item) => item.resetToken && item.resetToken === input.token)
-    if (!user || !user.resetExpires || new Date(user.resetExpires).getTime() < Date.now()) {
-      throw new ApiError(400, 'This reset link is invalid or has expired.')
-    }
+    const password = requirePassword(input.password ?? '', 'New password')
+    const email = emailOf(input.email ?? '')
+    const user = state.users.find((item) => item.email === email)
+    const presented = (input.recoveryKey ?? '').toLowerCase().replace(/[^a-f0-9]/g, '')
+    const stored = (user?.recoveryKey ?? '').toLowerCase().replace(/[^a-f0-9]/g, '')
+    const code = (input.code ?? '').trim()
+    const matches = presented.length > 0 ? presented === stored : code.length > 0
+    if (!user || !matches) throw new ApiError(400, "Those details don't match.")
     user.password = password
-    user.resetToken = null
-    user.resetExpires = null
+    const recoveryKey = 'bbbb-cccc-dddd-eeee-ffff-1111-2222-3333'
+    user.recoveryKey = recoveryKey
     state.sessionUserId = user.id
     persist()
-    return publicUser(user)
+    return { ...publicUser(user), recoveryKey }
+  },
+
+  async passkeyResetOptions() {
+    await wait()
+    return {}
+  },
+
+  async resetWithPasskey(input) {
+    await wait()
+    const state = load()
+    const user = state.users[0]
+    if (!user) throw new ApiError(400, "Those details don't match.")
+    user.password = requirePassword(input.password ?? '', 'New password')
+    const recoveryKey = 'cccc-dddd-eeee-ffff-1111-2222-3333-4444'
+    user.recoveryKey = recoveryKey
+    state.sessionUserId = user.id
+    persist()
+    return { ...publicUser(user), recoveryKey }
+  },
+
+  async createRecoveryKey() {
+    await wait()
+    const state = load()
+    const user = requireUser(state)
+    const recoveryKey = 'dddd-eeee-ffff-1111-2222-3333-4444-5555'
+    user.recoveryKey = recoveryKey
+    persist()
+    return { recoveryKey }
   },
 
   async updateProfile(input) {
@@ -1185,7 +1078,7 @@ export const mockApi = {
     return {}
   },
   async passkeyStepUpVerify() {},
-  async changeEmail(input: { email: string; password: string }) {
+  async changeEmail(input: { email: string }) {
     await wait()
     const state = load()
     const user = requireUser(state)

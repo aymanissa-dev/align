@@ -9,6 +9,7 @@ type Registered = {
   password: string
   id: string
   name: string
+  recoveryKey: string
 }
 
 export function csrfToken(setCookie: string | string[] | undefined): string | undefined {
@@ -29,5 +30,12 @@ export async function registerUser(name = 'Ada Lovelace', email = `ada-${crypto.
   if (response.status !== 201) {
     throw new Error(`register failed: ${response.status} ${JSON.stringify(response.body)}`)
   }
-  return { agent, email, password, id: response.body.id as string, name: response.body.name as string }
+  return {
+    agent,
+    email,
+    password,
+    id: response.body.id as string,
+    name: response.body.name as string,
+    recoveryKey: response.body.recoveryKey as string,
+  }
 }

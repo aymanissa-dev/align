@@ -34,11 +34,19 @@ function valid(ip) {
   const trimmed = ip.trim();
   return isIP(trimmed) ? normalize(trimmed) : void 0;
 }
+function firstAddress(value) {
+  return valid(value?.split(",")[0]);
+}
+function onPlatform() {
+  if (process.env.VERCEL === "1") return true;
+  const env = process.env.VERCEL_ENV;
+  return env === "production" || env === "preview";
+}
 function clientIp(req) {
-  if (process.env.VERCEL === "1") {
-    const real = valid(req.get("x-real-ip"));
+  if (onPlatform()) {
+    const real = firstAddress(req.get("x-real-ip"));
     if (real) return real;
-    const forwarded = valid(req.get("x-forwarded-for")?.split(",")[0]);
+    const forwarded = firstAddress(req.get("x-forwarded-for"));
     if (forwarded) return forwarded;
   }
   return valid(req.socket?.remoteAddress ?? void 0) ?? "unknown";
@@ -121,7 +129,8 @@ var userSchema = new Schema(
       type: [{ hash: { type: String, required: true }, usedAt: { type: Date, default: null } }],
       default: [],
       select: false
-    }
+    },
+    recoveryKeyHash: { type: String, select: false, default: null }
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );
@@ -1542,7 +1551,6 @@ var MFA_MAX = 5;
 var AUTH_ROUTE_LIMIT = 60;
 var PRODUCTION_MAX = {
   login: 10,
-  forgot: 5,
   reset: 10
 };
 function duplicateKey(error) {
@@ -1691,7 +1699,7 @@ async function clearMfaFailures(userId) {
 }
 
 // src/routes/auth.ts
-import { randomBytes as randomBytes7 } from "node:crypto";
+import { randomBytes as randomBytes6 } from "node:crypto";
 import { Router as Router3 } from "express";
 
 // src/data/content.ts
@@ -2240,15 +2248,6 @@ async function consumeRecoveryCode(userId, code) {
   );
   return Boolean(updated);
 }
-async function clearAllFactors(userId) {
-  const user = await User.findById(userId).select("+totpSecret +recoveryCodes");
-  if (!user) return;
-  user.totpSecret = null;
-  user.totpEnabledAt = null;
-  user.set("recoveryCodes", []);
-  await user.save();
-  await Passkey.deleteMany({ userId });
-}
 async function notifyPasskeyAdded(userId) {
   await Notification.create({
     userId,
@@ -2356,7 +2355,7 @@ async function verifyPasskey(req, response, kind) {
   if (!verified.verified) throw new HttpError(401, "Passkey could not be verified.");
   passkey.counter = verified.authenticationInfo.newCounter;
   await passkey.save();
-  return { userId: passkey.userId.toString() };
+  return { userId: passkey.userId.toString(), passkeyId: passkey.id };
 }
 async function listPasskeys(userId) {
   return Passkey.find({ userId }).sort({ createdAt: -1 }).lean();
@@ -2370,7 +2369,7 @@ async function listSecurityEvents(userId) {
 }
 
 // src/data/users.ts
-var SECRET = "+passwordHash +totpSecret +recoveryCodes";
+var SECRET = "+passwordHash +totpSecret +recoveryCodes +recoveryKeyHash";
 var users = {
   byEmail(email2) {
     return User.findOne({ email: email2 });
@@ -2596,12 +2595,17 @@ var registerSchema = z.object({
   email,
   password: password()
 });
-var forgotSchema = z.object({
-  email
+var passkeyResetSchema = z.object({
+  password: password("New password"),
+  response: z.record(z.unknown())
 });
 var resetSchema = z.object({
-  token: z.string({ required_error: "This reset link is invalid or has expired." }).trim().min(20, "This reset link is invalid or has expired.").max(200, "This reset link is invalid or has expired."),
-  password: password()
+  email,
+  password: password("New password"),
+  recoveryKey: z.string().trim().max(80, "Those details don't match.").optional(),
+  code: z.string().trim().max(32, "Those details don't match.").optional()
+}).refine((value) => Boolean(value.recoveryKey) !== Boolean(value.code), {
+  message: "Use a recovery key or a two-factor recovery code."
 });
 var loginSchema = z.object({
   email: z.string({
@@ -2619,9 +2623,6 @@ var profileSchema = z.object({
   accent: accentColor.optional()
 }).refine((value) => value.name !== void 0 || value.accent !== void 0, {
   message: "Nothing to update."
-});
-var verifySchema = z.object({
-  token: z.string({ required_error: "This verification link is invalid or has expired." }).trim().min(20, "This verification link is invalid or has expired.").max(200, "This verification link is invalid or has expired.")
 });
 var passwordSchema = z.object({
   currentPassword: z.string({
@@ -2728,8 +2729,7 @@ var mfaSchema = z.object({
   method: z.enum(["totp", "recovery"])
 });
 var emailChangeSchema = z.object({
-  email,
-  password: z.string().min(1, "Confirm it is you to continue.").max(128, "Confirm it is you to continue.")
+  email
 });
 var stepUpSchema = z.object({
   password: z.string().max(128, "Confirm it is you to continue.").optional(),
@@ -3095,6 +3095,71 @@ function mfaRouter() {
   return router;
 }
 
+// src/data/recoveryKey.ts
+import { randomBytes as randomBytes5, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
+import { Types as Types6 } from "mongoose";
+var DUMMY_KEY = "align-missing-recovery-key";
+function generateRecoveryKey() {
+  const hex2 = randomBytes5(16).toString("hex");
+  return hex2.match(/.{4}/g)?.join("-") ?? hex2;
+}
+function normalizeRecoveryKey(value) {
+  return value.toLowerCase().replace(/[^a-f0-9]/g, "");
+}
+function hashRecoveryKey(value) {
+  return hashToken(`account-recovery:${normalizeRecoveryKey(value)}`);
+}
+function sameHash(left, right) {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && timingSafeEqual3(a, b);
+}
+async function rejectUnknownRecovery(presented) {
+  const hash = hashRecoveryKey(presented || DUMMY_KEY);
+  sameHash(hash, hashRecoveryKey(DUMMY_KEY));
+  await User.findOneAndUpdate({ _id: new Types6.ObjectId(), recoveryKeyHash: hash }, { $set: { failedLogins: 0 } });
+}
+async function consumeAccountRecoveryKey(userId, presented, passwordHash) {
+  const key = generateRecoveryKey();
+  const updated = await User.findOneAndUpdate(
+    { _id: userId, recoveryKeyHash: hashRecoveryKey(presented) },
+    {
+      $set: {
+        recoveryKeyHash: hashRecoveryKey(key),
+        passwordHash,
+        failedLogins: 0,
+        lockUntil: null,
+        pendingVerification: false
+      }
+    }
+  );
+  return updated ? key : null;
+}
+async function saveResetPassword(userId, passwordHash) {
+  await User.updateOne(
+    { _id: userId },
+    { $set: { passwordHash, failedLogins: 0, lockUntil: null, pendingVerification: false } }
+  );
+}
+async function issueRecoveryKey(userId) {
+  const key = generateRecoveryKey();
+  await User.updateOne({ _id: userId }, { $set: { recoveryKeyHash: hashRecoveryKey(key) } });
+  return key;
+}
+async function clearFactorsAfterReset(userId, method, passkeyId) {
+  if (method !== "totp-code") {
+    await User.updateOne(
+      { _id: userId },
+      { $set: { totpSecret: null, totpEnabledAt: null, recoveryCodes: [] } }
+    );
+  }
+  if (method === "passkey" && passkeyId) {
+    await Passkey.deleteMany({ userId, _id: { $ne: passkeyId } });
+    return;
+  }
+  await Passkey.deleteMany({ userId });
+}
+
 // src/hibp.ts
 import { createHash as createHash3 } from "node:crypto";
 var RANGE = "https://api.pwnedpasswords.com/range/";
@@ -3139,156 +3204,8 @@ function watchBreachedPassword(userId, password2, fetchImpl = fetch) {
   void noteBreachedPassword(userId, password2, fetchImpl).catch(() => void 0);
 }
 
-// src/mailPolicy.ts
-import { randomBytes as randomBytes6 } from "node:crypto";
-import { Types as Types6 } from "mongoose";
-
-// src/mail.ts
-async function deliverMail(input) {
-  const key = process.env.RESEND_API_KEY;
-  const from = process.env.MAIL_FROM;
-  if (!key || !from) return false;
-  try {
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ from, to: [input.to], subject: input.subject, text: input.text }),
-      signal: AbortSignal.timeout(8e3)
-    });
-    if (!response.ok) {
-      console.error(JSON.stringify({ msg: "mail-failed", status: response.status }));
-      return false;
-    }
-    return true;
-  } catch (error) {
-    console.error(error);
-    return false;
-  }
-}
-
-// src/tokens.ts
-import { randomBytes as randomBytes5 } from "node:crypto";
-var HOUR_MS = 60 * 60 * 1e3;
-async function issueAuthToken(userId, type) {
-  const token = randomBytes5(32).toString("hex");
-  const ttl = type === "verify" ? 24 * HOUR_MS : HOUR_MS;
-  await AuthToken.deleteMany({ userId, type, usedAt: null });
-  await AuthToken.create({
-    userId,
-    type,
-    tokenHash: hashToken(token),
-    expiresAt: new Date(Date.now() + ttl)
-  });
-  return token;
-}
-async function consumeAuthToken(token, type) {
-  const found = await AuthToken.findOneAndUpdate(
-    {
-      tokenHash: hashToken(token),
-      type,
-      usedAt: null,
-      expiresAt: { $gt: /* @__PURE__ */ new Date() }
-    },
-    { $set: { usedAt: /* @__PURE__ */ new Date() } }
-  );
-  return found ? found.userId.toString() : null;
-}
-
-// src/mailPolicy.ts
-var RESET_MESSAGE = "If an account exists, we've sent a reset link.";
-var VERIFY_MESSAGE = "We've sent a verification link.";
-var REGISTER_MESSAGE = "Check your email to finish creating your account.";
-var QUIET_FLOOR_MS = 300;
-var MAIL_FLOOR_MS = 1e3;
-function exposeDevTokens() {
-  if (process.env.VERCEL_ENV === "production") return false;
-  if (process.env.NODE_ENV === "production") return false;
-  return process.env.EXPOSE_DEV_TOKENS === "1";
-}
-function mailConfigured() {
-  return Boolean(process.env.RESEND_API_KEY && process.env.MAIL_FROM);
-}
-async function burnAuthTokenWork(type) {
-  const token = randomBytes6(32).toString("hex");
-  hashToken(token);
-  await AuthToken.deleteMany({ userId: new Types6.ObjectId(), type, usedAt: null });
-}
-function logMailRequest(kind, email2) {
-  if (exposeDevTokens() || mailConfigured()) return;
-  console.info(JSON.stringify({ msg: kind, email: email2 }));
-}
-async function settleMailResponse(started) {
-  if (exposeDevTokens()) return;
-  const floor = mailConfigured() ? MAIL_FLOOR_MS : QUIET_FLOOR_MS;
-  const wait2 = floor - (performance.now() - started);
-  if (wait2 > 0) await new Promise((resolve) => setTimeout(resolve, wait2));
-}
-async function matchUnknownMailTiming() {
-  if (!mailConfigured()) return;
-  try {
-    await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({}),
-      signal: AbortSignal.timeout(8e3)
-    });
-  } catch {
-  }
-}
-async function issueMailedToken(options) {
-  if (!mailConfigured() && !exposeDevTokens()) {
-    await burnAuthTokenWork(options.type);
-    logMailRequest(options.log, options.email);
-    return void 0;
-  }
-  const token = await issueAuthToken(options.userId, options.type);
-  if (!mailConfigured()) return exposeDevTokens() ? token : void 0;
-  const link = `${options.origin}/${options.path}?token=${encodeURIComponent(token)}`;
-  const mailed = await deliverMail({ to: options.email, subject: options.subject, text: options.text(link) });
-  if (mailed || exposeDevTokens()) return exposeDevTokens() && !mailed ? token : void 0;
-  await AuthToken.deleteMany({ userId: options.userId, type: options.type, usedAt: null });
-  return void 0;
-}
-function devTokenField(key, token) {
-  if (!token || !exposeDevTokens()) return {};
-  return { [key]: token };
-}
-async function sendSignupNotice(email2) {
-  if (!mailConfigured()) return;
-  await deliverMail({
-    to: email2,
-    subject: "Someone tried to sign up with your email",
-    text: "Someone tried to sign up with your email. If this was you, sign in with your existing password. If it wasn't, you can ignore this message."
-  });
-}
-async function preparePasswordReset(email2, origin) {
-  const user = await users.byEmail(email2);
-  if (!user) {
-    await burnAuthTokenWork("reset");
-    logMailRequest("password-reset-requested", email2);
-    await matchUnknownMailTiming();
-    return void 0;
-  }
-  return issueMailedToken({
-    userId: user.id,
-    email: user.email,
-    type: "reset",
-    subject: "Reset your Align password",
-    text: (link) => `Reset your password by opening this link within one hour:
-${link}`,
-    origin,
-    path: "reset",
-    log: "password-reset-requested"
-  });
-}
-
 // src/routes/auth.ts
+import { Types as Types7 } from "mongoose";
 function duplicateEmail(error) {
   if (typeof error !== "object" || error === null || !("code" in error) || error.code !== 11e3) return false;
   const pattern = "keyPattern" in error && typeof error.keyPattern === "object" && error.keyPattern !== null ? error.keyPattern : null;
@@ -3299,6 +3216,29 @@ function appOrigin(req) {
   const configured = process.env.APP_ORIGIN?.replace(/\/$/, "");
   if (configured) return configured;
   return `${req.protocol}://${req.get("host")}`;
+}
+var RECOVERY_MISMATCH = "Those details don't match.";
+function asPasskeyAssertion(value) {
+  const nested = value.response;
+  const clientDataJSON = nested && typeof nested === "object" && "clientDataJSON" in nested ? nested.clientDataJSON : void 0;
+  if (typeof value.id !== "string" || typeof clientDataJSON !== "string" || !clientDataJSON) {
+    throw new HttpError(400, "Passkey response is invalid.");
+  }
+  return value;
+}
+async function finishReset(req, res, userId, summary, recoveryKey) {
+  await revokeSessions(userId);
+  await ensurePersonalWorkspace(userId);
+  const started = await startSession(req, res, userId);
+  await recordSecurity({
+    userId,
+    type: "password-reset",
+    summary,
+    ...requestAudit(req)
+  });
+  const user = await users.byId(userId);
+  if (!user) throw new HttpError(401, "Sign in to continue.");
+  res.json({ ...publicUser(user), recoveryKey, newDevice: started.newDevice });
 }
 function googleConfigured() {
   return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
@@ -3344,72 +3284,34 @@ function authRouter(limiter) {
       const input = parseBody(registerSchema, req.body);
       const attempt = await enforceAuthLimit("register", clientIp(req));
       await assertPasswordNotBreached(input.password);
-      const startedAt = performance.now();
       const passwordHash = await hashPassword(input.password);
       const existing = await users.byEmail(input.email);
-      if (mailConfigured()) {
-        if (existing) {
-          await sendSignupNotice(existing.email);
-        } else {
-          try {
-            const user2 = await users.create({
-              name: input.name,
-              email: input.email,
-              passwordHash,
-              emailVerifiedAt: null,
-              pendingVerification: true
-            });
-            await ensurePersonalWorkspace(user2.id);
-            await claimInvites(user2.id, user2.email);
-            await issueMailedToken({
-              userId: user2.id,
-              email: user2.email,
-              type: "verify",
-              subject: "Verify your Align email",
-              text: (link) => `Confirm your email by opening this link within 24 hours:
-${link}`,
-              origin: appOrigin(req),
-              path: "verify",
-              log: "verification-requested"
-            });
-          } catch (error) {
-            if (!duplicateEmail(error)) throw error;
-            await sendSignupNotice(input.email);
-          }
-        }
-        await settleMailResponse(startedAt);
-        res.status(202).json({ message: REGISTER_MESSAGE });
-        return;
-      }
       await delayFailedAttempt(attempt);
       if (existing) {
         throw new HttpError(409, "We couldn't create an account with those details.");
       }
-      const user = await users.create({
-        name: input.name,
-        email: input.email,
-        passwordHash,
-        emailVerifiedAt: null,
-        pendingVerification: false
-      });
+      const recoveryKey = generateRecoveryKey();
+      let user;
+      try {
+        user = await users.create({
+          name: input.name,
+          email: input.email,
+          passwordHash,
+          emailVerifiedAt: null,
+          pendingVerification: false,
+          recoveryKeyHash: hashRecoveryKey(recoveryKey)
+        });
+      } catch (error) {
+        if (!duplicateEmail(error)) throw error;
+        throw new HttpError(409, "We couldn't create an account with those details.");
+      }
       await ensurePersonalWorkspace(user.id);
       await claimInvites(user.id, user.email);
-      const verifyToken = await issueMailedToken({
-        userId: user.id,
-        email: user.email,
-        type: "verify",
-        subject: "Verify your Align email",
-        text: (link) => `Confirm your email by opening this link within 24 hours:
-${link}`,
-        origin: appOrigin(req),
-        path: "verify",
-        log: "verification-requested"
-      });
       const started = await startSession(req, res, user.id);
       res.status(201).json({
         ...publicUser(user),
         newDevice: started.newDevice,
-        ...devTokenField("verifyToken", verifyToken)
+        recoveryKey
       });
     })
   );
@@ -3445,17 +3347,6 @@ ${link}`,
             ...requestAudit(req)
           }).catch(() => void 0);
         }
-        await delayFailedAttempt(failures);
-        throw new HttpError(401, "Email or password is incorrect.");
-      }
-      if (user.pendingVerification) {
-        const failures = await recordLoginFailure(ip, input.email);
-        await recordSecurity({
-          userId: user.id,
-          type: "sign-in-failed",
-          summary: "A sign-in was blocked until the email is verified.",
-          ...requestAudit(req)
-        }).catch(() => void 0);
         await delayFailedAttempt(failures);
         throw new HttpError(401, "Email or password is incorrect.");
       }
@@ -3530,84 +3421,89 @@ ${link}`,
     })
   );
   router.post(
-    "/forgot",
-    limiter,
-    asyncHandler(async (req, res) => {
-      const input = parseBody(forgotSchema, req.body);
-      await enforceAuthLimit("forgot", clientIp(req), input.email);
-      const started = performance.now();
-      const resetToken = await preparePasswordReset(input.email, appOrigin(req));
-      await settleMailResponse(started);
-      res.json({ message: RESET_MESSAGE, ...devTokenField("resetToken", resetToken) });
-    })
-  );
-  router.post(
     "/reset",
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(resetSchema, req.body);
-      await enforceAuthLimit("reset", clientIp(req));
-      const userId = await consumeAuthToken(input.token, "reset");
+      await enforceAuthLimit("reset", clientIp(req), input.email);
       await assertPasswordNotBreached(input.password);
-      const user = userId ? await users.byIdSecret(userId) : null;
-      if (!user) throw new HttpError(400, "This reset link is invalid or has expired.");
-      user.passwordHash = await hashPassword(input.password);
-      user.failedLogins = 0;
-      user.lockUntil = null;
-      await user.save();
-      await clearAllFactors(user.id);
-      await revokeSessions(user.id);
-      await ensurePersonalWorkspace(user.id);
-      await startSession(req, res, user.id);
-      await recordSecurity({
-        userId: user.id,
-        type: "password-reset",
-        summary: "Password was reset. Two-factor authentication, recovery codes, and passkeys were removed and must be set up again.",
-        ...requestAudit(req)
-      });
-      res.json(publicUser(user));
-    })
-  );
-  router.post(
-    "/verify",
-    asyncHandler(async (req, res) => {
-      const input = parseBody(verifySchema, req.body);
-      const userId = await consumeAuthToken(input.token, "verify");
-      const user = userId ? await users.byId(userId) : null;
-      if (!user) throw new HttpError(400, "This verification link is invalid or has expired.");
-      const finishSignup = Boolean(user.pendingVerification) || !user.emailVerifiedAt;
-      if (!user.emailVerifiedAt) user.emailVerifiedAt = /* @__PURE__ */ new Date();
-      user.pendingVerification = false;
-      await user.save();
-      if (finishSignup) await startSession(req, res, user.id);
-      res.json(publicUser(user));
-    })
-  );
-  router.post(
-    "/verify/send",
-    requireAuth,
-    asyncHandler(async (req, res) => {
-      const user = await users.byId(currentUserId(req));
-      if (!user) throw new HttpError(401, "Sign in to continue.");
-      if (user.emailVerifiedAt) {
-        res.json({ message: "This email is already verified." });
+      const passwordHash = await hashPassword(input.password);
+      const user = await users.byEmailSecret(input.email);
+      if (!user) {
+        if (input.recoveryKey) await rejectUnknownRecovery(input.recoveryKey);
+        else await consumeRecoveryCode(new Types7.ObjectId().toString(), input.code ?? "");
+        throw new HttpError(400, RECOVERY_MISMATCH);
+      }
+      if (input.recoveryKey) {
+        const recoveryKey2 = await consumeAccountRecoveryKey(user.id, input.recoveryKey, passwordHash);
+        if (!recoveryKey2) throw new HttpError(400, RECOVERY_MISMATCH);
+        await clearFactorsAfterReset(user.id, "recovery-key");
+        await finishReset(
+          req,
+          res,
+          user.id,
+          "Password was reset with an account recovery key. Two-factor authentication and passkeys were removed. A new recovery key was issued.",
+          recoveryKey2
+        );
         return;
       }
-      const verifyToken = await issueMailedToken({
-        userId: user.id,
-        email: user.email,
-        type: "verify",
-        subject: "Verify your Align email",
-        text: (link) => `Confirm your email by opening this link within 24 hours:
-${link}`,
-        origin: appOrigin(req),
-        path: "verify",
-        log: "verification-requested"
+      const spent = await consumeRecoveryCode(user.id, input.code ?? "");
+      if (!spent) throw new HttpError(400, RECOVERY_MISMATCH);
+      await saveResetPassword(user.id, passwordHash);
+      const recoveryKey = await issueRecoveryKey(user.id);
+      await clearFactorsAfterReset(user.id, "totp-code");
+      await finishReset(
+        req,
+        res,
+        user.id,
+        "Password was reset with a two-factor recovery code. Passkeys were removed. A new account recovery key was issued.",
+        recoveryKey
+      );
+    })
+  );
+  router.post(
+    "/reset/passkey/options",
+    limiter,
+    asyncHandler(async (req, res) => {
+      await enforceAuthLimit("reset", clientIp(req));
+      res.json(await authenticationOptions(req));
+    })
+  );
+  router.post(
+    "/reset/passkey",
+    limiter,
+    asyncHandler(async (req, res) => {
+      const input = parseBody(passkeyResetSchema, req.body);
+      await enforceAuthLimit("reset", clientIp(req));
+      await assertPasswordNotBreached(input.password);
+      const passwordHash = await hashPassword(input.password);
+      const verified = await verifyPasskey(req, asPasskeyAssertion(input.response), "login");
+      await saveResetPassword(verified.userId, passwordHash);
+      const recoveryKey = await issueRecoveryKey(verified.userId);
+      await clearFactorsAfterReset(verified.userId, "passkey", verified.passkeyId);
+      await finishReset(
+        req,
+        res,
+        verified.userId,
+        "Password was reset with a passkey. Two-factor authentication and other passkeys were removed. A new recovery key was issued.",
+        recoveryKey
+      );
+    })
+  );
+  router.post(
+    "/recovery-key",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      await requireFreshStepUp(req.sessionId);
+      const userId = currentUserId(req);
+      const recoveryKey = await issueRecoveryKey(userId);
+      await recordSecurity({
+        userId,
+        type: "recovery-key-created",
+        summary: "A new account recovery key was created.",
+        ...requestAudit(req)
       });
-      res.json({
-        message: verifyToken && exposeDevTokens() ? "Verification link ready." : VERIFY_MESSAGE,
-        ...devTokenField("verifyToken", verifyToken)
-      });
+      res.json({ recoveryKey });
     })
   );
   router.post(
@@ -3789,7 +3685,7 @@ ${link}`,
         user = await users.create({
           name: (profile.name || email2.split("@")[0] || "Align").slice(0, 80),
           email: email2,
-          passwordHash: await hashPassword(randomBytes7(32).toString("hex")),
+          passwordHash: await hashPassword(randomBytes6(32).toString("hex")),
           emailVerifiedAt: /* @__PURE__ */ new Date(),
           googleId: profile.sub
         });
@@ -3826,15 +3722,8 @@ ${link}`,
     requireAuth,
     asyncHandler(async (req, res) => {
       const input = parseBody(emailChangeSchema, req.body);
-      if (!input.password.trim()) {
-        throw new HttpError(400, "Enter your current password or a verification code.");
-      }
       const userId = currentUserId(req);
       await requireFreshStepUp(req.sessionId);
-      const secret = await users.byIdSecret(userId);
-      if (!secret?.passwordHash || !await checkPassword(input.password, secret.passwordHash)) {
-        throw new HttpError(400, "Current password is incorrect.");
-      }
       const next = input.email.trim().toLowerCase();
       const taken = await users.byEmail(next);
       if (taken && taken.id !== userId) throw new HttpError(409, "An account already uses that email.");
@@ -3846,18 +3735,7 @@ ${link}`,
         summary: "The account email was changed.",
         ...requestAudit(req)
       });
-      const verifyToken = await issueMailedToken({
-        userId: user.id,
-        email: user.email,
-        type: "verify",
-        subject: "Verify your new Align email",
-        text: (link) => `Confirm this email by opening this link within one hour:
-${link}`,
-        origin: appOrigin(req),
-        path: "verify",
-        log: "verification-requested"
-      });
-      res.json({ ...publicUser(user), ...devTokenField("verifyToken", verifyToken) });
+      res.json(publicUser(user));
     })
   );
   router.post(
@@ -4112,7 +3990,7 @@ function notesRouter() {
 
 // src/routes/notifications.ts
 import { Router as Router6 } from "express";
-import { Types as Types8 } from "mongoose";
+import { Types as Types9 } from "mongoose";
 
 // src/dates.ts
 function shiftISODate(iso, days) {
@@ -4123,7 +4001,7 @@ function shiftISODate(iso, days) {
 }
 
 // src/page.ts
-import { Types as Types7 } from "mongoose";
+import { Types as Types8 } from "mongoose";
 var PAGE_SIZE = 50;
 function pageLimit(value, fallback = PAGE_SIZE) {
   const parsed = typeof value === "string" ? Number(value) : fallback;
@@ -4145,7 +4023,7 @@ function decodeCursor(value) {
 }
 function objectIdFromCursor(value) {
   if (!/^[a-f\d]{24}$/i.test(value)) return null;
-  return new Types7.ObjectId(value);
+  return new Types8.ObjectId(value);
 }
 function beforeCursor(value) {
   const parts = decodeCursor(value);
@@ -4298,7 +4176,7 @@ function notificationsRouter() {
       const today = typeof req.query.today === "string" && req.query.today ? requireToday(req.query.today) : null;
       if (today) {
         const rows = await dueRows(tenant, today);
-        const userObjectId = new Types8.ObjectId(userId);
+        const userObjectId = new Types9.ObjectId(userId);
         const expireAt = new Date(Date.now() + NINETY_DAYS_MS2);
         if (rows.length > 0) {
           await db.notifications.bulkWrite(

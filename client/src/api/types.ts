@@ -82,10 +82,7 @@ export type AuthProviders = {
   google: boolean
 }
 
-export type VerifyLink = {
-  message: string
-  verifyToken?: string
-}
+export type RecoverySession = User & { recoveryKey: string; newDevice?: boolean }
 
 export type WriteOpts = {
   version?: number
@@ -248,13 +245,7 @@ export type ProjectPatch = z.infer<typeof projectPatchSchema>
 export type TaskInput = z.infer<typeof taskCreateSchema>
 export type TaskPatch = z.infer<typeof taskPatchSchema>
 
-export type ResetResult = {
-  message: string
-  resetToken?: string
-}
-
-/** A mail-backed signup returns the message. Instant signup returns the user. */
-export type RegisterResult = User | { message: string }
+export type RegisterResult = RecoverySession
 
 export type LabelInput = z.infer<typeof labelCreateSchema>
 export type LabelPatch = z.infer<typeof labelPatchSchema>
@@ -270,10 +261,6 @@ export interface AlignApi {
   logout(): Promise<void>
   /** GET /api/auth/providers */
   authProviders(): Promise<AuthProviders>
-  /** POST /api/auth/verify */
-  verifyEmail(token: string): Promise<User>
-  /** POST /api/auth/verify/send */
-  sendVerification(): Promise<VerifyLink>
   /** GET /api/auth/sessions */
   listSessions(): Promise<AuthSession[]>
   /** DELETE /api/auth/sessions/:id */
@@ -282,14 +269,18 @@ export interface AlignApi {
   revokeAllSessions(password?: string): Promise<void>
   /** POST /api/auth/sessions/revoke-others — keeps the current session */
   revokeOtherSessions(password?: string): Promise<void>
-  /** POST /api/auth/email */
-  changeEmail(input: { email: string; password: string }): Promise<User & { verifyToken?: string }>
+  /** POST /api/auth/email — requires a fresh step-up. No confirmation email. */
+  changeEmail(input: { email: string }): Promise<User>
+  /** POST /api/auth/recovery-key — requires a fresh step-up. The key is returned once. */
+  createRecoveryKey(): Promise<{ recoveryKey: string }>
   /** GET /api/auth/session — 200 even when signed out */
   session(): Promise<User | null>
-  /** POST /api/auth/forgot */
-  forgotPassword(email: string): Promise<ResetResult>
   /** POST /api/auth/reset */
-  resetPassword(input: { token: string; password: string }): Promise<User>
+  resetPassword(input: { email: string; password: string; recoveryKey?: string; code?: string }): Promise<RecoverySession>
+  /** POST /api/auth/reset/passkey/options */
+  passkeyResetOptions(): Promise<unknown>
+  /** POST /api/auth/reset/passkey */
+  resetWithPasskey(input: { password: string; response: unknown }): Promise<RecoverySession>
   /** GET /api/auth/me */
   me(): Promise<User>
   /** PATCH /api/auth/me */

@@ -1,33 +1,66 @@
+import { startAuthentication } from '@simplewebauthn/browser'
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api/index.ts'
+import type { User } from '../api/types.ts'
+import { useAuth } from '../auth/auth-context.ts'
 import { AuthFrame } from '../components/AuthFrame.tsx'
+import { PasswordMeter } from '../components/PasswordMeter.tsx'
+import { RecoveryKeyNotice } from '../components/RecoveryKeyNotice.tsx'
 import { Button, Field, Input } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
+import { isMediumPassword, MEDIUM_PASSWORD_HINT, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
 export function ForgotPasswordPage() {
+  const { acceptSession } = useAuth()
   const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [recoveryKey, setRecoveryKey] = useState('')
+  const [code, setCode] = useState('')
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
-  const [resetToken, setResetToken] = useState('')
-  const [sentMessage, setSentMessage] = useState('')
-  const [sent, setSent] = useState(false)
+  const [issuedKey, setIssuedKey] = useState('')
+  const [signedIn, setSignedIn] = useState<User | null>(null)
   useDocumentTitle('Reset password')
+
+  function validatePassword(): boolean {
+    if (!isMediumPassword(password)) {
+      setError(MEDIUM_PASSWORD_MESSAGE)
+      return false
+    }
+    if (password !== confirm) {
+      setError('Passwords do not match.')
+      return false
+    }
+    return true
+  }
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault()
     setError('')
-    if (!email.trim()) {
-      setError('Email is required.')
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setError('Enter a valid email.')
+      return
+    }
+    if (!validatePassword()) return
+    const key = recoveryKey.trim()
+    const recoveryCode = code.trim()
+    if (Boolean(key) === Boolean(recoveryCode)) {
+      setError('Use a recovery key or a two-factor recovery code.')
       return
     }
     setPending(true)
     try {
-      const result = await api.forgotPassword(email.trim())
-      setSent(true)
-      setSentMessage(result.message)
-      setResetToken(result.resetToken ?? '')
+      const result = await api.resetPassword({
+        email: email.trim(),
+        password,
+        ...(key ? { recoveryKey: key } : { code: recoveryCode }),
+      })
+      const { recoveryKey: nextKey, ...user } = result
+      setIssuedKey(nextKey)
+      setSignedIn(user)
     } catch (caught) {
       setError(errorMessage(caught))
     } finally {
@@ -35,44 +68,104 @@ export function ForgotPasswordPage() {
     }
   }
 
+  async function onPasskey() {
+    setError('')
+    if (!validatePassword()) return
+    setPending(true)
+    try {
+      const options = await api.passkeyResetOptions()
+      const credential = await startAuthentication({ optionsJSON: options as never })
+      const result = await api.resetWithPasskey({ password, response: credential })
+      const { recoveryKey: nextKey, ...user } = result
+      setIssuedKey(nextKey)
+      setSignedIn(user)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  if (issuedKey && signedIn) {
+    return (
+      <AuthFrame title="Save your new recovery key" lede="The previous key no longer works. Align does not email a copy.">
+        <RecoveryKeyNotice recoveryKey={issuedKey} onSaved={() => acceptSession(signedIn)} />
+      </AuthFrame>
+    )
+  }
+
   return (
-    <AuthFrame title="Reset password" lede="If an account exists, we’ll email a one-time link.">
-      {sent ? (
-        <div className="space-y-4">
-          <p className="text-sm leading-6 text-neutral-700">{sentMessage}</p>
-          {resetToken ? (
-            <div className="border border-neutral-200 p-4">
-              <p className="text-sm leading-6 text-neutral-700">
-                Dev tokens are enabled on this server. Use this one-time link. It expires in one hour.
-              </p>
-              <Link
-                to={`/reset?token=${encodeURIComponent(resetToken)}`}
-                className="focus-ring mt-3 inline-flex min-h-11 items-center text-sm text-neutral-950 underline underline-offset-4"
-              >
-                Reset your password
-              </Link>
-            </div>
-          ) : null}
-        </div>
-      ) : (
-        <form onSubmit={onSubmit} className="space-y-4" noValidate>
-          <Field label="Email" htmlFor="email" error={error}>
-            <Input
-              id="email"
-              name="email"
-              type="email"
-              autoComplete="email"
-              inputMode="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              required
-            />
-          </Field>
-          <Button type="submit" className="w-full" disabled={pending}>
-            {pending ? 'Sending…' : 'Send reset link'}
-          </Button>
-        </form>
-      )}
+    <AuthFrame
+      title="Reset password"
+      lede="Align does not send email. Reset with the account recovery key from signup, a two-factor recovery code, or a passkey on this device."
+    >
+      <form onSubmit={onSubmit} className="space-y-4" noValidate>
+        <Field label="Email" htmlFor="email">
+          <Input
+            id="email"
+            name="email"
+            type="email"
+            autoComplete="email"
+            inputMode="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            required
+          />
+        </Field>
+        <Field label="New password" htmlFor="password" hint={MEDIUM_PASSWORD_HINT}>
+          <Input
+            id="password"
+            name="password"
+            type="password"
+            autoComplete="new-password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            required
+          />
+          <PasswordMeter password={password} />
+        </Field>
+        <Field label="Confirm password" htmlFor="confirm">
+          <Input
+            id="confirm"
+            name="confirm-password"
+            type="password"
+            autoComplete="new-password"
+            value={confirm}
+            onChange={(event) => setConfirm(event.target.value)}
+            required
+          />
+        </Field>
+        <Field label="Account recovery key" htmlFor="account-recovery-key">
+          <Input
+            id="account-recovery-key"
+            name="recovery-key"
+            autoComplete="off"
+            spellCheck={false}
+            value={recoveryKey}
+            onChange={(event) => setRecoveryKey(event.target.value)}
+          />
+        </Field>
+        <Field label="Two-factor recovery code" htmlFor="recovery-code" hint="Fill either the account key or a two-factor code.">
+          <Input
+            id="recovery-code"
+            name="one-time-code"
+            autoComplete="one-time-code"
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+          />
+        </Field>
+        {error ? (
+          <p role="alert" className="text-sm text-neutral-800">
+            {error}
+          </p>
+        ) : null}
+        <Button type="submit" className="w-full" disabled={pending}>
+          {pending ? 'Resetting…' : 'Reset password'}
+        </Button>
+        <Button type="button" variant="secondary" className="w-full" disabled={pending} onClick={() => void onPasskey()}>
+          Use a passkey
+        </Button>
+      </form>
       <p className="mt-6 text-sm text-neutral-500">
         <Link to="/login" className="focus-ring text-neutral-950 underline underline-offset-4">
           Back to sign in

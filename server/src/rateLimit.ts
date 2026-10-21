@@ -19,9 +19,8 @@ export const AUTH_ROUTE_LIMIT = 60
  * The 11th attempt in that window is the 429. A correct password clears the
  * per-email counter. There is no second lock at five failures.
  */
-const PRODUCTION_MAX: Record<'login' | 'forgot' | 'reset', number> = {
+const PRODUCTION_MAX: Record<'login' | 'reset', number> = {
   login: 10,
-  forgot: 5,
   reset: 10,
 }
 
@@ -173,7 +172,7 @@ async function enforceRegisterLimit(ip: string): Promise<number> {
 }
 
 export async function enforceAuthLimit(
-  route: 'login' | 'register' | 'forgot' | 'reset',
+  route: 'login' | 'register' | 'reset',
   ip: string,
   email?: string,
 ): Promise<number> {

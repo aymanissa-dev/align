@@ -26,6 +26,7 @@ const userSchema = new Schema(
       default: [],
       select: false,
     },
+    recoveryKeyHash: { type: String, select: false, default: null },
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 )

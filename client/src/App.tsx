@@ -12,7 +12,6 @@ import { AuthProvider } from './auth/AuthProvider.tsx'
 import { useAuth } from './auth/auth-context.ts'
 import { BootScreen } from './components/BootScreen.tsx'
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage.tsx'
-import { ResetPasswordPage } from './pages/ResetPasswordPage.tsx'
 import { Layout } from './components/Layout.tsx'
 import { MarketingLayout } from './components/MarketingLayout.tsx'
 import { ToastProvider } from './components/ToastProvider.tsx'
@@ -25,7 +24,6 @@ import { NotesPage } from './pages/NotesPage.tsx'
 import { ProjectDetailPage } from './pages/ProjectDetailPage.tsx'
 import { ProjectsPage } from './pages/ProjectsPage.tsx'
 import { RegisterPage } from './pages/RegisterPage.tsx'
-import { VerifyEmailPage } from './pages/VerifyEmailPage.tsx'
 import { SearchPage } from './pages/SearchPage.tsx'
 import { SettingsPage } from './pages/SettingsPage.tsx'
 import { TodayPage } from './pages/TodayPage.tsx'
@@ -162,8 +160,8 @@ export default function App() {
                   </Guest>
                 }
               />
-              <Route path="/reset" element={<ResetPasswordPage />} />
-              <Route path="/verify" element={<VerifyEmailPage />} />
+              <Route path="/reset" element={<Navigate to="/forgot" replace />} />
+              <Route path="/verify" element={<Navigate to="/login" replace />} />
               <Route
                 path="/register"
                 element={

@@ -96,14 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [adopt])
 
   const register = useCallback(async (input: RegisterInput): Promise<RegisterResult> => {
-    const next = await api.register(input)
-    if (!('id' in next)) return next
-    epoch.current += 1
-    allowPersistedCache(next.id)
-    writeLocalUser(next)
-    queryClient.clear()
-    setUser(next)
-    return next
+    return api.register(input)
   }, [])
 
   const acceptSession = useCallback((next: User & { dashboard?: DashboardData }) => {

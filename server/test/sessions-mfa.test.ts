@@ -284,18 +284,15 @@ describe('sessions and second factors', () => {
     const { agent, password, id } = await registerUser()
     await Session.updateMany({ userId: id }, { stepUpAt: new Date(Date.now() - 11 * 60 * 1000) })
     const next = `next-${crypto.randomUUID()}@align.test`
-    const wrong = await agent.post('/api/auth/email').send({ email: next, password: 'not-the-password' })
+    const wrong = await agent.post('/api/auth/email').send({ email: next })
     expect(wrong.status).toBe(403)
     expect(wrong.body.code).toBe('step_up_required')
-    const ignored = await agent.post('/api/auth/email').send({ email: next, password })
-    expect(ignored.status).toBe(403)
-    expect(ignored.body.code).toBe('step_up_required')
     expect((await agent.post('/api/auth/step-up').send({ password })).status).toBe(204)
-    expect((await agent.post('/api/auth/email').send({ email: next, password: 'not-the-password' })).status).toBe(400)
-    const changed = await agent.post('/api/auth/email').send({ email: next, password })
+    const changed = await agent.post('/api/auth/email').send({ email: next })
     expect(changed.status).toBe(200)
     expect(changed.body.email).toBe(next)
-    expect(changed.body.verifyToken).toEqual(expect.any(String))
+    expect(changed.body.emailVerified).toBe(false)
+    expect(changed.body.verifyToken).toBeUndefined()
     expect((await agent.get('/api/auth/me')).body.email).toBe(next)
   })
 
@@ -305,7 +302,8 @@ describe('sessions and second factors', () => {
     await Session.updateMany({ userId: id }, { stepUpAt: new Date(Date.now() - 11 * 60 * 1000) })
     const email = `step-${crypto.randomUUID()}@align.test`
     const routes = [
-      () => agent.post('/api/auth/email').send({ email, password }),
+      () => agent.post('/api/auth/email').send({ email }),
+      () => agent.post('/api/auth/recovery-key').send({}),
       () => agent.post('/api/auth/password').send({ currentPassword: password, newPassword: 'password123' }),
       () => agent.post('/api/auth/totp/disable').send({ password }),
       () => agent.post('/api/auth/recovery/regenerate').send({ password }),
@@ -388,7 +386,12 @@ describe('sessions and second factors', () => {
     expect((await agent.post('/api/auth/sessions/revoke-others').send({})).status).toBe(400)
     expect((await agent.delete('/api/auth/me').send({})).status).toBe(400)
     expect((await agent.delete('/api/auth/passkeys/missing').send({})).status).toBe(400)
-    expect((await agent.post('/api/auth/email').send({ email: `blank-${crypto.randomUUID()}@align.test` })).status).toBe(400)
+    expect((await agent.post('/api/auth/email').send({})).status).toBe(400)
+    const nextEmail = `blank-${crypto.randomUUID()}@align.test`
+    const changedEmail = await agent.post('/api/auth/email').send({ email: nextEmail })
+    expect(changedEmail.status).toBe(200)
+    expect(changedEmail.body.email).toBe(nextEmail)
+    expect(changedEmail.body.emailVerified).toBe(false)
     expect((await agent.post('/api/auth/password').send({ newPassword: 'password123' })).status).toBe(400)
     expect((await agent.post('/api/auth/password').send({ currentPassword: '   ', newPassword: 'password123' })).status).toBe(400)
 

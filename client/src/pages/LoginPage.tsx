@@ -12,9 +12,6 @@ import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
 preloadDashboard()
 
-const DEMO_EMAIL = 'demo@align.app'
-const DEMO_PASSWORD = 'password'
-
 function retryClock(totalSeconds: number): string {
   const whole = Math.max(0, Math.ceil(totalSeconds))
   const hours = Math.floor(whole / 3600)
@@ -219,20 +216,6 @@ export function LoginPage() {
             Create an account
           </Link>
         </p>
-        <div className="mt-8 border-t border-dashed border-neutral-300 pt-6">
-          <button
-            type="button"
-            className="focus-ring text-sm text-neutral-950 underline decoration-neutral-300 underline-offset-4 hover:decoration-neutral-950 disabled:opacity-40"
-            disabled={pending}
-            onClick={() => {
-              setEmail(DEMO_EMAIL)
-              setPassword(DEMO_PASSWORD)
-              void signIn(DEMO_EMAIL, DEMO_PASSWORD)
-            }}
-          >
-            Use the demo account
-          </button>
-        </div>
     </AuthFrame>
   )
 }

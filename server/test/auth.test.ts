@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import request from 'supertest'
 import { describe, expect, it } from 'vitest'
 import { createApp } from '../src/app.ts'
-import { RESET_MESSAGE, VERIFY_MESSAGE } from '../src/mailPolicy.ts'
+import { hashRecoveryKey } from '../src/data/recoveryKey.ts'
 import { upRevokeExposedTokens } from '../src/migrate/revokeExposedTokens.ts'
 import { AuthToken, Project, User } from '../src/models.ts'
 import { app, csrfToken, registerUser } from './helpers.ts'
@@ -168,7 +168,7 @@ describe('auth', () => {
     expect(gone.status).toBe(401)
   })
 
-  it('starts signed out without a 401 and resets a password with a token', async () => {
+  it('starts signed out without a 401 and resets a password with a recovery key', async () => {
     const signedOut = await request(app).get('/api/auth/session')
     expect(signedOut.status).toBe(200)
     expect(signedOut.body).toEqual({ user: null })
@@ -180,41 +180,35 @@ describe('auth', () => {
       password: 'password12',
     })
     expect(registered.status).toBe(201)
-    const agent = request.agent(app)
-    await agent.post('/api/auth/logout')
+    const recoveryKey = registered.body.recoveryKey as string
+    expect(recoveryKey).toMatch(/^[0-9a-f]{4}(?:-[0-9a-f]{4}){7}$/)
 
-    const missing = await request(app).post('/api/auth/forgot').send({ email: 'nobody@align.test' })
-    expect(missing.status).toBe(200)
-    expect(missing.body.resetToken).toBeUndefined()
+    const missing = await request(app)
+      .post('/api/auth/reset')
+      .send({ email: 'nobody@align.test', password: 'password123', recoveryKey })
+    const wrong = await request(app)
+      .post('/api/auth/reset')
+      .send({ email, password: 'password123', recoveryKey: 'ffff-ffff-ffff-ffff-ffff-ffff-ffff-ffff' })
+    expect(missing.status).toBe(400)
+    expect(wrong.status).toBe(400)
+    expect(missing.body).toEqual(wrong.body)
+    expect(missing.body).toEqual({ error: "Those details don't match." })
 
-    const forgot = await request(app).post('/api/auth/forgot').send({ email })
-    expect(forgot.status).toBe(200)
-    expect(typeof forgot.body.resetToken).toBe('string')
-
-    const bad = await request(app).post('/api/auth/reset').send({ token: forgot.body.resetToken, password: 'short' })
-    expect(bad.status).toBe(400)
-
-    const weakReset = await request(app).post('/api/auth/reset').send({
-      token: forgot.body.resetToken,
-      password: 'password1',
-    })
+    const weakReset = await request(app).post('/api/auth/reset').send({ email, password: 'password1', recoveryKey })
     expect(weakReset.status).toBe(400)
 
-    const reset = await request(app).post('/api/auth/reset').send({
-      token: forgot.body.resetToken,
-      password: 'password123',
-    })
+    const reset = await request(app).post('/api/auth/reset').send({ email, password: 'password123', recoveryKey })
     expect(reset.status).toBe(200)
     expect(reset.body.email).toBe(email)
+    expect(reset.body.recoveryKey).toMatch(/^[0-9a-f]{4}(?:-[0-9a-f]{4}){7}$/)
+    expect(reset.body.recoveryKey).not.toBe(recoveryKey)
 
-    const reused = await request(app).post('/api/auth/reset').send({
-      token: forgot.body.resetToken,
-      password: 'password3',
-    })
+    const reused = await request(app).post('/api/auth/reset').send({ email, password: 'password3', recoveryKey })
     expect(reused.status).toBe(400)
 
     expect((await request(app).post('/api/auth/login').send({ email, password: 'password12' })).status).toBe(401)
     expect((await request(app).post('/api/auth/login').send({ email, password: 'password123' })).status).toBe(200)
+    expect((await request(app).post('/api/auth/forgot').send({ email })).status).toBe(404)
   })
 
   it('rate-limits repeated auth attempts', async () => {
@@ -234,7 +228,7 @@ describe('auth', () => {
     expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0)
   })
 
-  it('verifies email with a single-use token', async () => {
+  it('returns a recovery key once and does not return an email token', async () => {
     const created = await request(app).post('/api/auth/register').send({
       name: 'Verify',
       email: `verify-${crypto.randomUUID()}@align.test`,
@@ -242,12 +236,11 @@ describe('auth', () => {
     })
     expect(created.status).toBe(201)
     expect(created.body.emailVerified).toBe(false)
-    expect(typeof created.body.verifyToken).toBe('string')
-
-    const verified = await request(app).post('/api/auth/verify').send({ token: created.body.verifyToken })
-    expect(verified.status).toBe(200)
-    expect(verified.body.emailVerified).toBe(true)
-    expect((await request(app).post('/api/auth/verify').send({ token: created.body.verifyToken })).status).toBe(400)
+    expect(created.body.verifyToken).toBeUndefined()
+    expect(created.body.recoveryKey).toMatch(/^[0-9a-f]{4}(?:-[0-9a-f]{4}){7}$/)
+    const stored = await User.findById(created.body.id).select('+recoveryKeyHash')
+    expect(stored?.get('recoveryKeyHash')).toBe(hashRecoveryKey(created.body.recoveryKey as string))
+    expect(JSON.stringify(stored)).not.toContain(created.body.recoveryKey)
   })
 
   it('rotates refresh tokens and revokes the family when an old token is reused', async () => {
@@ -347,17 +340,10 @@ describe('auth', () => {
     }
   }, 30_000)
 
-  it('never returns an emailed token in production, and existing and unknown addresses match', async () => {
+  it('changes email after step-up without mailing a token', async () => {
     const previousNode = process.env.NODE_ENV
     const previousVercel = process.env.VERCEL_ENV
-    const previousExpose = process.env.EXPOSE_DEV_TOKENS
-    const notes: string[] = []
-    const original = console.info
-    console.info = (...args: unknown[]) => {
-      notes.push(args.map(String).join(' '))
-    }
     process.env.NODE_ENV = 'production'
-    process.env.EXPOSE_DEV_TOKENS = '1'
     delete process.env.VERCEL_ENV
     try {
       const email = `hidden-${crypto.randomUUID()}@align.test`
@@ -365,37 +351,12 @@ describe('auth', () => {
       const created = await request(app).post('/api/auth/register').send({ name: 'Hidden', email, password })
       expect(created.status).toBe(201)
       expect(created.body.verifyToken).toBeUndefined()
+      expect(created.body.recoveryKey).toMatch(/^[0-9a-f]{4}(?:-[0-9a-f]{4}){7}$/)
       expect(JSON.stringify(created.body)).not.toMatch(/resetToken|verifyToken|[0-9a-f]{64}/)
       const issued = created.headers['set-cookie']
       const cookieList = Array.isArray(issued) ? issued : issued ? [issued] : []
       const cookie = cookieList.map((entry) => entry.split(';')[0]).join('; ')
       const csrf = csrfToken(issued) ?? ''
-
-      const unknownEmail = `missing-${crypto.randomUUID()}@align.test`
-      const knownStarted = performance.now()
-      const known = await request(app).post('/api/auth/forgot').send({ email })
-      const knownMs = performance.now() - knownStarted
-      const unknownStarted = performance.now()
-      const unknown = await request(app).post('/api/auth/forgot').send({ email: unknownEmail })
-      const unknownMs = performance.now() - unknownStarted
-
-      expect(known.status).toBe(200)
-      expect(unknown.status).toBe(200)
-      expect(known.body).toEqual(unknown.body)
-      expect(known.body).toEqual({ message: RESET_MESSAGE })
-      expect(JSON.stringify(known.body)).not.toMatch(/token|https?:|[0-9a-f]{64}/i)
-      expect(knownMs).toBeGreaterThanOrEqual(250)
-      expect(unknownMs).toBeGreaterThanOrEqual(250)
-      expect(Math.abs(knownMs - unknownMs)).toBeLessThan(500)
-      expect(await AuthToken.countDocuments({ type: { $in: ['reset', 'verify'] } })).toBe(0)
-
-      const logged = notes.filter((line) => line.includes('password-reset-requested') || line.includes('verification-requested'))
-      expect(logged.length).toBeGreaterThan(0)
-      expect(logged.join('\n')).not.toMatch(/[0-9a-f]{64}|token=/)
-
-      const sent = await request(app).post('/api/auth/verify/send').set('Cookie', cookie).set('x-csrf-token', csrf)
-      expect(sent.status).toBe(200)
-      expect(sent.body).toEqual({ message: VERIFY_MESSAGE })
 
       const next = `next-${crypto.randomUUID()}@align.test`
       const stepped = await request(app).post('/api/auth/step-up').set('Cookie', cookie).set('x-csrf-token', csrf).send({ password })
@@ -404,23 +365,15 @@ describe('auth', () => {
         .post('/api/auth/email')
         .set('Cookie', cookie)
         .set('x-csrf-token', csrf)
-        .send({ email: next, password })
+        .send({ email: next })
       expect(changed.status).toBe(200)
       expect(changed.body.email).toBe(next)
+      expect(changed.body.emailVerified).toBe(false)
       expect(changed.body.verifyToken).toBeUndefined()
       expect(JSON.stringify(changed.body)).not.toMatch(/verifyToken|[0-9a-f]{64}/)
       expect(await AuthToken.countDocuments()).toBe(0)
-
-      process.env.NODE_ENV = 'test'
-      process.env.VERCEL_ENV = 'production'
-      const blocked = await request(app).post('/api/auth/forgot').send({ email: next })
-      expect(blocked.status).toBe(200)
-      expect(blocked.body).toEqual({ message: RESET_MESSAGE })
     } finally {
-      console.info = original
       process.env.NODE_ENV = previousNode
-      if (previousExpose === undefined) delete process.env.EXPOSE_DEV_TOKENS
-      else process.env.EXPOSE_DEV_TOKENS = previousExpose
       if (previousVercel === undefined) delete process.env.VERCEL_ENV
       else process.env.VERCEL_ENV = previousVercel
     }

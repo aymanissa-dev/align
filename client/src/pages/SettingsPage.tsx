@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { Link } from 'react-router-dom'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/auth-context.ts'
 import { api } from '../api/index.ts'
@@ -8,6 +7,7 @@ import { useToast } from '../components/toast-context.ts'
 import { PageHeader } from '../components/chrome.tsx'
 import { AccentPicker, ThemeToggle } from '../components/ThemeControls.tsx'
 import { PasswordMeter } from '../components/PasswordMeter.tsx'
+import { RecoveryKeyNotice } from '../components/RecoveryKeyNotice.tsx'
 import { SecurityPanel } from './SecurityPanel.tsx'
 import { StepUpDialog } from '../components/StepUpDialog.tsx'
 import { Button, ConfirmDialog, Field, Input, ListSkeleton } from '../components/ui.tsx'
@@ -31,9 +31,10 @@ export function SettingsPage() {
   const [passwordError, setPasswordError] = useState('')
   const [savingPassword, setSavingPassword] = useState(false)
   const [nextEmail, setNextEmail] = useState('')
-  const [emailPassword, setEmailPassword] = useState('')
   const [emailError, setEmailError] = useState('')
   const [savingEmail, setSavingEmail] = useState(false)
+  const [recoveryKey, setRecoveryKey] = useState('')
+  const [issuingKey, setIssuingKey] = useState(false)
   const [revokeMode, setRevokeMode] = useState<'all' | 'others' | null>(null)
   const [accountPasskeys, setAccountPasskeys] = useState<Passkey[]>([])
   const [revokePassword, setRevokePassword] = useState('')
@@ -46,9 +47,6 @@ export function SettingsPage() {
   const [sessions, setSessions] = useState<AuthSession[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(true)
   const [sessionsError, setSessionsError] = useState('')
-  const [verifyToken, setVerifyToken] = useState('')
-  const [verifyMessage, setVerifyMessage] = useState('')
-  const [sendingVerify, setSendingVerify] = useState(false)
   useDocumentTitle('Settings')
 
   useEffect(() => {
@@ -158,21 +156,6 @@ export function SettingsPage() {
     }
   }
 
-  async function onSendVerification() {
-    setSendingVerify(true)
-    setVerifyMessage('')
-    setVerifyToken('')
-    try {
-      const result = await api.sendVerification()
-      setVerifyMessage(result.message)
-      setVerifyToken(result.verifyToken ?? '')
-    } catch (caught) {
-      setVerifyMessage(errorMessage(caught))
-    } finally {
-      setSendingVerify(false)
-    }
-  }
-
   async function onRevoke(session: AuthSession) {
     try {
       await api.revokeSession(session.id)
@@ -192,17 +175,10 @@ export function SettingsPage() {
     setEmailError('')
     setSavingEmail(true)
     const save = async () => {
-      const updated = await api.changeEmail({ email: nextEmail.trim(), password: emailPassword })
+      const updated = await api.changeEmail({ email: nextEmail.trim() })
       acceptSession(updated)
       await invalidateSecurityLog()
-      setVerifyToken(updated.verifyToken ?? '')
-      setVerifyMessage(
-        updated.verifyToken
-          ? 'Email updated. Verify the new address when you can.'
-          : "Email updated. We've sent a verification link to the new address.",
-      )
       setNextEmail('')
-      setEmailPassword('')
       toast('Email updated')
     }
     try {
@@ -216,6 +192,27 @@ export function SettingsPage() {
       setEmailError(errorMessage(caught))
     } finally {
       setSavingEmail(false)
+    }
+  }
+
+  async function onCreateRecoveryKey() {
+    setIssuingKey(true)
+    const save = async () => {
+      const issued = await api.createRecoveryKey()
+      setRecoveryKey(issued.recoveryKey)
+      await invalidateSecurityLog()
+    }
+    try {
+      await save()
+    } catch (caught) {
+      if (stepUpRequired(caught)) {
+        retryRef.current = save
+        setStepUpOpen(true)
+        return
+      }
+      toast(errorMessage(caught))
+    } finally {
+      setIssuingKey(false)
     }
   }
 
@@ -366,25 +363,6 @@ export function SettingsPage() {
         </form>
       </section>
 
-      {user.emailVerified ? null : (
-        <section className="mt-4 max-w-lg border border-neutral-200 p-5">
-          <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Email</h2>
-          <p className="mt-2 text-sm leading-6 text-neutral-500">This address is not verified yet.</p>
-          <Button variant="secondary" className="mt-4" disabled={sendingVerify} onClick={() => void onSendVerification()}>
-            {sendingVerify ? 'Sending…' : 'Send verification link'}
-          </Button>
-          {verifyMessage ? <p className="mt-3 text-sm leading-6 text-neutral-700">{verifyMessage}</p> : null}
-          {verifyToken ? (
-            <Link
-              to={`/verify?token=${encodeURIComponent(verifyToken)}`}
-              className="focus-ring mt-2 inline-flex min-h-11 items-center text-sm text-neutral-950 underline underline-offset-4"
-            >
-              Verify email
-            </Link>
-          ) : null}
-        </section>
-      )}
-
       <section className="mt-4 max-w-lg border border-neutral-200 p-5">
         <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Sessions</h2>
         <p className="mt-2 text-sm leading-6 text-neutral-500">Devices that are signed in to this account.</p>
@@ -460,6 +438,9 @@ export function SettingsPage() {
 
       <section className="mt-4 max-w-lg border border-neutral-200 p-5">
         <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Email address</h2>
+        <p className="mt-2 text-sm leading-6 text-neutral-500">
+          Changing the address asks you to confirm it is you. Align does not send a confirmation email.
+        </p>
         <form onSubmit={(event) => void onChangeEmail(event)} className="mt-4 space-y-4" noValidate>
           <Field label="New email" htmlFor="next-email" error={emailError}>
             <Input
@@ -471,20 +452,26 @@ export function SettingsPage() {
               onChange={(event) => setNextEmail(event.target.value)}
             />
           </Field>
-          <Field label="Current password" htmlFor="email-password">
-            <Input
-              id="email-password"
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              value={emailPassword}
-              onChange={(event) => setEmailPassword(event.target.value)}
-            />
-          </Field>
           <Button type="submit" disabled={savingEmail}>
             {savingEmail ? 'Updating…' : 'Update email'}
           </Button>
         </form>
+      </section>
+
+      <section className="mt-4 max-w-lg border border-neutral-200 p-5">
+        <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Account recovery</h2>
+        <p className="mt-2 text-sm leading-6 text-neutral-500">
+          A recovery key resets your password without email. Creating a new one replaces the previous key.
+        </p>
+        {recoveryKey ? (
+          <div className="mt-4">
+            <RecoveryKeyNotice recoveryKey={recoveryKey} onSaved={() => setRecoveryKey('')} />
+          </div>
+        ) : (
+          <Button variant="secondary" className="mt-4" disabled={issuingKey} onClick={() => void onCreateRecoveryKey()}>
+            {issuingKey ? 'Creating…' : 'Create a new recovery key'}
+          </Button>
+        )}
       </section>
 
       <SecurityPanel />

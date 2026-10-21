@@ -1,9 +1,19 @@
 import { randomBytes } from 'node:crypto'
-import { Router, type Request, type RequestHandler } from 'express'
+import type { AuthenticationResponseJSON } from '@simplewebauthn/server'
+import { Router, type Request, type RequestHandler, type Response } from 'express'
 import { deleteAccount } from '../data/content.ts'
 import { dashboardForUser } from './dashboard.ts'
 import { assertCredentialPresent, requireSensitiveCredential } from './mfa.ts'
-import { clearAllFactors } from '../data/factors.ts'
+import { consumeRecoveryCode, verifyPasskey, authenticationOptions } from '../data/factors.ts'
+import {
+  clearFactorsAfterReset,
+  consumeAccountRecoveryKey,
+  generateRecoveryKey,
+  hashRecoveryKey,
+  issueRecoveryKey,
+  rejectUnknownRecovery,
+  saveResetPassword,
+} from '../data/recoveryKey.ts'
 import { clientIp } from '../clientIp.ts'
 import { claimInvites, ensurePersonalWorkspace, ownerClaims } from '../data/workspaces.ts'
 import { users } from '../data/users.ts'
@@ -11,18 +21,6 @@ import { recordSecurity } from '../data/securityLog.ts'
 import { HttpError } from '../errors.ts'
 import { assertPasswordNotBreached, watchBreachedPassword } from '../hibp.ts'
 import { signJwt, verifyJwt } from '../keys.ts'
-import {
-  devTokenField,
-  exposeDevTokens,
-  issueMailedToken,
-  mailConfigured,
-  preparePasswordReset,
-  REGISTER_MESSAGE,
-  RESET_MESSAGE,
-  sendSignupNotice,
-  settleMailResponse,
-  VERIFY_MESSAGE,
-} from '../mailPolicy.ts'
 import { asyncHandler, currentUserId, requireAuth } from '../middleware.ts'
 import { checkPassword, dummyPasswordHash, hashPassword } from '../password.ts'
 import { clearLoginFailures, delayFailedAttempt, enforceAuthLimit, guardLogin, recordLoginFailure, recordLoginSuccess } from '../rateLimit.ts'
@@ -47,19 +45,18 @@ import {
   prepareNewDevice,
   startSession,
 } from '../session.ts'
-import { consumeAuthToken } from '../tokens.ts'
+import { Types } from 'mongoose'
 import {
   emailChangeSchema,
-  forgotSchema,
   loginSchema,
   parseBody,
+  passkeyResetSchema,
   passwordSchema,
   profileSchema,
   registerSchema,
   resetSchema,
   sessionRenameSchema,
   stepUpSchema,
-  verifySchema,
 } from '../validate.ts'
 
 function duplicateEmail(error: unknown): boolean {
@@ -73,6 +70,33 @@ function appOrigin(req: Request): string {
   const configured = process.env.APP_ORIGIN?.replace(/\/$/, '')
   if (configured) return configured
   return `${req.protocol}://${req.get('host')}`
+}
+
+const RECOVERY_MISMATCH = "Those details don't match."
+
+function asPasskeyAssertion(value: Record<string, unknown>): AuthenticationResponseJSON {
+  const nested = value.response
+  const clientDataJSON =
+    nested && typeof nested === 'object' && 'clientDataJSON' in nested ? nested.clientDataJSON : undefined
+  if (typeof value.id !== 'string' || typeof clientDataJSON !== 'string' || !clientDataJSON) {
+    throw new HttpError(400, 'Passkey response is invalid.')
+  }
+  return value as unknown as AuthenticationResponseJSON
+}
+
+async function finishReset(req: Request, res: Response, userId: string, summary: string, recoveryKey: string) {
+  await revokeSessions(userId)
+  await ensurePersonalWorkspace(userId)
+  const started = await startSession(req, res, userId)
+  await recordSecurity({
+    userId,
+    type: 'password-reset',
+    summary,
+    ...requestAudit(req),
+  })
+  const user = await users.byId(userId)
+  if (!user) throw new HttpError(401, 'Sign in to continue.')
+  res.json({ ...publicUser(user), recoveryKey, newDevice: started.newDevice })
 }
 
 function googleConfigured(): boolean {
@@ -126,71 +150,35 @@ export function authRouter(limiter: RequestHandler): Router {
       const input = parseBody(registerSchema, req.body)
       const attempt = await enforceAuthLimit('register', clientIp(req))
       await assertPasswordNotBreached(input.password)
-      const startedAt = performance.now()
       // Hash before the branch so a duplicate costs the same bcrypt work as a new account.
       const passwordHash = await hashPassword(input.password)
       const existing = await users.byEmail(input.email)
-      if (mailConfigured()) {
-        if (existing) {
-          await sendSignupNotice(existing.email)
-        } else {
-          try {
-            const user = await users.create({
-              name: input.name,
-              email: input.email,
-              passwordHash,
-              emailVerifiedAt: null,
-              pendingVerification: true,
-            })
-            await ensurePersonalWorkspace(user.id)
-            await claimInvites(user.id, user.email)
-            await issueMailedToken({
-              userId: user.id,
-              email: user.email,
-              type: 'verify',
-              subject: 'Verify your Align email',
-              text: (link) => `Confirm your email by opening this link within 24 hours:\n${link}`,
-              origin: appOrigin(req),
-              path: 'verify',
-              log: 'verification-requested',
-            })
-          } catch (error) {
-            if (!duplicateEmail(error)) throw error
-            await sendSignupNotice(input.email)
-          }
-        }
-        await settleMailResponse(startedAt)
-        res.status(202).json({ message: REGISTER_MESSAGE })
-        return
-      }
       await delayFailedAttempt(attempt)
       if (existing) {
         throw new HttpError(409, "We couldn't create an account with those details.")
       }
-      const user = await users.create({
-        name: input.name,
-        email: input.email,
-        passwordHash,
-        emailVerifiedAt: null,
-        pendingVerification: false,
-      })
+      const recoveryKey = generateRecoveryKey()
+      let user
+      try {
+        user = await users.create({
+          name: input.name,
+          email: input.email,
+          passwordHash,
+          emailVerifiedAt: null,
+          pendingVerification: false,
+          recoveryKeyHash: hashRecoveryKey(recoveryKey),
+        })
+      } catch (error) {
+        if (!duplicateEmail(error)) throw error
+        throw new HttpError(409, "We couldn't create an account with those details.")
+      }
       await ensurePersonalWorkspace(user.id)
       await claimInvites(user.id, user.email)
-      const verifyToken = await issueMailedToken({
-        userId: user.id,
-        email: user.email,
-        type: 'verify',
-        subject: 'Verify your Align email',
-        text: (link) => `Confirm your email by opening this link within 24 hours:\n${link}`,
-        origin: appOrigin(req),
-        path: 'verify',
-        log: 'verification-requested',
-      })
       const started = await startSession(req, res, user.id)
       res.status(201).json({
         ...publicUser(user),
         newDevice: started.newDevice,
-        ...devTokenField('verifyToken', verifyToken),
+        recoveryKey,
       })
     }),
   )
@@ -226,17 +214,6 @@ export function authRouter(limiter: RequestHandler): Router {
             ...requestAudit(req),
           }).catch(() => undefined)
         }
-        await delayFailedAttempt(failures)
-        throw new HttpError(401, 'Email or password is incorrect.')
-      }
-      if (user.pendingVerification) {
-        const failures = await recordLoginFailure(ip, input.email)
-        await recordSecurity({
-          userId: user.id,
-          type: 'sign-in-failed',
-          summary: 'A sign-in was blocked until the email is verified.',
-          ...requestAudit(req),
-        }).catch(() => undefined)
         await delayFailedAttempt(failures)
         throw new HttpError(401, 'Email or password is incorrect.')
       }
@@ -319,86 +296,92 @@ export function authRouter(limiter: RequestHandler): Router {
   )
 
   router.post(
-    '/forgot',
-    limiter,
-    asyncHandler(async (req, res) => {
-      const input = parseBody(forgotSchema, req.body)
-      await enforceAuthLimit('forgot', clientIp(req), input.email)
-      const started = performance.now()
-      const resetToken = await preparePasswordReset(input.email, appOrigin(req))
-      await settleMailResponse(started)
-      res.json({ message: RESET_MESSAGE, ...devTokenField('resetToken', resetToken) })
-    }),
-  )
-
-  router.post(
     '/reset',
     limiter,
     asyncHandler(async (req, res) => {
       const input = parseBody(resetSchema, req.body)
-      await enforceAuthLimit('reset', clientIp(req))
-      const userId = await consumeAuthToken(input.token, 'reset')
+      await enforceAuthLimit('reset', clientIp(req), input.email)
       await assertPasswordNotBreached(input.password)
-      const user = userId ? await users.byIdSecret(userId) : null
-      if (!user) throw new HttpError(400, 'This reset link is invalid or has expired.')
-      user.passwordHash = await hashPassword(input.password)
-      user.failedLogins = 0
-      user.lockUntil = null
-      await user.save()
-      await clearAllFactors(user.id)
-      await revokeSessions(user.id)
-      await ensurePersonalWorkspace(user.id)
-      await startSession(req, res, user.id)
-      await recordSecurity({
-        userId: user.id,
-        type: 'password-reset',
-        summary: 'Password was reset. Two-factor authentication, recovery codes, and passkeys were removed and must be set up again.',
-        ...requestAudit(req),
-      })
-      res.json(publicUser(user))
-    }),
-  )
-
-  router.post(
-    '/verify',
-    asyncHandler(async (req, res) => {
-      const input = parseBody(verifySchema, req.body)
-      const userId = await consumeAuthToken(input.token, 'verify')
-      const user = userId ? await users.byId(userId) : null
-      if (!user) throw new HttpError(400, 'This verification link is invalid or has expired.')
-      const finishSignup = Boolean(user.pendingVerification) || !user.emailVerifiedAt
-      if (!user.emailVerifiedAt) user.emailVerifiedAt = new Date()
-      user.pendingVerification = false
-      await user.save()
-      if (finishSignup) await startSession(req, res, user.id)
-      res.json(publicUser(user))
-    }),
-  )
-
-  router.post(
-    '/verify/send',
-    requireAuth,
-    asyncHandler(async (req, res) => {
-      const user = await users.byId(currentUserId(req))
-      if (!user) throw new HttpError(401, 'Sign in to continue.')
-      if (user.emailVerifiedAt) {
-        res.json({ message: 'This email is already verified.' })
+      const passwordHash = await hashPassword(input.password)
+      const user = await users.byEmailSecret(input.email)
+      if (!user) {
+        if (input.recoveryKey) await rejectUnknownRecovery(input.recoveryKey)
+        else await consumeRecoveryCode(new Types.ObjectId().toString(), input.code ?? '')
+        throw new HttpError(400, RECOVERY_MISMATCH)
+      }
+      if (input.recoveryKey) {
+        const recoveryKey = await consumeAccountRecoveryKey(user.id, input.recoveryKey, passwordHash)
+        if (!recoveryKey) throw new HttpError(400, RECOVERY_MISMATCH)
+        await clearFactorsAfterReset(user.id, 'recovery-key')
+        await finishReset(
+          req,
+          res,
+          user.id,
+          'Password was reset with an account recovery key. Two-factor authentication and passkeys were removed. A new recovery key was issued.',
+          recoveryKey,
+        )
         return
       }
-      const verifyToken = await issueMailedToken({
-        userId: user.id,
-        email: user.email,
-        type: 'verify',
-        subject: 'Verify your Align email',
-        text: (link) => `Confirm your email by opening this link within 24 hours:\n${link}`,
-        origin: appOrigin(req),
-        path: 'verify',
-        log: 'verification-requested',
+      const spent = await consumeRecoveryCode(user.id, input.code ?? '')
+      if (!spent) throw new HttpError(400, RECOVERY_MISMATCH)
+      await saveResetPassword(user.id, passwordHash)
+      const recoveryKey = await issueRecoveryKey(user.id)
+      await clearFactorsAfterReset(user.id, 'totp-code')
+      await finishReset(
+        req,
+        res,
+        user.id,
+        'Password was reset with a two-factor recovery code. Passkeys were removed. A new account recovery key was issued.',
+        recoveryKey,
+      )
+    }),
+  )
+
+  router.post(
+    '/reset/passkey/options',
+    limiter,
+    asyncHandler(async (req, res) => {
+      await enforceAuthLimit('reset', clientIp(req))
+      res.json(await authenticationOptions(req))
+    }),
+  )
+
+  router.post(
+    '/reset/passkey',
+    limiter,
+    asyncHandler(async (req, res) => {
+      const input = parseBody(passkeyResetSchema, req.body)
+      await enforceAuthLimit('reset', clientIp(req))
+      await assertPasswordNotBreached(input.password)
+      const passwordHash = await hashPassword(input.password)
+      const verified = await verifyPasskey(req, asPasskeyAssertion(input.response), 'login')
+      await saveResetPassword(verified.userId, passwordHash)
+      const recoveryKey = await issueRecoveryKey(verified.userId)
+      await clearFactorsAfterReset(verified.userId, 'passkey', verified.passkeyId)
+      await finishReset(
+        req,
+        res,
+        verified.userId,
+        'Password was reset with a passkey. Two-factor authentication and other passkeys were removed. A new recovery key was issued.',
+        recoveryKey,
+      )
+    }),
+  )
+
+  router.post(
+    '/recovery-key',
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      await requireFreshStepUp(req.sessionId)
+      const userId = currentUserId(req)
+      const recoveryKey = await issueRecoveryKey(userId)
+      await recordSecurity({
+        userId,
+        type: 'recovery-key-created',
+        summary: 'A new account recovery key was created.',
+        ...requestAudit(req),
       })
-      res.json({
-        message: verifyToken && exposeDevTokens() ? 'Verification link ready.' : VERIFY_MESSAGE,
-        ...devTokenField('verifyToken', verifyToken),
-      })
+      res.json({ recoveryKey })
     }),
   )
 
@@ -634,15 +617,8 @@ export function authRouter(limiter: RequestHandler): Router {
     requireAuth,
     asyncHandler(async (req, res) => {
       const input = parseBody(emailChangeSchema, req.body)
-      if (!input.password.trim()) {
-        throw new HttpError(400, 'Enter your current password or a verification code.')
-      }
       const userId = currentUserId(req)
       await requireFreshStepUp(req.sessionId)
-      const secret = await users.byIdSecret(userId)
-      if (!secret?.passwordHash || !(await checkPassword(input.password, secret.passwordHash))) {
-        throw new HttpError(400, 'Current password is incorrect.')
-      }
       const next = input.email.trim().toLowerCase()
       const taken = await users.byEmail(next)
       if (taken && taken.id !== userId) throw new HttpError(409, 'An account already uses that email.')
@@ -654,17 +630,7 @@ export function authRouter(limiter: RequestHandler): Router {
         summary: 'The account email was changed.',
         ...requestAudit(req),
       })
-      const verifyToken = await issueMailedToken({
-        userId: user.id,
-        email: user.email,
-        type: 'verify',
-        subject: 'Verify your new Align email',
-        text: (link) => `Confirm this email by opening this link within one hour:\n${link}`,
-        origin: appOrigin(req),
-        path: 'verify',
-        log: 'verification-requested',
-      })
-      res.json({ ...publicUser(user), ...devTokenField('verifyToken', verifyToken) })
+      res.json(publicUser(user))
     }),
   )
 

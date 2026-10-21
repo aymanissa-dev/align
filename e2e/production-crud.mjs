@@ -6,7 +6,7 @@ const { chromium } = playwright
 const base = 'https://align-hazel-kappa.vercel.app'
 const stamp = Date.now().toString(36)
 const email = `e2e-${stamp}@align.test`
-const password = 'AlignLamp-e2e-2026x'
+let password = 'AlignLamp-e2e-2026x'
 const projectName = `E2E Lamp ${stamp}`
 const taskTitle = `Cut the wick ${stamp}`
 const renamedTask = `Trim the wick ${stamp}`
@@ -29,6 +29,13 @@ const context = await browser.newContext({
 const page = await context.newPage()
 page.setDefaultTimeout(20_000)
 page.on('dialog', (dialog) => void dialog.accept())
+
+async function continuePastRecoveryKey(target) {
+  const key = (await target.locator('#recovery-key').innerText()).trim()
+  if (!/^[0-9a-f]{4}(?:-[0-9a-f]{4}){7}$/i.test(key)) throw new Error('recovery key was not shown')
+  await target.getByRole('button', { name: "I've saved this key" }).click()
+  return key
+}
 
 const TOTP_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
 
@@ -585,6 +592,7 @@ async function signedOutOfflineAndUnvisited(browser) {
     await swPage.locator('#email').fill(email)
     await swPage.locator('#password').fill(password)
     await swPage.getByRole('button', { name: 'Create account' }).click()
+    await continuePastRecoveryKey(swPage)
     await swPage.getByRole('heading', { level: 1, name: /E2E/ }).waitFor()
     await swPage.getByLabel('Primary').getByRole('link', { name: 'Projects' }).click()
     await swPage.getByRole('button', { name: 'New project' }).click()
@@ -668,6 +676,7 @@ try {
   await page.locator('#email').fill(email)
   await page.locator('#password').fill(password)
   await page.getByRole('button', { name: 'Create account' }).click()
+  const recoveryKey = await continuePastRecoveryKey(page)
   await page.getByRole('heading', { name: /E2E/ }).waitFor()
   pass('register')
 
@@ -1021,6 +1030,21 @@ try {
   await page.getByRole('button', { name: 'Continue' }).click()
   await page.getByLabel('Primary').getByRole('link', { name: 'Settings' }).waitFor()
   pass('login with recovery code')
+
+  await page.goto(`${base}/settings`)
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click()
+  await page.getByRole('heading', { name: 'Keep your work in alignment.' }).waitFor()
+  await page.goto(`${base}/forgot`)
+  const resetPassword = 'AlignLamp-reset-2026x'
+  await page.locator('#email').fill(email)
+  await page.locator('#password').fill(resetPassword)
+  await page.locator('#confirm').fill(resetPassword)
+  await page.locator('#account-recovery-key').fill(recoveryKey)
+  await page.getByRole('button', { name: 'Reset password' }).click()
+  await continuePastRecoveryKey(page)
+  await page.getByLabel('Primary').getByRole('link', { name: 'Settings' }).waitFor()
+  password = resetPassword
+  pass('reset with recovery key')
 
   await page.goto(`${base}/settings`)
   await page.getByRole('button', { name: 'Delete account' }).click()

@@ -25,12 +25,6 @@ async function main(): Promise<void> {
   const { createApp } = await import('./app.ts')
   await connectDb()
 
-  if (process.env.SEED_DEMO === 'true') {
-    const { seedDemo } = await import('./demo.ts')
-    const created = await seedDemo()
-    if (created) console.log('Seeded demo account demo@align.app')
-  }
-
   const port = Number(process.env.PORT ?? 3001)
   const app = createApp()
   app.listen(port, '0.0.0.0', () => {

@@ -28,8 +28,8 @@ export function PrivacyPage() {
       <p>Align stores the information you add to your workspace so you can come back to it.</p>
       <Section title="Account">
         <p>
-          When you register, we store your name, email address, and a hash of your password. The password itself is
-          not stored.
+          When you register, we store your name, email address, a hash of your password, and a hash of your account
+          recovery key. The password and the recovery key themselves are not stored.
         </p>
       </Section>
       <Section title="Workspace">

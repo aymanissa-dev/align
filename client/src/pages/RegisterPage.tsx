@@ -1,21 +1,25 @@
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
+import { api } from '../api/index.ts'
+import type { User } from '../api/types.ts'
 import { useAuth } from '../auth/auth-context.ts'
 import { AuthFrame } from '../components/AuthFrame.tsx'
 import { PasswordMeter } from '../components/PasswordMeter.tsx'
+import { RecoveryKeyNotice } from '../components/RecoveryKeyNotice.tsx'
 import { Button, Field, Input } from '../components/ui.tsx'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { isMediumPassword, MEDIUM_PASSWORD_HINT, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
 export function RegisterPage() {
-  const { register } = useAuth()
+  const { acceptSession } = useAuth()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
-  const [sent, setSent] = useState('')
+  const [recoveryKey, setRecoveryKey] = useState('')
+  const [created, setCreated] = useState<User | null>(null)
   useDocumentTitle('Create account')
 
   async function onSubmit(event: FormEvent) {
@@ -35,11 +39,10 @@ export function RegisterPage() {
     setError('')
     setPending(true)
     try {
-      const result = await register({ name, email, password })
-      if ('message' in result && !('id' in result)) {
-        setSent(result.message)
-        setPending(false)
-      }
+      const result = await api.register({ name, email, password })
+      const { recoveryKey: key, ...user } = result
+      setRecoveryKey(key)
+      setCreated(user)
     } catch (caught) {
       setError(errorMessage(caught))
       setPending(false)
@@ -47,9 +50,16 @@ export function RegisterPage() {
   }
 
   return (
-    <AuthFrame title="Create an account" lede="A workspace for projects, tasks, and notes.">
-      {sent ? (
-        <p className="text-sm leading-6 text-neutral-700">{sent}</p>
+    <AuthFrame
+      title={recoveryKey ? 'Save your recovery key' : 'Create an account'}
+      lede={
+        recoveryKey
+          ? 'Align does not send email. This key is how you reset the password later.'
+          : 'A workspace for projects, tasks, and notes.'
+      }
+    >
+      {recoveryKey && created ? (
+        <RecoveryKeyNotice recoveryKey={recoveryKey} onSaved={() => acceptSession(created)} />
       ) : (
         <form onSubmit={onSubmit} className="space-y-4" noValidate>
           <Field label="Name" htmlFor="name">
@@ -96,12 +106,14 @@ export function RegisterPage() {
           </Button>
         </form>
       )}
-      <p className="mt-6 text-sm text-neutral-500">
-        Already have an account?{' '}
-        <Link to="/login" className="focus-ring text-neutral-950 underline underline-offset-4">
-          Sign in
-        </Link>
-      </p>
+      {recoveryKey ? null : (
+        <p className="mt-6 text-sm text-neutral-500">
+          Already have an account?{' '}
+          <Link to="/login" className="focus-ring text-neutral-950 underline underline-offset-4">
+            Sign in
+          </Link>
+        </p>
+      )}
     </AuthFrame>
   )
 }

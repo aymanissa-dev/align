@@ -55,7 +55,7 @@ describe('security review', () => {
   })
 
   it('clears every factor when a password is reset', async () => {
-    const { agent, email, password, id } = await registerUser()
+    const { agent, email, password, id, recoveryKey } = await registerUser()
     expect((await agent.post('/api/auth/step-up').send({ password })).status).toBe(204)
     const setup = await agent.post('/api/auth/totp/setup').send({ password })
     const code = totpAt(setup.body.secret as string, Math.floor(Date.now() / 1000 / 30))
@@ -67,8 +67,7 @@ describe('security review', () => {
       counter: 0,
       name: 'Laptop',
     })
-    const forgot = await request(app).post('/api/auth/forgot').send({ email })
-    const reset = await request(app).post('/api/auth/reset').send({ token: forgot.body.resetToken, password: 'password123' })
+    const reset = await request(app).post('/api/auth/reset').send({ email, password: 'password123', recoveryKey })
     expect(reset.status).toBe(200)
     const user = await User.findById(id).select('+totpSecret +recoveryCodes')
     expect(user?.totpEnabledAt ?? null).toBeNull()
@@ -235,16 +234,17 @@ describe('security review', () => {
         .set('x-forwarded-for', '198.51.100.40, 10.0.0.4')
         .send({ email, password: 'not-the-password' })
       expect(wrong.status).toBe(401)
-      const forgot = await request(app)
-        .post('/api/auth/forgot')
+      const reset = await request(app)
+        .post('/api/auth/reset')
         .set('x-real-ip', '203.0.113.41')
         .set('x-forwarded-for', '198.51.100.41')
-        .send({ email })
-      expect(forgot.status).toBe(200)
+        .send({ email, password: 'password123', recoveryKey: 'abcd-ef01-2345-6789-abcd-ef01-2345-6789' })
+      expect(reset.status).toBe(400)
+      expect(reset.body).toEqual({ error: "Those details don't match." })
       expect(await RateLimit.findOne({ key: 'login:fail:ip:203.0.113.40' })).toBeTruthy()
       expect(await RateLimit.findOne({ key: 'login:fail:ip:198.51.100.40' })).toBeNull()
-      expect(await RateLimit.findOne({ key: 'forgot:ip:203.0.113.41' })).toBeTruthy()
-      expect(await RateLimit.findOne({ key: 'forgot:ip:198.51.100.41' })).toBeNull()
+      expect(await RateLimit.findOne({ key: 'reset:ip:203.0.113.41' })).toBeTruthy()
+      expect(await RateLimit.findOne({ key: 'reset:ip:198.51.100.41' })).toBeNull()
     } finally {
       if (previous === undefined) delete process.env.VERCEL
       else process.env.VERCEL = previous
@@ -296,77 +296,37 @@ describe('security review', () => {
     }
   }, 60_000)
 
-  it('returns the same accepted response for new and existing emails when mail is configured', async () => {
+  it('keeps registration on 201 and 409 and never calls an email API', async () => {
     const existing = await registerUser('Existing')
-    const previousKey = process.env.RESEND_API_KEY
-    const previousFrom = process.env.MAIL_FROM
     const originalFetch = globalThis.fetch
-    const sent: { to: string[]; subject: string; text: string }[] = []
-    process.env.RESEND_API_KEY = 're_test_key'
-    process.env.MAIL_FROM = 'Align <mail@align.test>'
+    let mailed = false
     globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
-      const [input, init] = args
+      const [input] = args
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-      if (url.includes('api.resend.com')) {
-        const body = JSON.parse(String(init?.body ?? '{}')) as { to?: string[]; subject?: string; text?: string }
-        sent.push({ to: body.to ?? [], subject: body.subject ?? '', text: body.text ?? '' })
-        return new Response(JSON.stringify({ id: 'email_1' }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
+      if (url.includes('api.resend.com')) mailed = true
       return originalFetch(...args)
     }) as typeof fetch
     try {
       const fresh = `new-${crypto.randomUUID()}@align.test`
-      const created = await request(app).post('/api/auth/register').send({ name: 'New', email: fresh, password: 'password12' })
+      const knownStarted = performance.now()
       const duplicate = await request(app)
         .post('/api/auth/register')
         .send({ name: 'Dup', email: existing.email, password: 'another-password-12' })
-      expect(created.status).toBe(202)
-      expect(duplicate.status).toBe(202)
-      expect(created.body).toEqual({ message: 'Check your email to finish creating your account.' })
-      expect(duplicate.body).toEqual(created.body)
-      expect(JSON.stringify(created.body)).not.toMatch(/token|[0-9a-f]{64}/i)
-      expect(JSON.stringify(created.headers['set-cookie'] ?? [])).not.toMatch(/token=|refresh=/)
-      expect(JSON.stringify(duplicate.headers['set-cookie'] ?? [])).not.toMatch(/token=|refresh=/)
-
-      const verifyMail = sent.find((mail) => mail.to.includes(fresh) && mail.text.includes('/verify?token='))
-      const notice = sent.find(
-        (mail) => mail.to.includes(existing.email) && mail.text.toLowerCase().includes('someone tried to sign up'),
-      )
-      expect(verifyMail?.subject).toBe('Verify your Align email')
-      expect(notice?.subject).toBe('Someone tried to sign up with your email')
-      expect(sent.filter((mail) => mail.text.includes('/verify?token=')).map((mail) => mail.to[0])).toEqual([fresh])
-
-      const token = verifyMail?.text.match(/token=([a-f0-9]{64})/)?.[1] ?? ''
-      expect(token).toMatch(/^[a-f0-9]{64}$/)
-      const blocked = await request(app).post('/api/auth/login').send({ email: fresh, password: 'password12' })
-      expect(blocked.status).toBe(401)
-      expect(blocked.body).toEqual({ error: 'Email or password is incorrect.' })
-      expect(JSON.stringify(blocked.headers['set-cookie'] ?? [])).not.toMatch(/token=/)
-      expect((await request(app).post('/api/auth/login').send({ email: existing.email, password: existing.password })).status).toBe(200)
-      expect((await request(app).post('/api/auth/login').send({ email: existing.email, password: 'another-password-12' })).status).toBe(401)
-      expect(await User.countDocuments({ email: existing.email })).toBe(1)
-      expect(await User.countDocuments({ email: fresh })).toBe(1)
-      expect((await User.findOne({ email: fresh }))?.pendingVerification).toBe(true)
-
-      const verified = await request(app).post('/api/auth/verify').send({ token })
-      expect(verified.status).toBe(200)
-      expect(verified.body.email).toBe(fresh)
-      expect(verified.body.emailVerified).toBe(true)
-      const header = (Array.isArray(verified.headers['set-cookie']) ? verified.headers['set-cookie'] : [])
-        .map((cookie) => cookie.split(';')[0] ?? '')
-        .join('; ')
-      expect(header).toMatch(/token=/)
-      expect((await request(app).get('/api/projects').set('Cookie', header)).status).toBe(200)
+      const knownMs = performance.now() - knownStarted
+      const freshStarted = performance.now()
+      const created = await request(app).post('/api/auth/register').send({ name: 'New', email: fresh, password: 'password12' })
+      const freshMs = performance.now() - freshStarted
+      expect(created.status).toBe(201)
+      expect(created.body.email).toBe(fresh)
+      expect(created.body.recoveryKey).toMatch(/^[0-9a-f]{4}(?:-[0-9a-f]{4}){7}$/)
+      expect(duplicate.status).toBe(409)
+      expect(duplicate.body).toEqual({ error: "We couldn't create an account with those details." })
+      expect(JSON.stringify(duplicate.body)).not.toMatch(/already exists|check your email/i)
+      expect(Math.abs(knownMs - freshMs)).toBeLessThan(1000)
+      expect(mailed).toBe(false)
       expect((await User.findOne({ email: fresh }))?.pendingVerification).toBe(false)
-      expect((await request(app).post('/api/auth/login').send({ email: fresh, password: 'password12' })).status).toBe(200)
+      expect((await request(app).post('/api/auth/verify').send({ token: 'abc' })).status).toBe(404)
     } finally {
-      if (previousKey === undefined) delete process.env.RESEND_API_KEY
-      else process.env.RESEND_API_KEY = previousKey
-      if (previousFrom === undefined) delete process.env.MAIL_FROM
-      else process.env.MAIL_FROM = previousFrom
       globalThis.fetch = originalFetch
     }
   })

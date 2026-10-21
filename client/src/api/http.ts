@@ -17,12 +17,11 @@ import type {
   Label,
   Note,
   Project,
+  RecoverySession,
   RegisterResult,
-  ResetResult,
   SearchResults,
   Task,
   User,
-  VerifyLink,
   WhiteboardScene,
   WriteOpts,
 } from './types.ts'
@@ -58,10 +57,8 @@ function canRefresh(path: string): boolean {
   return (
     !path.startsWith('/api/auth/login') &&
     !path.startsWith('/api/auth/register') &&
-    !path.startsWith('/api/auth/forgot') &&
     !path.startsWith('/api/auth/reset') &&
-    !path.startsWith('/api/auth/refresh') &&
-    !path.startsWith('/api/auth/verify')
+    !path.startsWith('/api/auth/refresh')
   )
 }
 
@@ -271,12 +268,6 @@ export const httpApi = {
   authProviders() {
     return request<AuthProviders>('/api/auth/providers')
   },
-  verifyEmail(token) {
-    return request<User>('/api/auth/verify', { method: 'POST', body: JSON.stringify({ token }) })
-  },
-  sendVerification() {
-    return request<VerifyLink>('/api/auth/verify/send', { method: 'POST' })
-  },
   listSessions() {
     return request<AuthSession[]>('/api/auth/sessions')
   },
@@ -296,20 +287,26 @@ export const httpApi = {
     })
   },
   changeEmail(input) {
-    return request<import('./types.ts').User & { verifyToken?: string }>('/api/auth/email', {
+    return request<User>('/api/auth/email', {
       method: 'POST',
       body: JSON.stringify(input),
     })
+  },
+  createRecoveryKey() {
+    return request<{ recoveryKey: string }>('/api/auth/recovery-key', { method: 'POST' })
   },
   async session() {
     const data = await request<{ user: User | null }>('/api/auth/session')
     return data.user
   },
-  forgotPassword(email) {
-    return request<ResetResult>('/api/auth/forgot', { method: 'POST', body: JSON.stringify({ email }) })
-  },
   resetPassword(input) {
-    return request<User>('/api/auth/reset', { method: 'POST', body: JSON.stringify(input) })
+    return request<RecoverySession>('/api/auth/reset', { method: 'POST', body: JSON.stringify(input) })
+  },
+  passkeyResetOptions() {
+    return request<unknown>('/api/auth/reset/passkey/options', { method: 'POST' })
+  },
+  resetWithPasskey(input) {
+    return request<RecoverySession>('/api/auth/reset/passkey', { method: 'POST', body: JSON.stringify(input) })
   },
   me() {
     return request<User>('/api/auth/me')

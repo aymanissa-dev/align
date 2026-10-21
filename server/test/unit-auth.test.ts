@@ -135,7 +135,9 @@ describe('auth units', () => {
 
   it('reads the Vercel client address and ignores a spoofed forwarded header off the platform', () => {
     const previous = process.env.VERCEL
+    const previousEnv = process.env.VERCEL_ENV
     delete process.env.VERCEL
+    delete process.env.VERCEL_ENV
     const spoofed = {
       get(name: string) {
         const headers: Record<string, string> = { 'x-real-ip': '203.0.113.50', 'x-forwarded-for': '198.51.100.8, 10.0.0.2' }
@@ -144,6 +146,9 @@ describe('auth units', () => {
       socket: { remoteAddress: '127.0.0.1' },
     }
     expect(clientIp(spoofed)).toBe('127.0.0.1')
+    process.env.VERCEL_ENV = 'production'
+    expect(clientIp(spoofed)).toBe('203.0.113.50')
+    delete process.env.VERCEL_ENV
     process.env.VERCEL = '1'
     try {
       expect(clientIp(spoofed)).toBe('203.0.113.50')
@@ -166,6 +171,8 @@ describe('auth units', () => {
     } finally {
       if (previous === undefined) delete process.env.VERCEL
       else process.env.VERCEL = previous
+      if (previousEnv === undefined) delete process.env.VERCEL_ENV
+      else process.env.VERCEL_ENV = previousEnv
     }
   })
 

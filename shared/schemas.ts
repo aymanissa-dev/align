@@ -39,18 +39,21 @@ export const registerSchema = z.object({
   password: password(),
 })
 
-export const forgotSchema = z.object({
-  email,
+export const passkeyResetSchema = z.object({
+  password: password('New password'),
+  response: z.record(z.unknown()),
 })
 
-export const resetSchema = z.object({
-  token: z
-    .string({ required_error: 'This reset link is invalid or has expired.' })
-    .trim()
-    .min(20, 'This reset link is invalid or has expired.')
-    .max(200, 'This reset link is invalid or has expired.'),
-  password: password(),
-})
+export const resetSchema = z
+  .object({
+    email,
+    password: password('New password'),
+    recoveryKey: z.string().trim().max(80, 'Those details don\'t match.').optional(),
+    code: z.string().trim().max(32, 'Those details don\'t match.').optional(),
+  })
+  .refine((value) => Boolean(value.recoveryKey) !== Boolean(value.code), {
+    message: 'Use a recovery key or a two-factor recovery code.',
+  })
 
 export const loginSchema = z.object({
   email: z
@@ -84,14 +87,6 @@ export const profileSchema = z
   .refine((value) => value.name !== undefined || value.accent !== undefined, {
     message: 'Nothing to update.',
   })
-
-export const verifySchema = z.object({
-  token: z
-    .string({ required_error: 'This verification link is invalid or has expired.' })
-    .trim()
-    .min(20, 'This verification link is invalid or has expired.')
-    .max(200, 'This verification link is invalid or has expired.'),
-})
 
 export const passwordSchema = z.object({
   currentPassword: z
@@ -237,7 +232,6 @@ export const mfaSchema = z.object({
 
 export const emailChangeSchema = z.object({
   email,
-  password: z.string().min(1, 'Confirm it is you to continue.').max(128, 'Confirm it is you to continue.'),
 })
 
 export const stepUpSchema = z.object({

@@ -197,7 +197,7 @@ export async function verifyPasskey(
   req: Request,
   response: AuthenticationResponseJSON,
   kind: 'login' | 'stepup',
-): Promise<{ userId: string }> {
+): Promise<{ userId: string; passkeyId: string }> {
   const { rpID, origin } = webAuthnConfig(req)
   const client = JSON.parse(Buffer.from(response.response.clientDataJSON, 'base64url').toString('utf8')) as {
     challenge?: string
@@ -222,7 +222,7 @@ export async function verifyPasskey(
   if (!verified.verified) throw new HttpError(401, 'Passkey could not be verified.')
   passkey.counter = verified.authenticationInfo.newCounter
   await passkey.save()
-  return { userId: passkey.userId.toString() }
+  return { userId: passkey.userId.toString(), passkeyId: passkey.id }
 }
 
 export function sha256(value: string): string {

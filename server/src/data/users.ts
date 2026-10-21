@@ -1,6 +1,6 @@
 import { User } from '../models.ts'
 
-const SECRET = '+passwordHash +totpSecret +recoveryCodes'
+const SECRET = '+passwordHash +totpSecret +recoveryCodes +recoveryKeyHash'
 
 export const users = {
   byEmail(email: string) {
@@ -25,6 +25,7 @@ export const users = {
     emailVerifiedAt?: Date | null
     googleId?: string
     pendingVerification?: boolean
+    recoveryKeyHash?: string | null
   }) {
     return User.create(doc)
   },
