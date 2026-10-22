@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { api } from '../api/index.ts'
+import { localISODate } from '../lib/due.ts'
 import { useAuth } from '../auth/auth-context.ts'
 import { cn } from '../lib/cn.ts'
 import { useMediaQuery } from '../hooks/useMediaQuery.ts'
@@ -50,6 +53,17 @@ export function Layout({ children }: { children?: ReactNode }) {
   if (isDesktop && open) setOpen(false)
 
   const drawerOpen = isDesktop || open
+  const today = localISODate()
+  const inbox = useQuery({
+    queryKey: ['notifications', today],
+    queryFn: ({ signal }) => api.listNotifications(today, { signal }),
+    staleTime: 15_000,
+    refetchInterval: 15_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  })
+  const notifications = inbox.data ?? []
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -100,7 +114,7 @@ export function Layout({ children }: { children?: ReactNode }) {
           <span className="sr-only">Open menu</span>
         </button>
         <span className="text-sm font-medium tracking-[-0.03em]">Align</span>
-        <NotificationBell className="ml-auto" />
+        <NotificationBell today={today} items={notifications} className="ml-auto" />
       </header>
 
       {open && !isDesktop ? (
@@ -180,7 +194,7 @@ export function Layout({ children }: { children?: ReactNode }) {
             <p className="truncate text-sm font-medium text-neutral-950">{user.name}</p>
             <p className="truncate font-mono text-[11px] text-neutral-500">{user.email}</p>
           </div>
-          <NotificationBell placement="up" />
+          <NotificationBell today={today} items={notifications} placement="up" />
         </div>
       </aside>
 

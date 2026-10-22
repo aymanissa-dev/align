@@ -443,7 +443,7 @@ export const mockApi = {
   async me() {
     await wait()
     const state = load()
-    return publicUser(requireUser(state))
+    return { ...publicUser(requireUser(state)), steppedUp: false }
   },
 
   async session() {
@@ -833,7 +833,7 @@ export const mockApi = {
     })
   },
 
-  async listNotifications(today) {
+  async listNotifications(today, _init?: { signal?: AbortSignal }) {
     return write((state, user) => {
       syncNotifications(state, user.id, today)
       return state.notifications

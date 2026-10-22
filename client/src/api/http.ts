@@ -4,6 +4,7 @@ import { broadcastSignedOut } from '../lib/authChannel.ts'
 import { forceSignOut } from '../lib/forceSignOut.ts'
 import { enqueueWrite, markUnreachable, noteNetworkSuccess } from '../lib/offline.ts'
 import { refreshSession } from '../lib/refresh.ts'
+import { sessionOpen, sessionSignal } from '../lib/sessionGate.ts'
 import { purgeStaleClient } from '../lib/staleClient.ts'
 import { CLIENT_VERSION } from '../version.ts'
 import type {
@@ -90,8 +91,10 @@ async function fetchResponse(path: string, init: RequestInit = {}, refreshed = f
   if (cached) headers.set('If-None-Match', cached.etag)
 
   let response: Response | undefined
+  const gate = sessionSignal()
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const signal = init.signal ?? AbortSignal.timeout(canQueue ? 8_000 : ownTimeout ? 10_000 : 10_000)
+    const timeout = AbortSignal.timeout(canQueue ? 8_000 : 10_000)
+    const signal = init.signal ? AbortSignal.any([timeout, gate, init.signal]) : AbortSignal.any([timeout, gate])
     try {
       response = await fetch(path, {
         ...init,
@@ -103,8 +106,8 @@ async function fetchResponse(path: string, init: RequestInit = {}, refreshed = f
       })
       break
     } catch (error) {
-      // A caller-supplied abort is a cancelled query. Our own timeout means the write should wait.
-      if (init.signal?.aborted) throw error
+      // A caller abort or a logout cancels the request. Our own timeout means the write should wait.
+      if (init.signal?.aborted || gate.aborted) throw error
       if (ownTimeout && attempt + 1 < attempts) continue
       if (canQueue) {
         markUnreachable()
@@ -129,7 +132,7 @@ async function fetchResponse(path: string, init: RequestInit = {}, refreshed = f
   // Any real response means this fetch reached something. Mutations prove the network.
   // A service-worker cache hit is not the network, even when the status is 200.
   const fromWorkerCache = response.headers.get('X-Align-Cache') === 'hit'
-  if (response.status === 401 && canRefresh(path) && !fromWorkerCache) {
+  if (response.status === 401 && canRefresh(path) && !fromWorkerCache && sessionOpen()) {
     const denied = await errorBody(response)
     if (denied.code === 'membership_changed') {
       if (!refreshed) {
@@ -303,7 +306,7 @@ export const httpApi = {
     return request<RecoverySession>('/api/auth/reset', { method: 'POST', body: JSON.stringify(input) })
   },
   me() {
-    return request<User>('/api/auth/me')
+    return request<User & { steppedUp: boolean }>('/api/auth/me')
   },
   updateProfile(input) {
     return request<User>('/api/auth/me', { method: 'PATCH', body: JSON.stringify(input) })
@@ -483,8 +486,8 @@ export const httpApi = {
       body: JSON.stringify({ scene }),
     })
   },
-  listNotifications(today) {
-    return collectPages<AppNotification>(withQuery('/api/notifications', { today }))
+  listNotifications(today, init) {
+    return collectPages<AppNotification>(withQuery('/api/notifications', { today }), init)
   },
   markNotificationRead(id) {
     return request<AppNotification>(`/api/notifications/${id}/read`, { method: 'POST' })

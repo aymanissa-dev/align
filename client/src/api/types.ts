@@ -277,7 +277,7 @@ export interface AlignApi {
   /** POST /api/auth/reset */
   resetPassword(input: { email: string; password: string; recoveryKey: string; code?: string }): Promise<RecoverySession>
   /** GET /api/auth/me */
-  me(): Promise<User>
+  me(): Promise<User & { steppedUp: boolean }>
   /** PATCH /api/auth/me */
   updateProfile(input: { name?: string; accent?: string }): Promise<User>
   /** POST /api/auth/password */
@@ -360,7 +360,7 @@ export interface AlignApi {
   /** PUT /api/projects/:id/whiteboard */
   saveWhiteboard(projectId: string, scene: WhiteboardScene): Promise<{ scene: WhiteboardScene }>
   /** GET /api/notifications?today= */
-  listNotifications(today: string): Promise<AppNotification[]>
+  listNotifications(today: string, init?: { signal?: AbortSignal }): Promise<AppNotification[]>
   /** POST /api/notifications/:id/read */
   markNotificationRead(id: string): Promise<AppNotification>
   /** POST /api/notifications/read-all?today= */

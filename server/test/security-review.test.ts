@@ -446,6 +446,7 @@ describe('security review', () => {
     expect(vercel).toContain("base-uri 'self'")
     expect(vercel).toContain("frame-ancestors 'none'")
     expect(vercel).toContain("connect-src 'self'")
+    expect(vercel).toContain("default-src 'none'")
     expect(vercel).not.toContain("script-src 'self' 'unsafe-inline'")
     expect(vite).toContain("injectRegister: 'script'")
     const health = await request(app).get('/api/health')

@@ -15,7 +15,6 @@ import { groupToday } from '../lib/todayGroups.ts'
 import { useToggleTask } from '../hooks/useToggleTask.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 import { useQueryMiss } from '../lib/queryMiss.ts'
-import { invalidateWorkspace } from '../queryClient.ts'
 import { cn } from '../lib/cn.ts'
 
 export function TodayPage() {
@@ -67,18 +66,53 @@ export function TodayPage() {
   const selectedProject = projectId || projects.data?.[0]?.id || ''
 
   const create = useMutation({
-    mutationFn: (plannedFor: string) => api.createTask(selectedProject, { title: title.trim(), plannedFor }),
-    onSuccess: async (_task, plannedFor) => {
-      setTitle('')
-      toast(plannedFor === tomorrow ? 'Added for tomorrow' : 'Added for today')
-      await invalidateWorkspace()
+    mutationFn: (input: { title: string; plannedFor: string; projectId: string }) =>
+      api.createTask(input.projectId, { title: input.title, plannedFor: input.plannedFor }),
+    onMutate: async (input) => {
+      await queryClient.cancelQueries({ queryKey: ['today', date] })
+      const previous = queryClient.getQueryData<TodayData>(['today', date])
+      const optimistic: TodayTask = {
+        id: `optimistic:${crypto.randomUUID()}`,
+        projectId: input.projectId,
+        projectName: projects.data?.find((project) => project.id === input.projectId)?.name ?? '',
+        title: input.title,
+        completed: false,
+        dueDate: null,
+        priority: 'medium',
+        labelIds: [],
+        plannedFor: input.plannedFor,
+        completedOn: null,
+        order: -1,
+        version: 0,
+        createdAt: '',
+        updatedAt: '',
+      }
+      if (previous) queryClient.setQueryData(['today', date], { ...previous, planned: [...previous.planned, optimistic] })
+      return { previous, optimisticId: optimistic.id }
     },
-    onError: (error) => {
+    onSuccess: (task, input, context) => {
+      queryClient.setQueryData<TodayData>(['today', date], (current) =>
+        current
+          ? {
+              ...current,
+              planned: current.planned.map((item) =>
+                item.id === context?.optimisticId ? { ...task, projectName: projects.data?.find((project) => project.id === input.projectId)?.name ?? '' } : item,
+              ),
+            }
+          : current,
+      )
+      toast(input.plannedFor === tomorrow ? 'Added for tomorrow' : 'Added for today')
+      void queryClient.invalidateQueries({ queryKey: ['today', date] })
+      void queryClient.invalidateQueries({ queryKey: ['tasks', input.projectId] })
+      void queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+    },
+    onError: (error, input, context) => {
+      if (context?.previous) queryClient.setQueryData(['today', date], context.previous)
       if (error instanceof ApiError && error.queued) {
-        setTitle('')
         toast('Saved on this device. It will sync when you reconnect.')
         return
       }
+      setTitle(input.title)
       toast(errorMessage(error))
     },
   })
@@ -123,7 +157,7 @@ export function TodayPage() {
   )
 
   function onToggle(task: TodayTask) {
-    if (task.id.startsWith('queued:')) return
+    if (task.id.startsWith('queued:') || task.id.startsWith('optimistic:')) return
     toggle.mutate(
       { id: task.id, projectId: task.projectId, completed: task.completed, version: task.version },
       { onError: (error) => toast(errorMessage(error)) },
@@ -132,10 +166,12 @@ export function TodayPage() {
 
   function onCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!selectedProject || !title.trim()) return
+    const nextTitle = title.trim()
+    if (!selectedProject || !nextTitle) return
     const submitter = (event.nativeEvent as SubmitEvent).submitter
     const plannedFor = submitter instanceof HTMLButtonElement && submitter.dataset.when === 'tomorrow' ? tomorrow : date
-    create.mutate(plannedFor)
+    setTitle('')
+    create.mutate({ title: nextTitle, plannedFor, projectId: selectedProject })
   }
 
   return (
@@ -184,14 +220,14 @@ export function TodayPage() {
           </div>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row">
-          <Button type="submit" data-when="today" disabled={create.isPending || !title.trim() || !selectedProject} className="min-h-11">
+          <Button type="submit" data-when="today" disabled={!title.trim() || !selectedProject} className="min-h-11">
             Add for today
           </Button>
           <Button
             type="submit"
             data-when="tomorrow"
             variant="secondary"
-            disabled={create.isPending || !title.trim() || !selectedProject}
+            disabled={!title.trim() || !selectedProject}
             className="min-h-11"
           >
             Add for tomorrow

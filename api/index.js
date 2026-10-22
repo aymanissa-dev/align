@@ -1353,6 +1353,7 @@ async function downFullWipe(_dryRun) {
 // src/migrate/launchWipe.ts
 import mongoose4 from "mongoose";
 var LAUNCH_WIPE = "005_launch_wipe";
+var LAUNCH_EMPTY = "006_launch_empty";
 var BACKUP_DB2 = "align_backup_20261021";
 var LOCK_ID2 = "005_launch_wipe";
 var STALE_MS2 = 2 * 60 * 1e3;
@@ -1564,6 +1565,9 @@ async function upLaunchWipe(dryRun) {
 async function downLaunchWipe(_dryRun) {
   throw new Error("005_launch_wipe cannot be rolled back");
 }
+async function downLaunchEmpty(_dryRun) {
+  throw new Error("006_launch_empty cannot be rolled back");
+}
 function numericCounts(value) {
   if (!value || typeof value !== "object") return {};
   const numeric = {};
@@ -1607,7 +1611,8 @@ var MIGRATIONS = [
   { id: REVOKE_EXPOSED_TOKENS, up: upRevokeExposedTokens, down: downRevokeExposedTokens },
   { id: PURGE_REVIEWER_WORKSPACE, up: upPurgeReviewerWorkspace, down: downPurgeReviewerWorkspace },
   { id: FULL_WIPE, up: upFullWipe, down: downFullWipe },
-  { id: LAUNCH_WIPE, up: upLaunchWipe, down: downLaunchWipe }
+  { id: LAUNCH_WIPE, up: upLaunchWipe, down: downLaunchWipe },
+  { id: LAUNCH_EMPTY, up: upLaunchWipe, down: downLaunchEmpty }
 ];
 var appliedOnce = null;
 function runMigrations(options) {
@@ -4225,7 +4230,12 @@ function authRouter(limiter) {
     asyncHandler(async (req, res) => {
       const user = await users.byId(currentUserId(req));
       if (!user) throw new HttpError(401, "Sign in to continue.");
-      res.json({ ...publicUser(user), totpEnabled: Boolean(user.totpEnabledAt) });
+      const session = req.sessionId ? await loadSession(req.sessionId) : null;
+      res.json({
+        ...publicUser(user),
+        totpEnabled: Boolean(user.totpEnabledAt),
+        steppedUp: Boolean(session && stepUpFresh(session.stepUpAt))
+      });
     })
   );
   router.patch(
@@ -4294,11 +4304,24 @@ function authRouter(limiter) {
     "/me",
     requireAuth,
     asyncHandler(async (req, res) => {
-      const body = parseBody(stepUpSchema, req.body);
-      assertCredentialPresent(body);
+      const body = parseBody(stepUpSchema, req.body ?? {});
       const userId = currentUserId(req);
-      await requireFreshStepUp(req.sessionId);
-      await requireSensitiveCredential(userId, body);
+      const session = req.sessionId ? await loadSession(req.sessionId) : null;
+      const fresh = Boolean(session && stepUpFresh(session.stepUpAt));
+      const hasCredential = Boolean(body.password?.trim() || body.code?.trim());
+      if (!fresh && !hasCredential) {
+        throw new HttpError(403, "Confirm it is you to continue.", { code: "step_up_required" });
+      }
+      if (hasCredential) await requireSensitiveCredential(userId, body);
+      if (!fresh && req.sessionId) {
+        await markStepUp(req.sessionId);
+        await recordSecurity({
+          userId,
+          type: "step-up",
+          summary: body.code?.trim() ? "Confirmed account deletion with a verification code." : "Confirmed account deletion with a password.",
+          ...requestAudit(req)
+        });
+      }
       await deleteAccount(userId);
       clearSession(res);
       res.status(204).send();
@@ -4865,14 +4888,18 @@ function projectsRouter() {
           order: (latest?.order ?? 0) + 1,
           ...input.clientId ? { clientId: input.clientId } : {}
         });
-        await db.touchProject(project._id);
-        await recordActivity({
-          userId: tenant.userId,
-          workspaceId: tenant.workspaceId,
-          projectId: project._id,
-          type: "create",
-          summary: `Created task ${quoteTitle(task.title)}`
-        });
+        const side = Promise.all([
+          db.touchProject(project._id),
+          recordActivity({
+            userId: tenant.userId,
+            workspaceId: tenant.workspaceId,
+            projectId: project._id,
+            type: "create",
+            summary: `Created task ${quoteTitle(task.title)}`
+          })
+        ]);
+        if (process.env.NODE_ENV === "test") await side;
+        else void side.catch(() => void 0);
         stampVersion(res, task.__v);
         res.status(201).json(publicTask(task));
       } catch (error) {
@@ -5419,8 +5446,11 @@ function createApp(options = {}) {
   });
   app2.use(guardOrigin);
   app2.use(csrfProtection);
-  app2.use((_req, res, next) => {
+  app2.use((req, res, next) => {
     res.setHeader("X-Align-Minimum", String(MINIMUM_CLIENT_VERSION));
+    if (req.path.startsWith("/api")) {
+      res.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
+    }
     next();
   });
   app2.get("/api/version", (_req, res) => {

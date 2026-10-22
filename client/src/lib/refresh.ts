@@ -1,9 +1,11 @@
 import { csrfHeaders } from './csrf.ts'
+import { sessionOpen } from './sessionGate.ts'
 
 let inflight: Promise<boolean> | null = null
 
 /** One silent refresh at a time. Parallel 401s share the same cookie rotation. */
 export function refreshSession(): Promise<boolean> {
+  if (!sessionOpen()) return Promise.resolve(false)
   inflight ??= fetch('/api/auth/refresh', {
     method: 'POST',
     credentials: 'include',

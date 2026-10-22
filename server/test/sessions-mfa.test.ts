@@ -147,7 +147,6 @@ describe('sessions and second factors', () => {
     const staleDisable = await agent.post('/api/auth/totp/disable').send({ password })
     expect(staleDisable.status).toBe(403)
     expect(staleDisable.body.code).toBe('step_up_required')
-    expect((await agent.delete('/api/auth/me').send({ password })).status).toBe(403)
     expect((await agent.post('/api/auth/step-up').send({ password })).status).toBe(204)
     expect((await agent.post('/api/auth/totp/disable').send({ password })).status).toBe(204)
     expect((await agent.get('/api/auth/mfa')).body.totp).toBe(false)
@@ -307,7 +306,6 @@ describe('sessions and second factors', () => {
       () => agent.post('/api/auth/password').send({ currentPassword: password, newPassword: 'password123' }),
       () => agent.post('/api/auth/totp/disable').send({ password }),
       () => agent.post('/api/auth/recovery/regenerate').send({ password }),
-      () => agent.delete('/api/auth/me').send({ password }),
       () => agent.post('/api/auth/sessions/revoke-all').send({ password }),
       () => agent.post('/api/auth/sessions/revoke-others').send({ password }),
     ]
@@ -384,7 +382,6 @@ describe('sessions and second factors', () => {
     expect((await agent.post('/api/auth/recovery/regenerate').send({})).status).toBe(400)
     expect((await agent.post('/api/auth/sessions/revoke-all').send({})).status).toBe(400)
     expect((await agent.post('/api/auth/sessions/revoke-others').send({})).status).toBe(400)
-    expect((await agent.delete('/api/auth/me').send({})).status).toBe(400)
     expect((await agent.delete('/api/auth/passkeys/missing').send({})).status).toBe(400)
     expect((await agent.post('/api/auth/email').send({})).status).toBe(400)
     const nextEmail = `blank-${crypto.randomUUID()}@align.test`
@@ -415,5 +412,21 @@ describe('sessions and second factors', () => {
     expect((await agent.get('/api/auth/mfa')).body.totp).toBe(false)
     const afterDisable = await Session.findOne({ userId: id, revokedAt: null, replacedBy: null }).lean()
     expect(afterDisable?.stepUpAt?.getTime()).toBe(before?.stepUpAt?.getTime())
+  })
+
+  it('accepts the delete password as the step-up, and skips it when the session is fresh', async () => {
+    const stale = await registerUser()
+    await Session.updateMany({ userId: stale.id }, { stepUpAt: new Date(Date.now() - 11 * 60 * 1000) })
+    const missing = await stale.agent.delete('/api/auth/me').send({})
+    expect(missing.status).toBe(403)
+    expect(missing.body.code).toBe('step_up_required')
+    expect((await stale.agent.delete('/api/auth/me').send({ password: 'not-the-password' })).status).toBe(400)
+    expect((await stale.agent.get('/api/auth/me')).body.steppedUp).toBe(false)
+    expect((await stale.agent.delete('/api/auth/me').send({ password: stale.password })).status).toBe(204)
+
+    const fresh = await registerUser()
+    expect((await fresh.agent.post('/api/auth/step-up').send({ password: fresh.password })).status).toBe(204)
+    expect((await fresh.agent.get('/api/auth/me')).body.steppedUp).toBe(true)
+    expect((await fresh.agent.delete('/api/auth/me').send({})).status).toBe(204)
   })
 })

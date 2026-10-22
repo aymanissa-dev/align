@@ -7,6 +7,7 @@ import { setForceSignOutHandler } from '../lib/forceSignOut.ts'
 import { clearLocalUser, readLocalUser, writeLocalUser } from '../lib/localUser.ts'
 import { clearQueueForUser, setQueueOwner } from '../lib/offline.ts'
 import { allowPersistedCache, clearPersistedCache, QueryCache } from '../lib/queryPersist.tsx'
+import { closeSessionGate, openSessionGate, pauseSessionGate } from '../lib/sessionGate.ts'
 import { purgeApiCaches } from '../lib/swCache.ts'
 import { queryClient } from '../queryClient.ts'
 import { AuthContext, type AuthContextValue } from './auth-context.ts'
@@ -38,7 +39,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setQueueOwner(null)
     ownerRef.current = null
     purgeApiCaches()
+    closeSessionGate()
     setUser(null)
+    void queryClient.cancelQueries()
     queryClient.clear()
   }, [])
 
@@ -56,8 +59,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .session()
       .then((next) => {
         if (cancelled || epoch.current !== mine) return
-        if (next) writeLocalUser(next)
-        else clearLocalUser()
+        if (next) {
+          writeLocalUser(next)
+          openSessionGate()
+        } else {
+          clearLocalUser()
+          closeSessionGate()
+        }
         setUser(next)
       })
       .catch((error: unknown) => {
@@ -76,6 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const adopt = useCallback((next: User & { dashboard?: DashboardData }) => {
     epoch.current += 1
+    openSessionGate()
     allowPersistedCache(next.id)
     const { dashboard, ...user } = next
     writeLocalUser(user)
@@ -105,7 +114,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     const id = ownerRef.current ?? user?.id ?? null
-    await api.logout()
+    pauseSessionGate()
+    try {
+      await api.logout()
+    } catch (error) {
+      openSessionGate()
+      throw error
+    }
     broadcastSignedOut()
     dropLocalSession(id)
   }, [dropLocalSession, user?.id])
@@ -119,7 +134,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const deleteAccount = useCallback(async (password?: string) => {
     const id = ownerRef.current ?? user?.id ?? null
-    await api.deleteAccount(password ? { password } : {})
+    pauseSessionGate()
+    try {
+      await api.deleteAccount(password ? { password } : {})
+    } catch (error) {
+      openSessionGate()
+      throw error
+    }
     broadcastSignedOut()
     dropLocalSession(id)
   }, [dropLocalSession, user?.id])

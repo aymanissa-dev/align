@@ -1,5 +1,5 @@
 import { useState, useSyncExternalStore, type FormEvent } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { Label, Task, TaskPatch, TaskPriority } from '../api/types.ts'
 import { api } from '../api/index.ts'
 import { ApiError } from '../api/errors.ts'
@@ -21,6 +21,7 @@ import { invalidateWorkspace } from '../queryClient.ts'
 
 export function TasksPanel({ projectId }: { projectId: string }) {
   const toast = useToast()
+  const queryClient = useQueryClient()
   const toggle = useToggleTask()
   const [title, setTitle] = useState('')
   const [due, setDue] = useState('')
@@ -52,29 +53,47 @@ export function TasksPanel({ projectId }: { projectId: string }) {
   const miss = useQueryMiss(tasks)
 
   const create = useMutation({
-    mutationFn: () =>
-      api.createTask(projectId, {
-        title,
-        dueDate: due || null,
-        priority,
-        labelIds: picked,
-      }),
-    onSuccess: async () => {
-      setTitle('')
-      setDue('')
-      setPriority('medium')
-      setPicked([])
-      await invalidateWorkspace()
+    mutationFn: (input: { title: string; dueDate: string | null; priority: TaskPriority; labelIds: string[] }) =>
+      api.createTask(projectId, input),
+    onMutate: async (input) => {
+      await queryClient.cancelQueries({ queryKey: ['tasks', projectId] })
+      const previous = queryClient.getQueryData<Task[]>(['tasks', projectId])
+      const optimistic: Task = {
+        id: `optimistic:${crypto.randomUUID()}`,
+        projectId,
+        title: input.title,
+        completed: false,
+        dueDate: input.dueDate,
+        priority: input.priority,
+        labelIds: input.labelIds,
+        plannedFor: null,
+        completedOn: null,
+        order: (previous ?? []).reduce((max, task) => Math.max(max, task.order), 0) + 1,
+        version: 0,
+        createdAt: '',
+        updatedAt: '',
+      }
+      queryClient.setQueryData<Task[]>(['tasks', projectId], [...(previous ?? []), optimistic])
+      return { previous, optimisticId: optimistic.id }
     },
-    onError: (error) => {
+    onSuccess: (task, _input, context) => {
+      queryClient.setQueryData<Task[]>(['tasks', projectId], (current) =>
+        current?.map((item) => (item.id === context?.optimisticId ? task : item)),
+      )
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] })
+      void queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      void queryClient.invalidateQueries({ queryKey: ['today'] })
+    },
+    onError: (error, input, context) => {
+      if (context?.previous) queryClient.setQueryData(['tasks', projectId], context.previous)
       if (error instanceof ApiError && error.queued) {
-        setTitle('')
-        setDue('')
-        setPriority('medium')
-        setPicked([])
         toast('Saved on this device. It will sync when you reconnect.')
         return
       }
+      setTitle(input.title)
+      setDue(input.dueDate ?? '')
+      setPriority(input.priority)
+      setPicked(input.labelIds)
       toast(errorMessage(error))
     },
   })
@@ -124,8 +143,14 @@ export function TasksPanel({ projectId }: { projectId: string }) {
 
   function onCreate(event: FormEvent) {
     event.preventDefault()
-    if (!title.trim()) return
-    create.mutate()
+    const nextTitle = title.trim()
+    if (!nextTitle) return
+    const input = { title: nextTitle, dueDate: due || null, priority, labelIds: [...picked] }
+    setTitle('')
+    setDue('')
+    setPriority('medium')
+    setPicked([])
+    create.mutate(input)
   }
 
   function onCreateLabel(event: FormEvent) {
@@ -320,8 +345,8 @@ export function TasksPanel({ projectId }: { projectId: string }) {
               </option>
             ))}
           </Select>
-          <Button type="submit" disabled={create.isPending || !title.trim()}>
-            {create.isPending ? 'Adding…' : 'Add'}
+          <Button type="submit" disabled={!title.trim()}>
+            Add
           </Button>
         </div>
         {catalog.length > 0 ? (
@@ -446,7 +471,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                       checked={task.completed}
                       label={task.completed ? `Mark “${task.title}” incomplete` : `Mark “${task.title}” complete`}
                       onChange={() => {
-                        if (task.id.startsWith('queued:')) return
+                        if (task.id.startsWith('queued:') || task.id.startsWith('optimistic:')) return
                         toggle.mutate(
                           { id: task.id, projectId: task.projectId, completed: task.completed, version: task.version },
                           { onError: (error) => toast(errorMessage(error)) },
@@ -475,7 +500,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                       )}
                     </div>
                     <div className="flex shrink-0">
-                      {task.id.startsWith('queued:') ? null : (
+                      {task.id.startsWith('queued:') || task.id.startsWith('optimistic:') ? null : (
                         <button
                           type="button"
                           className="focus-ring inline-flex h-11 w-11 items-center justify-center text-neutral-400 hover:text-neutral-950"
@@ -490,6 +515,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                         className="focus-ring inline-flex h-11 w-11 items-center justify-center text-neutral-400 hover:text-neutral-950"
                         aria-label={`Delete “${task.title}”`}
                         onClick={() => {
+                          if (task.id.startsWith('optimistic:')) return
                           if (task.id.startsWith('queued:')) {
                             dropQueuedWrite(task.id.slice('queued:'.length))
                             return

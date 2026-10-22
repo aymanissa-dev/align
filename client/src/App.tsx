@@ -92,7 +92,7 @@ function Protected() {
   const location = useLocation()
   if (!ready) return <BootScreen />
   if (!user) {
-    if (wasSignedOut()) return <Navigate to="/" replace />
+    if (wasSignedOut()) return <Navigate to="/login?signedOut=1" replace />
     return <Navigate to="/login" replace state={{ from: location }} />
   }
   return <Layout />

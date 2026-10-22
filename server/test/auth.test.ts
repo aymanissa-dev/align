@@ -12,6 +12,7 @@ describe('auth', () => {
     const health = await request(app).get('/api/health')
     expect(health.status).toBe(200)
     expect(health.body).toEqual({ ok: true, db: 'up' })
+    expect(health.headers['content-security-policy']).toBe("default-src 'none'; frame-ancestors 'none'")
   })
 
   it('answers 304 when a GET representation has not changed', async () => {

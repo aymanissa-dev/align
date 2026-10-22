@@ -24,7 +24,8 @@
     {
       "src": "^/api/(.*)$",
       "headers": {
-        "Cache-Control": "private, no-store"
+        "Cache-Control": "private, no-store",
+        "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'"
       },
       "continue": true
     },

@@ -1,17 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../api/index.ts'
 import type { AppNotification } from '../api/types.ts'
-import { localISODate } from '../lib/due.ts'
 import { formatDate } from '../lib/format.ts'
 import { cn } from '../lib/cn.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { useToast } from './toast-context.ts'
 import { IconBell } from './icons.tsx'
 
-export function NotificationBell({ className, placement = 'down' }: { className?: string; placement?: 'down' | 'up' }) {
-  const today = localISODate()
+export function NotificationBell({
+  today,
+  items,
+  className,
+  placement = 'down',
+}: {
+  today: string
+  items: AppNotification[]
+  className?: string
+  placement?: 'down' | 'up'
+}) {
   const toast = useToast()
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
@@ -19,11 +27,6 @@ export function NotificationBell({ className, placement = 'down' }: { className?
   const root = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const queryKey = ['notifications', today] as const
-  const inbox = useQuery({
-    queryKey,
-    queryFn: () => api.listNotifications(today),
-    refetchInterval: 5_000,
-  })
 
   function markRead(id?: string) {
     queryClient.setQueryData<AppNotification[]>(queryKey, (items) =>
@@ -76,7 +79,6 @@ export function NotificationBell({ className, placement = 'down' }: { className?
     }
   }, [open])
 
-  const items = inbox.data ?? []
   const unread = items.filter((item) => !item.read).length
 
   function toggle() {

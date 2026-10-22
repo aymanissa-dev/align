@@ -3,6 +3,7 @@ import { FULL_WIPE } from './fullWipe.ts'
 import type { MigrationCounts } from './personalWorkspaces.ts'
 
 export const LAUNCH_WIPE = '005_launch_wipe'
+export const LAUNCH_EMPTY = '006_launch_empty'
 export const BACKUP_DB = 'align_backup_20261021'
 
 const LOCK_ID = '005_launch_wipe'
@@ -245,6 +246,10 @@ export async function upLaunchWipe(dryRun: boolean): Promise<MigrationCounts> {
 
 export async function downLaunchWipe(_dryRun: boolean): Promise<MigrationCounts> {
   throw new Error('005_launch_wipe cannot be rolled back')
+}
+
+export async function downLaunchEmpty(_dryRun: boolean): Promise<MigrationCounts> {
+  throw new Error('006_launch_empty cannot be rolled back')
 }
 
 export type LaunchWipeReport = {

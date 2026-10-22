@@ -644,7 +644,8 @@ async function signedOutOfflineAndUnvisited(browser) {
 
     await swPage.goto(`${base}/settings`)
     await swPage.getByRole('button', { name: 'Sign out', exact: true }).click()
-    await swPage.getByRole('heading', { name: 'Keep your work in alignment.' }).waitFor()
+    await swPage.waitForURL(/\/login/)
+    await swPage.getByRole('heading', { name: 'Sign in' }).waitFor()
     sessionFromWorker.length = 0
     watchSession = true
     await ctx.setOffline(true)
@@ -1024,8 +1025,8 @@ try {
   pass('enable totp')
 
   await page.getByRole('button', { name: 'Sign out', exact: true }).click()
-  await page.getByRole('heading', { name: 'Keep your work in alignment.' }).waitFor()
-  await page.goto(`${base}/login`)
+  await page.waitForURL(/\/login/)
+  await page.getByRole('heading', { name: 'Sign in' }).waitFor()
   await page.getByRole('button', { name: 'Sign in with a passkey' }).waitFor()
   await page.locator('#email').fill(email)
   await page.locator('#password').fill(password)
@@ -1037,8 +1038,8 @@ try {
 
   await page.goto(`${base}/settings`)
   await page.getByRole('button', { name: 'Sign out', exact: true }).click()
-  await page.getByRole('heading', { name: 'Keep your work in alignment.' }).waitFor()
-  await page.goto(`${base}/login`)
+  await page.waitForURL(/\/login/)
+  await page.getByRole('heading', { name: 'Sign in' }).waitFor()
   await page.locator('#email').fill(email)
   await page.locator('#password').fill(password)
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
@@ -1050,7 +1051,8 @@ try {
 
   await page.goto(`${base}/settings`)
   await page.getByRole('button', { name: 'Sign out', exact: true }).click()
-  await page.getByRole('heading', { name: 'Keep your work in alignment.' }).waitFor()
+  await page.waitForURL(/\/login/)
+  await page.getByRole('heading', { name: 'Sign in' }).waitFor()
   await page.goto(`${base}/forgot-password`)
   await page.waitForURL(/\/forgot$/)
   await page.goto(`${base}/reset`)
@@ -1075,9 +1077,6 @@ try {
   await page.getByRole('dialog', { name: "Confirm it's you" }).waitFor()
   await page.locator('#delete-password').fill(password)
   await page.getByRole('dialog', { name: "Confirm it's you" }).getByRole('button', { name: 'Delete account' }).click()
-  await page.getByRole('dialog', { name: "Verify it's you" }).waitFor()
-  await page.locator('#step-up-password').fill(password)
-  await page.getByRole('dialog', { name: "Verify it's you" }).getByRole('button', { name: 'Continue' }).click()
   await page.waitForURL(/\/login|\/$/)
   await page.getByText('Your account and all its data were deleted.').waitFor()
   pass('deleted notice')

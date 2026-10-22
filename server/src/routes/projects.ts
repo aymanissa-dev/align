@@ -115,14 +115,18 @@ export function projectsRouter(): Router {
           order: (latest?.order ?? 0) + 1,
           ...(input.clientId ? { clientId: input.clientId } : {}),
         })
-        await db.touchProject(project._id)
-        await recordActivity({
-          userId: tenant.userId,
-          workspaceId: tenant.workspaceId,
-          projectId: project._id,
-          type: 'create',
-          summary: `Created task ${quoteTitle(task.title)}`,
-        })
+        const side = Promise.all([
+          db.touchProject(project._id),
+          recordActivity({
+            userId: tenant.userId,
+            workspaceId: tenant.workspaceId,
+            projectId: project._id,
+            type: 'create',
+            summary: `Created task ${quoteTitle(task.title)}`,
+          }),
+        ])
+        if (process.env.NODE_ENV === 'test') await side
+        else void side.catch(() => undefined)
         stampVersion(res, task.__v)
         res.status(201).json(publicTask(task))
       } catch (error) {

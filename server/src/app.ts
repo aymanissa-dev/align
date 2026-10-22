@@ -66,8 +66,11 @@ export function createApp(options: AppOptions = {}): Express {
   })
   app.use(guardOrigin)
   app.use(csrfProtection)
-  app.use((_req, res, next) => {
+  app.use((req, res, next) => {
     res.setHeader('X-Align-Minimum', String(MINIMUM_CLIENT_VERSION))
+    if (req.path.startsWith('/api')) {
+      res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'")
+    }
     next()
   })
   app.get('/api/version', (_req, res) => {

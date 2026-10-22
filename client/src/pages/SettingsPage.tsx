@@ -16,6 +16,7 @@ import { invalidateSecurityLog } from '../lib/securityLog.ts'
 import { stepUpRequired } from '../lib/stepUp.ts'
 import { isMediumPassword, MEDIUM_PASSWORD_HINT, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
 import { markAccountDeleted } from '../lib/accountDeleted.ts'
+import { sessionOpen } from '../lib/sessionGate.ts'
 import { clearSignedOut, markSignedOut } from '../lib/signedOut.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
 
@@ -42,6 +43,7 @@ export function SettingsPage() {
   const [revoking, setRevoking] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deletePassword, setDeletePassword] = useState('')
+  const [deleteNeedsPassword, setDeleteNeedsPassword] = useState(true)
   const [deleting, setDeleting] = useState(false)
   const [stepUpOpen, setStepUpOpen] = useState(false)
   const retryRef = useRef<(() => Promise<void>) | null>(null)
@@ -69,7 +71,8 @@ export function SettingsPage() {
     // A new sign-in can arrive while this page is open. Refresh the list so
     // that device can be revoked without a manual reload.
     const timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') load(false)
+      if (!sessionOpen() || document.visibilityState !== 'visible') return
+      load(false)
     }, 4_000)
     const onVisible = () => {
       if (document.visibilityState === 'visible') load(false)
@@ -233,7 +236,7 @@ export function SettingsPage() {
       markSignedOut()
       await api.revokeAllSessions(revokePassword)
       await logout()
-      navigate('/', { replace: true })
+      navigate('/login?signedOut=1', { replace: true })
     }
     try {
       await save()
@@ -255,29 +258,41 @@ export function SettingsPage() {
     markSignedOut()
     try {
       await logout()
-      navigate('/', { replace: true })
+      navigate('/login?signedOut=1', { replace: true })
     } catch (caught) {
       clearSignedOut()
       toast(errorMessage(caught))
     }
   }
 
+  async function openDelete() {
+    setDeletePassword('')
+    let steppedUp = false
+    try {
+      steppedUp = (await api.me()).steppedUp
+    } catch {
+      steppedUp = false
+    }
+    setDeleteNeedsPassword(!steppedUp)
+    setConfirmDelete(true)
+  }
+
   async function onDelete() {
+    if (deleteNeedsPassword && !deletePassword.trim()) {
+      toast('Enter your password.')
+      return
+    }
     setDeleting(true)
-    const save = async () => {
+    try {
       markSignedOut()
-      await deleteAccount(deletePassword)
+      await deleteAccount(deleteNeedsPassword ? deletePassword : undefined)
       markAccountDeleted()
       navigate('/?deleted=1', { replace: true })
-    }
-    try {
-      await save()
     } catch (caught) {
       clearSignedOut()
       setDeleting(false)
       if (stepUpRequired(caught)) {
-        retryRef.current = save
-        setStepUpOpen(true)
+        setDeleteNeedsPassword(true)
         return
       }
       toast(errorMessage(caught))
@@ -483,7 +498,7 @@ export function SettingsPage() {
         <p className="mt-2 text-sm leading-6 text-neutral-500">
           This permanently removes your projects, tasks, and notes.
         </p>
-        <Button variant="secondary" className="mt-4" onClick={() => setConfirmDelete(true)}>
+        <Button variant="secondary" className="mt-4" onClick={() => void openDelete()}>
           Delete account
         </Button>
       </section>
@@ -534,7 +549,11 @@ export function SettingsPage() {
       <ConfirmDialog
         open={confirmDelete}
         title="Confirm it's you"
-        body="Enter your password to delete this account. Projects, tasks, and notes are removed permanently."
+        body={
+          deleteNeedsPassword
+            ? 'Enter your password to delete this account. Projects, tasks, and notes are removed permanently.'
+            : 'This session was just confirmed. Delete this account and its projects, tasks, and notes permanently.'
+        }
         confirmLabel="Delete account"
         pending={deleting}
         onConfirm={() => void onDelete()}
@@ -542,18 +561,20 @@ export function SettingsPage() {
           if (!deleting) setConfirmDelete(false)
         }}
       >
-        <div className="mt-4">
-          <Field label="Password" htmlFor="delete-password">
-            <Input
-              id="delete-password"
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              value={deletePassword}
-              onChange={(event) => setDeletePassword(event.target.value)}
-            />
-          </Field>
-        </div>
+        {deleteNeedsPassword ? (
+          <div className="mt-4">
+            <Field label="Password" htmlFor="delete-password">
+              <Input
+                id="delete-password"
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                value={deletePassword}
+                onChange={(event) => setDeletePassword(event.target.value)}
+              />
+            </Field>
+          </div>
+        ) : null}
       </ConfirmDialog>
       <StepUpDialog
         open={stepUpOpen}

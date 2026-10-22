@@ -30,6 +30,7 @@ import {
   deviceLabel,
   listActiveSessions,
   loadSession,
+  markStepUp,
   renameSession,
   requestAudit,
   requireFreshStepUp,
@@ -531,7 +532,12 @@ export function authRouter(limiter: RequestHandler): Router {
     asyncHandler(async (req, res) => {
       const user = await users.byId(currentUserId(req))
       if (!user) throw new HttpError(401, 'Sign in to continue.')
-      res.json({ ...publicUser(user), totpEnabled: Boolean(user.totpEnabledAt) })
+      const session = req.sessionId ? await loadSession(req.sessionId) : null
+      res.json({
+        ...publicUser(user),
+        totpEnabled: Boolean(user.totpEnabledAt),
+        steppedUp: Boolean(session && stepUpFresh(session.stepUpAt)),
+      })
     }),
   )
 
@@ -604,11 +610,26 @@ export function authRouter(limiter: RequestHandler): Router {
     '/me',
     requireAuth,
     asyncHandler(async (req, res) => {
-      const body = parseBody(stepUpSchema, req.body)
-      assertCredentialPresent(body)
+      const body = parseBody(stepUpSchema, req.body ?? {})
       const userId = currentUserId(req)
-      await requireFreshStepUp(req.sessionId)
-      await requireSensitiveCredential(userId, body)
+      const session = req.sessionId ? await loadSession(req.sessionId) : null
+      const fresh = Boolean(session && stepUpFresh(session.stepUpAt))
+      const hasCredential = Boolean(body.password?.trim() || body.code?.trim())
+      if (!fresh && !hasCredential) {
+        throw new HttpError(403, 'Confirm it is you to continue.', { code: 'step_up_required' })
+      }
+      if (hasCredential) await requireSensitiveCredential(userId, body)
+      if (!fresh && req.sessionId) {
+        await markStepUp(req.sessionId)
+        await recordSecurity({
+          userId,
+          type: 'step-up',
+          summary: body.code?.trim()
+            ? 'Confirmed account deletion with a verification code.'
+            : 'Confirmed account deletion with a password.',
+          ...requestAudit(req),
+        })
+      }
       await deleteAccount(userId)
       clearSession(res)
       res.status(204).send()
