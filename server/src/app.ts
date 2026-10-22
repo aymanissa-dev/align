@@ -5,7 +5,7 @@ import mongoose from 'mongoose'
 import type { HealthReport } from '../../shared/contract.ts'
 import { csrfProtection } from './csrf.ts'
 import { connectDb } from './db.ts'
-import { FULL_WIPE } from './migrate/fullWipe.ts'
+import { LAUNCH_WIPE, launchWipeReport } from './migrate/launchWipe.ts'
 
 export function wipeFailure(error: unknown): { name: string; code: number | null; codeName: string | null; message: string } {
   const name = error instanceof Error ? error.name : 'Error'
@@ -95,31 +95,20 @@ export function createApp(options: AppOptions = {}): Express {
   })
   app.get('/api/maintenance/wipe', (_req, res) => {
     connectDb()
-      .then(async () => {
-        const db = mongoose.connection.db
-        if (!db) throw new Error('Database is not connected.')
-        const record = await db.collection('migrations').findOne(
-          { id: FULL_WIPE },
-          { projection: { _id: 0, id: 1, appliedAt: 1, counts: 1 } },
-        )
-        const counts = record?.counts && typeof record.counts === 'object' ? record.counts : {}
-        const numeric: Record<string, number> = {}
-        for (const [key, value] of Object.entries(counts)) {
-          if (typeof value === 'number') numeric[key] = value
-        }
-        res.json({
-          id: FULL_WIPE,
-          applied: Boolean(record),
-          appliedAt: record?.appliedAt instanceof Date ? record.appliedAt.toISOString() : null,
-          counts: numeric,
-        })
+      .then(() => launchWipeReport())
+      .then((report) => {
+        res.json(report)
       })
       .catch((error: unknown) => {
         res.status(503).json({
-          id: FULL_WIPE,
+          id: LAUNCH_WIPE,
           applied: false,
           appliedAt: null,
           counts: {},
+          live: {},
+          databases: [],
+          backupExists: null,
+          blobs: null,
           failure: wipeFailure(error),
         })
       })

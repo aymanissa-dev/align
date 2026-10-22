@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { RateLimit, User } from '../src/models.ts'
 import { hashPassword } from '../src/password.ts'
 import { BACKUP_DB, FULL_WIPE, upFullWipe, wipeTest } from '../src/migrate/fullWipe.ts'
+import { LAUNCH_WIPE } from '../src/migrate/launchWipe.ts'
 import { runMigrations } from '../src/migrate/runner.ts'
 import { wipeFailure } from '../src/app.ts'
 import { app } from './helpers.ts'
@@ -94,6 +95,7 @@ describe('full wipe migration', () => {
     await expect(runMigrations({ direction: 'down', only: FULL_WIPE })).rejects.toThrow(/cannot be rolled back/)
     expect(await mongoose.connection.db!.collection('migrations').countDocuments({ id: FULL_WIPE })).toBe(1)
 
+    await mongoose.connection.db!.collection('migrations').deleteOne({ id: LAUNCH_WIPE })
     const status = await request(app).get('/api/maintenance/wipe')
     expect(status.status).toBe(200)
     expect(status.body.applied).toBe(true)

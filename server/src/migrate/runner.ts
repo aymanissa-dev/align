@@ -3,6 +3,7 @@ import { downPersonalWorkspaces, PERSONAL_WORKSPACES, upPersonalWorkspaces, type
 import { downRevokeExposedTokens, REVOKE_EXPOSED_TOKENS, upRevokeExposedTokens } from './revokeExposedTokens.ts'
 import { downPurgeReviewerWorkspace, PURGE_REVIEWER_WORKSPACE, upPurgeReviewerWorkspace } from './purgeReviewerWorkspace.ts'
 import { downFullWipe, FULL_WIPE, upFullWipe } from './fullWipe.ts'
+import { downLaunchWipe, LAUNCH_WIPE, upLaunchWipe } from './launchWipe.ts'
 
 export type MigrationResult = {
   id: string
@@ -22,6 +23,7 @@ const MIGRATIONS: Migration[] = [
   { id: REVOKE_EXPOSED_TOKENS, up: upRevokeExposedTokens, down: downRevokeExposedTokens },
   { id: PURGE_REVIEWER_WORKSPACE, up: upPurgeReviewerWorkspace, down: downPurgeReviewerWorkspace },
   { id: FULL_WIPE, up: upFullWipe, down: downFullWipe },
+  { id: LAUNCH_WIPE, up: upLaunchWipe, down: downLaunchWipe },
 ]
 
 let appliedOnce: Promise<MigrationResult[]> | null = null
