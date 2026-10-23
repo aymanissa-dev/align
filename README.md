@@ -61,6 +61,8 @@ Use **one** project and import this repository. The project root has to be the r
 
 `vercel.json` already sets the install command, build command, output directory, `/api` rewrite, and the SPA fallback. Dashboard values for those three commands should match the table. Root directory is only configurable in the dashboard.
 
+---
+
 Environment variables (Production and Preview):
 
 | Name | Value |
@@ -68,11 +70,19 @@ Environment variables (Production and Preview):
 | `MONGODB_URI` | MongoDB Atlas connection string for the `align` database |
 | `JWT_SECRET` | Long random string (`openssl rand -base64 48`) |
 
+---
+
 Do not set `VITE_API`. Do not set `NODE_ENV` yourself — if it is `production` during install, npm skips the client build tools.
+
+---
 
 In Atlas, allow the Vercel functions to connect. The practical setting is Network Access `0.0.0.0/0`, because the functions do not have fixed IP addresses.
 
+---
+
 Sign-in has one failure policy: 10 wrong passwords in a 15-minute window, counted per IP and per account. Failures 3 through 10 only delay the 401 (250ms more each time, capped at 5 seconds). The 11th attempt is a 429 with `Retry-After` for the rest of that window, and a correct password clears the per-account counter. There is no separate account lock at five failures. Password reset is 10 attempts per 15 minutes, per IP and per email. Other auth routes share a limit of 60 requests per 15 minutes. Authenticator and recovery sign-in allow 5 failures per 15 minutes, per account and per IP. Signup and password changes reject breached passwords (HIBP, 1.5s timeout, fail open). Login answers first and records a change-your-password notice in the background when the password is breached. The counters live in MongoDB. Optional `JWT_SECRET_PREVIOUS` (and `JWT_KID_PREVIOUS`) keeps the previous signing key valid during rotation. Align does not send email. Signup returns an account recovery key once; only its hash is stored. A password reset always requires that key. If two-factor authentication is on, it also requires a current authenticator code or a two-factor recovery code, and the reset leaves the authenticator and passkeys in place. A two-factor code alone cannot reset the password. A reset revokes every session, returns a new recovery key, and signs the user in only after those factors pass. Passkey sign-in still requires user verification; the password can then be changed after a fresh step-up. Settings can replace the recovery key after a fresh step-up. Changing the email address also requires that step-up and takes effect immediately. Google sign-in does not attach itself to an existing account. Linking requires Google to report the email as verified and an explicit link from a stepped-up session. Google OAuth (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) stays unused until it is set. `WEBAUTHN_RP_ID` and `APP_ORIGIN` override the passkey relying party when the request host is not enough.
+
+---
 
 Registration allows 5 per IP per hour, 20 per IP per day, 20 per IPv4 /24 or IPv6 /64 per hour, and 200 per hour across every address. The per-IP hour window is 60 minutes. A 429 includes `Retry-After` for the time left in the window that blocked the request. The same progressive delay used for a wrong password applies here too. On Vercel every per-IP limit, including login failures, authenticator guesses, password reset, and the shared 60-request auth cap, uses the platform `x-real-ip` header when `VERCEL` or `VERCEL_ENV` says the process is on the platform (or the first `x-forwarded-for` entry when that header is absent). Those headers are ignored off Vercel, so a caller cannot change the bucket. Every auth counter, including the shared 60-request cap, registration, login failures, password reset, and authenticator guesses, is one MongoDB document per key and fixed window. The increment is an atomic upsert, with a TTL on expiry, so two instances share the same count. There is no in-memory rate-limit store. Signup always signs you in and returns `201`. A duplicate address returns `409` with "We couldn't create an account with those details." Both paths hash the password before that branch, so they take similar time. There is no mailed verification step.
 
@@ -80,11 +90,15 @@ Registration allows 5 per IP per hour, 20 per IP per day, 20 per IPv4 /24 or IPv
 
 JSON bodies, no envelope. Errors are `{ "error": "..." }` and may include a `code`. Deletes return 204. The access session is a JWT in an httpOnly `Secure` (in production) `SameSite=Lax` cookie named `token` (15 minutes) and carries the workspace id, role, and membership version. A role change or removal bumps that version. The old access token then returns `401` `{ "code": "membership_changed" }`. The client calls `POST /api/auth/refresh` once and retries. If that workspace is gone, the page says you no longer have access to this workspace. A refresh cookie lasts 60 days, goes idle after 14 days, and rotates as a family. State-changing requests echo the readable `csrf` cookie in `X-CSRF-Token`. A database outage returns 503 with `Retry-After`.
 
+---
+
 - `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`
 - `PATCH /api/auth/me`, `POST /api/auth/password`, `DELETE /api/auth/me`
 - `GET/POST /api/projects`, `GET/PATCH/DELETE /api/projects/:id`, `PATCH /api/projects/:id/archive`
 - `GET/POST /api/projects/:id/tasks`, `PATCH/DELETE /api/tasks/:id`
 - `GET/POST /api/projects/:id/notes`, `GET/PATCH/DELETE /api/notes/:id`, `GET /api/notes`
 - `GET /api/dashboard`, `GET /api/search?q=`
+
+---
 
 Every query is scoped to the caller's workspace. Deleting a project or task moves it to trash for 30 days (`GET /api/trash`, restore under `/api/trash/.../restore`). Deleting an account removes that user's data in a transaction. Archive toggles `active` and `archived`. Workspaces have owner, admin, member, and viewer roles (`/api/workspaces`). A migration on connect moves existing documents into each user's personal workspace.
