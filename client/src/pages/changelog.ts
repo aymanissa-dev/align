@@ -7,6 +7,13 @@ export type ChangelogEntry = {
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    date: '2026-10-26',
+    title: 'Changelog',
+    items: [
+      'A public changelog lists what changed in Align. It is linked from the footer.',
+    ],
+  },
+  {
     date: '2026-10-22',
     title: 'Sign out',
     items: [
@@ -21,7 +28,6 @@ export const CHANGELOG: readonly ChangelogEntry[] = [
       'Align does not send email. A new account includes a recovery key, shown once. Only a hash of that key is stored.',
       'Resetting a password requires the recovery key. If an authenticator or a passkey is on, you confirm with one of those too, and they stay on after the reset.',
       'The recovery key cannot skip two-factor authentication.',
-      'All dated lists every open task that has a due date.',
     ],
   },
   {
@@ -47,6 +53,7 @@ export const CHANGELOG: readonly ChangelogEntry[] = [
     title: 'Today and the whiteboard',
     items: [
       'Today keeps the same plan through the day, and you can look ahead to tomorrow.',
+      'Upcoming lists every open task that has a due date.',
       'Whiteboard text you have not saved yet stays on the board until you leave.',
     ],
   },
