@@ -16,6 +16,7 @@ import { Layout } from './components/Layout.tsx'
 import { MarketingLayout } from './components/MarketingLayout.tsx'
 import { ToastProvider } from './components/ToastProvider.tsx'
 import { LandingPage } from './pages/LandingPage.tsx'
+import { ChangelogPage } from './pages/ChangelogPage.tsx'
 import { PrivacyPage, TermsPage } from './pages/LegalPage.tsx'
 import { LoginPage } from './pages/LoginPage.tsx'
 import { NoteEditorPage } from './pages/NoteEditorPage.tsx'
@@ -170,6 +171,14 @@ export default function App() {
                   <Guest>
                     <RegisterPage />
                   </Guest>
+                }
+              />
+              <Route
+                path="/changelog"
+                element={
+                  <PublicPage>
+                    <ChangelogPage />
+                  </PublicPage>
                 }
               />
               <Route

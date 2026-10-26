@@ -64,6 +64,9 @@ export function MarketingLayout({ children }: { children: ReactNode }) {
                   </Link>
                 </>
               )}
+              <Link to="/changelog" className="focus-ring w-fit hover:text-neutral-950">
+                Changelog
+              </Link>
             </nav>
           </div>
           <div>
