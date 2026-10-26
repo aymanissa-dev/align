@@ -243,6 +243,65 @@ html.dark .bg-neutral-900\/30 {
   color: #000;
 }
 
+.text-link {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-position: 0 100%;
+  background-repeat: no-repeat;
+  background-size: 0 1px;
+}
+
+.text-link:hover,
+.text-link:focus-visible {
+  background-size: 100% 1px;
+}
+
+.hover-lift:hover {
+  border-color: #171717;
+  background: #fafafa;
+  box-shadow: inset 0 2px 0 #171717;
+}
+
+.hover-lift:hover .card-index,
+.step-cell:hover .card-index {
+  color: #171717;
+}
+
+.step-cell:hover {
+  box-shadow: inset 3px 0 0 #171717;
+}
+
+.rule-draw {
+  position: relative;
+}
+
+.rule-draw::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  left: -1px;
+  height: 2px;
+  background: #171717;
+  transform-origin: left center;
+  pointer-events: none;
+}
+
+.preview-frame {
+  position: relative;
+}
+
+.preview-frame::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  background: #171717;
+  transform-origin: left center;
+  pointer-events: none;
+}
+
 html.dark .site-header {
   background: rgb(12 12 12 / 0.96);
   color: #f5f5f5;
@@ -254,28 +313,72 @@ html.dark .site-header .nav-link:hover {
   color: #f5f5f5;
 }
 
+html.dark .hover-lift:hover {
+  border-color: #f5f5f5;
+  background: #1a1a1a;
+  box-shadow: inset 0 2px 0 #f5f5f5;
+}
+
+html.dark .hover-lift:hover .card-index,
+html.dark .step-cell:hover .card-index {
+  color: #f5f5f5;
+}
+
+html.dark .step-cell:hover {
+  box-shadow: inset 3px 0 0 #f5f5f5;
+}
+
+html.dark .rule-draw::before,
+html.dark .preview-frame::after {
+  background: #f5f5f5;
+}
+
 @media (prefers-reduced-motion: no-preference) {
-  .hero-line {
-    animation: hero-rise 700ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  .site-header {
+    animation: header-in 480ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
-  .hero-delay-1 { animation-delay: 80ms; }
-  .hero-delay-2 { animation-delay: 150ms; }
-  .hero-delay-3 { animation-delay: 220ms; }
-  .hero-delay-4 { animation-delay: 300ms; }
+  .hero-chip,
+  .hero-line {
+    animation: hero-rise 720ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .hero-chip:nth-child(1) { animation-delay: 40ms; }
+  .hero-chip:nth-child(2) { animation-delay: 110ms; }
+  .hero-chip:nth-child(3) { animation-delay: 180ms; }
+
+  .hero-delay-1 { animation-delay: 220ms; }
+  .hero-delay-2 { animation-delay: 300ms; }
+  .hero-delay-3 { animation-delay: 390ms; }
+  .hero-delay-4 { animation-delay: 480ms; }
 
   .word-swap {
-    animation: word-rise 420ms cubic-bezier(0.2, 0.7, 0.2, 1);
+    animation: word-rise 460ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 
-  .preview-float {
-    animation: preview-float 7s ease-in-out infinite;
+  .preview-enter {
+    animation: hero-rise 860ms cubic-bezier(0.16, 1, 0.3, 1) 160ms both;
+  }
+
+  .preview-drift {
+    animation: preview-drift 11s ease-in-out 1.15s infinite;
+  }
+
+  .preview-frame::after {
+    animation: rule-breathe 8s ease-in-out 1.2s infinite;
+  }
+
+  .meter-fill {
+    transform-origin: left center;
+    animation: meter-grow 880ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
   .reveal {
     opacity: 0;
-    transform: translateY(14px);
-    transition: opacity 560ms ease, transform 560ms ease;
+    transform: translateY(16px);
+    transition:
+      opacity 700ms cubic-bezier(0.16, 1, 0.3, 1),
+      transform 700ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   .reveal.is-in {
@@ -283,18 +386,49 @@ html.dark .site-header .nav-link:hover {
     transform: none;
   }
 
-  .hover-lift {
-    transition: transform 180ms ease, border-color 180ms ease, background-color 180ms ease;
+  .rule-draw::before {
+    transform: scaleX(0);
+    transition: transform 780ms cubic-bezier(0.16, 1, 0.3, 1) 160ms;
   }
 
-  .hover-lift:hover {
-    transform: translateY(-2px);
-    border-color: #171717;
-    background: #fafafa;
+  .reveal.is-in .rule-draw::before {
+    transform: scaleX(1);
+  }
+
+  .hover-lift,
+  .card-index {
+    transition:
+      transform 200ms cubic-bezier(0.16, 1, 0.3, 1),
+      border-color 200ms ease,
+      background-color 200ms ease,
+      box-shadow 200ms ease,
+      color 200ms ease;
+  }
+
+  .reveal.step-cell {
+    transition:
+      opacity 700ms cubic-bezier(0.16, 1, 0.3, 1),
+      transform 700ms cubic-bezier(0.16, 1, 0.3, 1),
+      background-color 200ms ease,
+      box-shadow 200ms ease,
+      color 200ms ease;
+  }
+
+  .text-link {
+    transition: color 160ms ease, background-size 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  a.press,
+  button.press {
+    transition:
+      transform 150ms cubic-bezier(0.16, 1, 0.3, 1),
+      background-color 150ms ease,
+      border-color 150ms ease,
+      color 150ms ease;
   }
 
   .edge-mesh::before {
-    animation: grid-drift 18s linear infinite;
+    animation: grid-drift 36s linear infinite;
   }
 
   .page-enter {
@@ -302,15 +436,33 @@ html.dark .site-header .nav-link:hover {
   }
 }
 
-html.dark .hover-lift:hover {
-  border-color: #f5f5f5;
-  background: #1a1a1a;
+@media (prefers-reduced-motion: no-preference) and (hover: hover) {
+  .hover-lift:hover {
+    transform: translateY(-2px);
+  }
+
+  a.press:hover,
+  button.press:hover {
+    transform: translateY(-1px);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a.press:active,
+  button.press:active {
+    transform: translateY(1px);
+  }
+}
+
+@keyframes header-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @keyframes hero-rise {
   from {
     opacity: 0;
-    transform: translateY(12px);
+    transform: translateY(14px);
   }
   to {
     opacity: 1;
@@ -329,14 +481,31 @@ html.dark .hover-lift:hover {
   }
 }
 
-@keyframes preview-float {
+@keyframes preview-drift {
   0%,
   100% {
     transform: translateY(0);
   }
   50% {
-    transform: translateY(-8px);
+    transform: translateY(-4px);
   }
+}
+
+@keyframes rule-breathe {
+  0%,
+  100% {
+    opacity: 0.28;
+    transform: scaleX(0.42);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scaleX(1);
+  }
+}
+
+@keyframes meter-grow {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
 }
 
 @keyframes grid-drift {
@@ -357,7 +526,10 @@ html.dark .hover-lift:hover {
     transition-duration: 0.01ms !important;
   }
 
-  .reveal {
+  .reveal,
+  .rule-draw::before,
+  .preview-frame::after,
+  .meter-fill {
     opacity: 1;
     transform: none;
   }
