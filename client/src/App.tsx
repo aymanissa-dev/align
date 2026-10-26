@@ -110,8 +110,8 @@ function Home() {
 }
 
 function PublicPage({ children }: { children: ReactNode }) {
-  const { ready } = useAuth()
-  if (!ready) return <BootScreen />
+  // Changelog, privacy, and terms do not need a session. Waiting on auth
+  // painted the app-shell skeleton and left the title as "Align".
   return <MarketingLayout>{children}</MarketingLayout>
 }
 

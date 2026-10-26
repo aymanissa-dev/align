@@ -2,10 +2,14 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/auth-context.ts'
 import { buttonClass } from '../lib/buttonClass.ts'
+import { readLocalUser } from '../lib/localUser.ts'
 import { Eyebrow } from './chrome.tsx'
 
 export function MarketingLayout({ children }: { children: ReactNode }) {
-  const { user } = useAuth()
+  const { user: sessionUser, ready } = useAuth()
+  // These pages paint before the session check finishes. A stored profile keeps
+  // "Open workspace" in place until that check confirms who is signed in.
+  const user = ready ? sessionUser : readLocalUser()
 
   return (
     <div className="flex min-h-screen flex-col bg-white text-neutral-950">
