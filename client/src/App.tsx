@@ -30,6 +30,7 @@ import { SettingsPage } from './pages/SettingsPage.tsx'
 import { TodayPage } from './pages/TodayPage.tsx'
 import { UpcomingPage } from './pages/UpcomingPage.tsx'
 import { TrashPage } from './pages/TrashPage.tsx'
+import { readLocalUser } from './lib/localUser.ts'
 import { clearSignedOut, wasSignedOut } from './lib/signedOut.ts'
 import { queryClient } from './queryClient.ts'
 
@@ -104,7 +105,11 @@ function Home() {
   useEffect(() => {
     if (ready && !user) clearSignedOut()
   }, [ready, user])
-  if (!ready) return <BootScreen />
+  // Guests have no stored profile, so the landing paints before the session
+  // check instead of the app-shell skeleton. A stored profile is the same
+  // signal MarketingLayout uses for "Open workspace": a signed-in user is
+  // likely, and the shell covers the check until they enter the workspace.
+  if (!ready && !user && readLocalUser()) return <BootScreen />
   if (!user) return <LandingPage />
   return <Layout />
 }
