@@ -1,6 +1,7 @@
 export type ThemeChoice = 'light' | 'dark' | 'system'
 
 const KEY = 'align-theme'
+export const THEME_EVENT = 'align-theme'
 
 export const ACCENTS = ['#171717', '#1d4ed8', '#047857', '#b45309', '#b91c1c', '#6d28d9', '#0f766e'] as const
 
@@ -33,6 +34,15 @@ export function persistTheme(choice: ThemeChoice): void {
     // The class still applies for this visit.
   }
   applyTheme(choice)
+  window.dispatchEvent(new CustomEvent(THEME_EVENT, { detail: choice }))
+}
+
+const THEME_ORDER: ThemeChoice[] = ['light', 'dark', 'system']
+
+export function cycleTheme(): ThemeChoice {
+  const next = THEME_ORDER[(THEME_ORDER.indexOf(readTheme()) + 1) % THEME_ORDER.length] ?? 'system'
+  persistTheme(next)
+  return next
 }
 
 export function accentInk(hex: string): string {

@@ -1,6 +1,7 @@
-import { useState, useSyncExternalStore, type FormEvent } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { Label, Task, TaskPatch, TaskPriority } from '../api/types.ts'
+import { useSearchParams } from 'react-router-dom'
+import type { Label, Recurrence, Task, TaskPatch, TaskPriority } from '../api/types.ts'
 import { api } from '../api/index.ts'
 import { ApiError } from '../api/errors.ts'
 import { ConflictDialog } from './ConflictDialog.tsx'
@@ -9,23 +10,32 @@ import { isConflict } from '../lib/conflict.ts'
 import { taskFieldPatch } from '../lib/patch.ts'
 import { IconPencil, IconTrash } from './icons.tsx'
 import { Button, CheckButton, ConfirmDialog, ErrorState, Input, ListSkeleton, OfflineState, ProgressBar, Select } from './ui.tsx'
-import { DueBadge, PriorityBadge } from './chrome.tsx'
+import { DueBadge, PriorityBadge, RecurrenceBadge } from './chrome.tsx'
+import { SubtaskEditor } from './Subtasks.tsx'
 import { useToggleTask } from '../hooks/useToggleTask.ts'
 import { cn } from '../lib/cn.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { LABEL_COLORS, PRIORITIES, sortTasks, type TaskSort } from '../lib/priority.ts'
 import { taskProgress } from '../lib/tasks.ts'
+import { checklistLabel, freshTaskFields, recurrenceOf, subtasksOf } from '../lib/taskFields.ts'
 import { dropQueuedWrite, getQueueVersion, pendingTaskCreates, subscribeQueue } from '../lib/offline.ts'
 import { useQueryMiss } from '../lib/queryMiss.ts'
 import { invalidateWorkspace } from '../queryClient.ts'
+
+function recurrenceFrom(value: string): Recurrence | null {
+  if (value === 'daily' || value === 'weekly' || value === 'monthly') return value
+  return null
+}
 
 export function TasksPanel({ projectId }: { projectId: string }) {
   const toast = useToast()
   const queryClient = useQueryClient()
   const toggle = useToggleTask()
+  const [params, setParams] = useSearchParams()
   const [title, setTitle] = useState('')
   const [due, setDue] = useState('')
   const [priority, setPriority] = useState<TaskPriority>('medium')
+  const [recurrence, setRecurrence] = useState<Recurrence | null>(null)
   const [picked, setPicked] = useState<string[]>([])
   const [sort, setSort] = useState<TaskSort>('manual')
   const [priorityFilter, setPriorityFilter] = useState<TaskPriority | 'all'>('all')
@@ -37,7 +47,10 @@ export function TasksPanel({ projectId }: { projectId: string }) {
   const [draftTitle, setDraftTitle] = useState('')
   const [draftDue, setDraftDue] = useState('')
   const [draftPriority, setDraftPriority] = useState<TaskPriority>('medium')
+  const [draftRecurrence, setDraftRecurrence] = useState<Recurrence | null>(null)
   const [draftLabels, setDraftLabels] = useState<string[]>([])
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const patchChain = useRef(Promise.resolve())
   const [editBase, setEditBase] = useState<Task | null>(null)
   const [conflict, setConflict] = useState<{ id: string; patch: TaskPatch; version: number } | null>(null)
   const queueVersion = useSyncExternalStore(subscribeQueue, getQueueVersion, getQueueVersion)
@@ -53,7 +66,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
   const miss = useQueryMiss(tasks)
 
   const create = useMutation({
-    mutationFn: (input: { title: string; dueDate: string | null; priority: TaskPriority; labelIds: string[] }) =>
+    mutationFn: (input: { title: string; dueDate: string | null; priority: TaskPriority; labelIds: string[]; recurrence: Recurrence | null }) =>
       api.createTask(projectId, input),
     onMutate: async (input) => {
       await queryClient.cancelQueries({ queryKey: ['tasks', projectId] })
@@ -72,6 +85,8 @@ export function TasksPanel({ projectId }: { projectId: string }) {
         version: 0,
         createdAt: '',
         updatedAt: '',
+        ...freshTaskFields(),
+        recurrence: input.recurrence,
       }
       queryClient.setQueryData<Task[]>(['tasks', projectId], [...(previous ?? []), optimistic])
       return { previous, optimisticId: optimistic.id }
@@ -93,6 +108,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
       setTitle(input.title)
       setDue(input.dueDate ?? '')
       setPriority(input.priority)
+      setRecurrence(input.recurrence)
       setPicked(input.labelIds)
       toast(errorMessage(error))
     },
@@ -101,13 +117,35 @@ export function TasksPanel({ projectId }: { projectId: string }) {
   const update = useMutation({
     mutationFn: (input: { id: string; patch: TaskPatch; version: number; overwrite?: boolean }) =>
       api.updateTask(input.id, input.patch, { version: input.version, overwrite: input.overwrite }),
-    onSuccess: async () => {
-      setEditingId(null)
-      setEditBase(null)
+    onMutate: async (input) => {
+      await queryClient.cancelQueries({ queryKey: ['tasks', projectId] })
+      const previous = queryClient.getQueryData<Task[]>(['tasks', projectId])
+      if (previous) {
+        queryClient.setQueryData<Task[]>(
+          ['tasks', projectId],
+          previous.map((task) => (task.id === input.id ? { ...task, ...input.patch } : task)),
+        )
+      }
+      return { previous }
+    },
+    onSuccess: async (task, input) => {
+      queryClient.setQueryData<Task[]>(['tasks', projectId], (current) => current?.map((item) => (item.id === task.id ? task : item)))
+      const closesEditor =
+        input.patch.title !== undefined ||
+        input.patch.dueDate !== undefined ||
+        input.patch.priority !== undefined ||
+        input.patch.labelIds !== undefined ||
+        input.patch.recurrence !== undefined
+      if (closesEditor) {
+        setEditingId(null)
+        setEditBase(null)
+      }
       setConflict(null)
       await invalidateWorkspace()
     },
-    onError: (error, input) => {
+    onError: (error, input, context) => {
+      if (error instanceof ApiError && error.queued) return
+      if (context?.previous) queryClient.setQueryData(['tasks', projectId], context.previous)
       if (isConflict(error)) {
         setConflict({ id: input.id, patch: input.patch, version: input.version })
         return
@@ -145,10 +183,11 @@ export function TasksPanel({ projectId }: { projectId: string }) {
     event.preventDefault()
     const nextTitle = title.trim()
     if (!nextTitle) return
-    const input = { title: nextTitle, dueDate: due || null, priority, labelIds: [...picked] }
+    const input = { title: nextTitle, dueDate: due || null, priority, labelIds: [...picked], recurrence }
     setTitle('')
     setDue('')
     setPriority('medium')
+    setRecurrence(null)
     setPicked([])
     create.mutate(input)
   }
@@ -165,7 +204,20 @@ export function TasksPanel({ projectId }: { projectId: string }) {
     setDraftTitle(task.title)
     setDraftDue(task.dueDate ?? '')
     setDraftPriority(task.priority)
+    setDraftRecurrence(recurrenceOf(task))
     setDraftLabels(task.labelIds)
+  }
+
+  function patchTask(id: string, patch: TaskPatch) {
+    const run = patchChain.current.then(async () => {
+      const current = queryClient.getQueryData<Task[]>(['tasks', projectId])?.find((task) => task.id === id)
+      await update.mutateAsync({ id, patch, version: current?.version ?? 0 })
+    })
+    patchChain.current = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
   }
 
   function saveEdit(taskId: string) {
@@ -174,19 +226,43 @@ export function TasksPanel({ projectId }: { projectId: string }) {
       toast('Task title is required.')
       return
     }
-    const patch = taskFieldPatch(editBase, {
-      title: draftTitle.trim(),
-      dueDate: draftDue || null,
-      priority: draftPriority,
-      labelIds: draftLabels,
-    })
+    const patch = taskFieldPatch(
+      { ...editBase, recurrence: recurrenceOf(editBase) },
+      {
+        title: draftTitle.trim(),
+        dueDate: draftDue || null,
+        priority: draftPriority,
+        labelIds: draftLabels,
+        recurrence: draftRecurrence,
+      },
+    )
     if (Object.keys(patch).length === 0) {
       setEditingId(null)
       setEditBase(null)
       return
     }
-    update.mutate({ id: taskId, patch, version: editBase.version })
+    void patchTask(taskId, patch)
   }
+
+  const compose = params.get('compose') === '1'
+  const focusTask = params.get('task')
+  const focusReady = Boolean(focusTask && tasks.data?.some((task) => task.id === focusTask))
+  const [openedFocus, setOpenedFocus] = useState<string | null>(null)
+  if (focusReady && focusTask && openedFocus !== focusTask) {
+    setOpenedFocus(focusTask)
+    setExpandedId(focusTask)
+  }
+  useEffect(() => {
+    if (!compose) return
+    document.getElementById('task-title')?.focus()
+    const next = new URLSearchParams(params)
+    next.delete('compose')
+    setParams(next, { replace: true })
+  }, [compose, params, setParams])
+  useEffect(() => {
+    if (!focusTask || openedFocus !== focusTask) return
+    document.getElementById(`task-${focusTask}`)?.scrollIntoView({ block: 'center' })
+  }, [focusTask, openedFocus])
 
   if (!tasks.data) {
     if (miss === 'loading') return <ListSkeleton rows={4} />
@@ -226,6 +302,8 @@ export function TasksPanel({ projectId }: { projectId: string }) {
       order: -1,
       createdAt: '',
       updatedAt: '',
+      ...freshTaskFields(),
+      recurrence: recurrenceOf(task),
     }))
   const visibleTasks = [...queuedTasks, ...tasks.data]
   const filtered = visibleTasks.filter((task) => {
@@ -345,6 +423,20 @@ export function TasksPanel({ projectId }: { projectId: string }) {
               </option>
             ))}
           </Select>
+          <Select
+            id="task-recurrence"
+            name="recurrence"
+            autoComplete="off"
+            aria-label="Repeat"
+            value={recurrence ?? ''}
+            onChange={(event) => setRecurrence(recurrenceFrom(event.target.value))}
+            className="sm:w-40"
+          >
+            <option value="">Does not repeat</option>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+          </Select>
           <Button type="submit" disabled={!title.trim()}>
             Add
           </Button>
@@ -451,6 +543,20 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                             </option>
                           ))}
                         </Select>
+                        <Select
+                          id="task-recurrence-edit"
+                          name="recurrence"
+                          autoComplete="off"
+                          aria-label="Repeat"
+                          value={draftRecurrence ?? ''}
+                          onChange={(event) => setDraftRecurrence(recurrenceFrom(event.target.value))}
+                          className="sm:w-40"
+                        >
+                          <option value="">Does not repeat</option>
+                          <option value="daily">Daily</option>
+                          <option value="weekly">Weekly</option>
+                          <option value="monthly">Monthly</option>
+                        </Select>
                       </div>
                       {catalog.length > 0 ? (
                         <LabelPicker labels={catalog} selected={draftLabels} onChange={setDraftLabels} />
@@ -466,7 +572,8 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                     </form>
                   </li>
                 ) : (
-                  <li key={task.id} className="flex items-start gap-2 px-3 py-3 sm:gap-3 sm:px-4">
+                  <li key={task.id} id={`task-${task.id}`} className="px-3 py-3 sm:px-4">
+                    <div className="flex items-start gap-2 sm:gap-3">
                     <CheckButton
                       checked={task.completed}
                       label={task.completed ? `Mark “${task.title}” incomplete` : `Mark “${task.title}” complete`}
@@ -474,7 +581,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                         if (task.id.startsWith('queued:') || task.id.startsWith('optimistic:')) return
                         toggle.mutate(
                           { id: task.id, projectId: task.projectId, completed: task.completed, version: task.version },
-                          { onError: (error) => toast(errorMessage(error)) },
+                          { onError: (error) => { if (!isConflict(error)) toast(errorMessage(error)) } },
                         )
                       }}
                     />
@@ -484,6 +591,10 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                           {task.title}
                         </p>
                         <PriorityBadge priority={task.priority} />
+                        <RecurrenceBadge recurrence={recurrenceOf(task)} />
+                        {checklistLabel(subtasksOf(task)) ? (
+                          <span className="font-mono text-[11px] text-neutral-500">{checklistLabel(subtasksOf(task))}</span>
+                        ) : null}
                         {pendingIds.has(task.id) ? (
                           <span className="font-pixel text-[10px] tracking-[0.14em] text-neutral-500 uppercase">Queued</span>
                         ) : null}
@@ -526,6 +637,28 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                         <IconTrash />
                       </button>
                     </div>
+                    </div>
+                    {task.id.startsWith('queued:') || task.id.startsWith('optimistic:') ? null : (
+                      <div className="pl-11">
+                        <button
+                          type="button"
+                          className="focus-ring inline-flex min-h-11 items-center text-xs text-neutral-600 hover:text-neutral-950"
+                          aria-expanded={expandedId === task.id}
+                          onClick={() => setExpandedId((current) => (current === task.id ? null : task.id))}
+                        >
+                          {expandedId === task.id ? 'Hide checklist' : 'Checklist'}
+                        </button>
+                        {expandedId === task.id ? (
+                          <SubtaskEditor
+                            subtasks={subtasksOf(task)}
+                            disabled={update.isPending}
+                            onCommit={(next) => {
+                              void patchTask(task.id, { subtasks: next })
+                            }}
+                          />
+                        ) : null}
+                      </div>
+                    )}
                   </li>
                 ),
               )}

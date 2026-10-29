@@ -42,7 +42,34 @@ export function publicLabel(label: LabelDoc | (Pick<LabelDoc, 'name' | 'color' |
   }
 }
 
-export function publicTask(task: TaskDoc | (Pick<TaskDoc, 'projectId' | 'title' | 'completed' | 'dueDate' | 'priority' | 'labelIds' | 'plannedFor' | 'completedOn' | 'order' | 'createdAt' | 'updatedAt'> & { id?: string; _id: Types.ObjectId; __v?: number | null })) {
+export const TASK_FIELDS =
+  'projectId title completed dueDate priority labelIds plannedFor completedOn order status recurrence subtasks createdAt updatedAt __v'
+
+function publicSubtasks(value: unknown): { id: string; text: string; completed: boolean }[] {
+  if (!Array.isArray(value)) return []
+  const items: { id: string; text: string; completed: boolean }[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const row = item as { id?: unknown; text?: unknown; completed?: unknown }
+    if (typeof row.id !== 'string' || typeof row.text !== 'string') continue
+    items.push({ id: row.id, text: row.text, completed: row.completed === true })
+  }
+  return items
+}
+
+export function publicRecurrence(value: unknown): 'daily' | 'weekly' | 'monthly' | null {
+  if (value === 'daily' || value === 'weekly' || value === 'monthly') return value
+  return null
+}
+
+/** Completed tasks live in Done. Older tasks have no status and follow `completed`. */
+export function publicStatus(completed: boolean, value: unknown): 'todo' | 'doing' | 'done' {
+  if (completed) return 'done'
+  if (value === 'doing') return 'doing'
+  return 'todo'
+}
+
+export function publicTask(task: TaskDoc | (Pick<TaskDoc, 'projectId' | 'title' | 'completed' | 'dueDate' | 'priority' | 'labelIds' | 'plannedFor' | 'completedOn' | 'order' | 'createdAt' | 'updatedAt'> & { id?: string; _id: Types.ObjectId; __v?: number | null; status?: string | null; recurrence?: string | null; subtasks?: { id: string; text: string; completed: boolean }[] | null })) {
   return {
     id: docId(task),
     projectId: task.projectId.toString(),
@@ -54,6 +81,9 @@ export function publicTask(task: TaskDoc | (Pick<TaskDoc, 'projectId' | 'title' 
     plannedFor: task.plannedFor ?? null,
     completedOn: task.completedOn ?? null,
     order: task.order,
+    status: publicStatus(task.completed, task.status),
+    recurrence: publicRecurrence(task.recurrence),
+    subtasks: publicSubtasks(task.subtasks),
     version: versionOf(task),
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),

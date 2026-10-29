@@ -5,10 +5,12 @@ import { api } from '../api/index.ts'
 import { ApiError } from '../api/errors.ts'
 import type { TodayData, TodayTask } from '../api/types.ts'
 import { useToast } from '../components/toast-context.ts'
-import { DueBadge, PageHeader, PriorityBadge } from '../components/chrome.tsx'
+import { DueBadge, PageHeader, PriorityBadge, RecurrenceBadge } from '../components/chrome.tsx'
 import { Button, CheckButton, ErrorState, Field, Input, ListSkeleton, OfflineState, Select } from '../components/ui.tsx'
 import { buttonClass } from '../lib/buttonClass.ts'
 import { localISODate, shiftISODate } from '../lib/due.ts'
+import { freshTaskFields, recurrenceOf } from '../lib/taskFields.ts'
+import { isConflict } from '../lib/conflict.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { getQueueVersion, pendingTaskCreates, subscribeQueue } from '../lib/offline.ts'
 import { groupToday } from '../lib/todayGroups.ts'
@@ -86,6 +88,7 @@ export function TodayPage() {
         version: 0,
         createdAt: '',
         updatedAt: '',
+        ...freshTaskFields(),
       }
       if (previous) queryClient.setQueryData(['today', date], { ...previous, planned: [...previous.planned, optimistic] })
       return { previous, optimisticId: optimistic.id }
@@ -147,6 +150,8 @@ export function TodayPage() {
     version: 0,
     createdAt: '',
     updatedAt: '',
+    ...freshTaskFields(),
+    recurrence: task.recurrence,
   }))
   const grouped = groupToday(
     {
@@ -160,7 +165,7 @@ export function TodayPage() {
     if (task.id.startsWith('queued:') || task.id.startsWith('optimistic:')) return
     toggle.mutate(
       { id: task.id, projectId: task.projectId, completed: task.completed, version: task.version },
-      { onError: (error) => toast(errorMessage(error)) },
+      { onError: (error) => { if (!isConflict(error)) toast(errorMessage(error)) } },
     )
   }
 
@@ -399,6 +404,7 @@ function TaskList({
                   {task.title}
                 </p>
                 <PriorityBadge priority={task.priority} />
+                <RecurrenceBadge recurrence={recurrenceOf(task)} />
                 {pendingTaskCreates().some((item) => item.id === task.id) ? (
                   <span className="font-pixel text-[10px] tracking-[0.14em] text-neutral-500 uppercase">Queued</span>
                 ) : null}

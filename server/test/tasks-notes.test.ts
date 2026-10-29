@@ -124,4 +124,114 @@ describe('tasks and notes', () => {
     expect((await agent.get('/api/trash')).body.notes).toEqual([])
     expect((await agent.post('/api/trash/empty')).status).toBe(204)
   })
+
+  it('stores a checklist on the task and keeps it through trash', async () => {
+    const { agent } = await registerUser()
+    const project = await agent.post('/api/projects').send({ name: 'Checklist' })
+    const id = project.body.id as string
+    const created = await agent.post(`/api/projects/${id}/tasks`).send({
+      title: 'Ship',
+      subtasks: [{ id: 'step-1', text: 'Write it', completed: false }],
+    })
+    expect(created.status).toBe(201)
+    expect(created.body.subtasks).toEqual([{ id: 'step-1', text: 'Write it', completed: false }])
+
+    const empty = await agent.patch(`/api/tasks/${created.body.id}`).send({ subtasks: [{ id: 'step-1', text: '   ', completed: false }] })
+    expect(empty.status).toBe(400)
+
+    const saved = await agent.patch(`/api/tasks/${created.body.id}`).send({
+      subtasks: [
+        { id: 'step-2', text: 'Review', completed: true },
+        { id: 'step-1', text: 'Write it', completed: false },
+      ],
+    })
+    expect(saved.status).toBe(200)
+    expect(saved.body.subtasks).toEqual([
+      { id: 'step-2', text: 'Review', completed: true },
+      { id: 'step-1', text: 'Write it', completed: false },
+    ])
+
+    expect((await agent.delete(`/api/tasks/${created.body.id}`)).status).toBe(204)
+    expect((await agent.post(`/api/trash/tasks/${created.body.id}/restore`)).status).toBe(200)
+    const restored = await agent.get(`/api/projects/${id}/tasks`)
+    expect(restored.body[0].subtasks).toHaveLength(2)
+  })
+
+  it('spawns the next occurrence when a recurring task is completed', async () => {
+    const { agent } = await registerUser()
+    const project = await agent.post('/api/projects').send({ name: 'Repeat' })
+    const id = project.body.id as string
+    const created = await agent.post(`/api/projects/${id}/tasks`).send({
+      title: 'Standup',
+      dueDate: '2026-10-29',
+      recurrence: 'daily',
+      subtasks: [{ id: 'ask', text: 'Ask for blockers', completed: true }],
+    })
+    const taskId = created.body.id as string
+    const done = await agent.patch(`/api/tasks/${taskId}`).send({ completed: true, completedOn: '2026-10-29' })
+    expect(done.body).toMatchObject({ completed: true, status: 'done', dueDate: '2026-10-29' })
+
+    const again = await agent.patch(`/api/tasks/${taskId}`).send({ completed: true, completedOn: '2026-10-29' })
+    expect(again.status).toBe(200)
+
+    const listed = await agent.get(`/api/projects/${id}/tasks`)
+    const open = listed.body.find((task: { completed: boolean }) => !task.completed)
+    expect(listed.body).toHaveLength(2)
+    expect(open).toMatchObject({
+      title: 'Standup',
+      completed: false,
+      dueDate: '2026-10-30',
+      recurrence: 'daily',
+      status: 'todo',
+      subtasks: [{ text: 'Ask for blockers', completed: false }],
+    })
+
+    const weekly = await agent.post(`/api/projects/${id}/tasks`).send({
+      title: 'Review',
+      dueDate: '2026-01-31',
+      recurrence: 'monthly',
+    })
+    await agent.patch(`/api/tasks/${weekly.body.id}`).send({ completed: true, completedOn: '2026-01-31' })
+    const afterMonth = await agent.get(`/api/projects/${id}/tasks`)
+    expect(afterMonth.body.find((task: { title: string; completed: boolean }) => task.title === 'Review' && !task.completed)).toMatchObject({
+      dueDate: '2026-02-28',
+    })
+
+    const overdue = await agent.post(`/api/projects/${id}/tasks`).send({
+      title: 'Old daily',
+      dueDate: '2026-10-01',
+      recurrence: 'daily',
+    })
+    await agent.patch(`/api/tasks/${overdue.body.id}`).send({ completed: true, completedOn: '2026-10-29' })
+    const afterOverdue = await agent.get(`/api/projects/${id}/tasks`)
+    expect(afterOverdue.body.find((task: { title: string; completed: boolean }) => task.title === 'Old daily' && !task.completed)).toMatchObject({
+      dueDate: '2026-10-30',
+    })
+  })
+
+  it('moves a task across board columns and lists due dates on the calendar', async () => {
+    const { agent } = await registerUser()
+    const project = await agent.post('/api/projects').send({ name: 'Board' })
+    const id = project.body.id as string
+    const created = await agent.post(`/api/projects/${id}/tasks`).send({ title: 'Draft', dueDate: '2026-10-29' })
+    expect(created.body).toMatchObject({ status: 'todo', completed: false })
+
+    const doing = await agent.patch(`/api/tasks/${created.body.id}`).send({ status: 'doing', order: 4 })
+    expect(doing.body).toMatchObject({ status: 'doing', completed: false, order: 4 })
+
+    const done = await agent.patch(`/api/tasks/${created.body.id}`).send({ status: 'done', completed: true, completedOn: '2026-10-29' })
+    expect(done.body).toMatchObject({ status: 'done', completed: true })
+
+    const back = await agent.patch(`/api/tasks/${created.body.id}`).send({ status: 'todo', completed: false, completedOn: null })
+    expect(back.body).toMatchObject({ status: 'todo', completed: false, completedOn: null })
+
+    const month = await agent.get('/api/calendar').query({ from: '2026-10-01', to: '2026-10-31' })
+    expect(month.status).toBe(200)
+    expect(month.body).toEqual([
+      expect.objectContaining({ id: created.body.id, dueDate: '2026-10-29', projectName: 'Board', title: 'Draft' }),
+    ])
+    expect((await agent.get('/api/calendar').query({ from: '2026-11-01', to: '2026-11-30' })).body).toEqual([])
+    expect((await agent.get('/api/calendar').query({ from: '2026-12-01', to: '2026-10-01' })).status).toBe(400)
+    expect((await agent.get('/api/calendar').query({ from: 'not-a-date', to: '2026-10-31' })).status).toBe(400)
+  })
 })

@@ -5,7 +5,7 @@ import { bind } from '../data/content.ts'
 import { currentTenant } from '../data/tenant.ts'
 import { asyncHandler, requireAuth, requireWriter } from '../middleware.ts'
 import { afterTaskCursor, afterTaskFilter, beforeCursor, beforeFilter, nextDateCursor, nextTaskCursor, pageLimit } from '../page.ts'
-import { publicActivity, publicNote, publicProject, publicTask } from '../serialize.ts'
+import { publicActivity, publicNote, publicProject, publicTask, TASK_FIELDS } from '../serialize.ts'
 import {
   normalizeDueDate,
   noteCreateSchema,
@@ -76,7 +76,7 @@ export function projectsRouter(): Router {
       const base = { projectId: project._id }
       const tasks = await db.tasks
         .find(cursor ? { $and: [base, afterTaskFilter(cursor)] } : base)
-        .select('projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt __v')
+        .select(TASK_FIELDS)
         .sort({ order: 1, createdAt: 1, _id: 1 })
         .limit(limit + 1)
         .lean()
@@ -103,16 +103,21 @@ export function projectsRouter(): Router {
       const dueDate = normalizeDueDate(input.dueDate) ?? null
       const labelIds = await db.ownedLabelIds(input.labelIds ?? [])
       const latest = await db.tasks.findOne({ projectId: project._id }).sort({ order: -1 }).select('order')
+      const status = input.status === 'doing' || input.status === 'done' ? input.status : 'todo'
       try {
         const task = await db.tasks.create({
           projectId: project._id,
           title: input.title,
-          completed: false,
+          completed: status === 'done',
           dueDate,
           priority: input.priority ?? 'medium',
           labelIds,
           plannedFor: normalizeDueDate(input.plannedFor) ?? null,
+          completedOn: status === 'done' ? new Date().toISOString().slice(0, 10) : null,
           order: (latest?.order ?? 0) + 1,
+          status,
+          recurrence: input.recurrence ?? null,
+          subtasks: input.subtasks ?? [],
           ...(input.clientId ? { clientId: input.clientId } : {}),
         })
         const side = Promise.all([

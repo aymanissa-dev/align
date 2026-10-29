@@ -7,6 +7,17 @@ export type ChangelogEntry = {
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    date: '2026-10-29',
+    title: 'Checklists, boards, and a calendar',
+    items: [
+      'A task can hold a checklist. Check items off, edit them, and reorder them. The row shows how many are done.',
+      'A task can repeat daily, weekly, or monthly. Completing it keeps that occurrence and adds the next one, due after today.',
+      'Each project has a Board with Todo, Doing, and Done. Drag a card between columns. The task list is still there.',
+      'Calendar shows the month of tasks that have a due date. Open a day, then open the task in its project.',
+      'Press Ctrl+K or ⌘K to jump around Align, start a project, or add a task in the project you have open.',
+    ],
+  },
+  {
     date: '2026-10-26',
     title: 'Changelog',
     items: [

@@ -236,6 +236,7 @@ export type PendingTaskCreate = {
   priority: 'low' | 'medium' | 'high' | 'urgent'
   labelIds: string[]
   plannedFor: string | null
+  recurrence: 'daily' | 'weekly' | 'monthly' | null
 }
 
 export function pendingTaskCreates(): PendingTaskCreate[] {
@@ -251,6 +252,7 @@ export function pendingTaskCreates(): PendingTaskCreate[] {
         priority?: unknown
         labelIds?: unknown
         plannedFor?: unknown
+        recurrence?: unknown
       }
       if (typeof body.title !== 'string' || !body.title.trim()) continue
       const priority = body.priority
@@ -262,6 +264,7 @@ export function pendingTaskCreates(): PendingTaskCreate[] {
         priority: priority === 'low' || priority === 'high' || priority === 'urgent' || priority === 'medium' ? priority : 'medium',
         labelIds: Array.isArray(body.labelIds) ? body.labelIds.filter((id): id is string => typeof id === 'string') : [],
         plannedFor: typeof body.plannedFor === 'string' ? body.plannedFor : null,
+        recurrence: body.recurrence === 'daily' || body.recurrence === 'weekly' || body.recurrence === 'monthly' ? body.recurrence : null,
       })
     } catch {
       // Ignore a corrupt queue entry; flush will drop it if the server rejects it.
@@ -281,7 +284,7 @@ function queuedTask(item: QueuedWrite): Task | null {
   const match = /^\/api\/projects\/([^/]+)\/tasks$/.exec(item.path)
   if (!match) return null
   try {
-    const body = JSON.parse(item.body) as { title?: unknown; dueDate?: unknown; priority?: unknown; labelIds?: unknown; plannedFor?: unknown }
+    const body = JSON.parse(item.body) as { title?: unknown; dueDate?: unknown; priority?: unknown; labelIds?: unknown; plannedFor?: unknown; recurrence?: unknown }
     if (typeof body.title !== 'string' || !body.title.trim()) return null
     const priority = body.priority
     return {
@@ -298,6 +301,9 @@ function queuedTask(item: QueuedWrite): Task | null {
       version: 0,
       createdAt: new Date(0).toISOString(),
       updatedAt: new Date(0).toISOString(),
+      subtasks: [],
+      recurrence: body.recurrence === 'daily' || body.recurrence === 'weekly' || body.recurrence === 'monthly' ? body.recurrence : null,
+      status: 'todo',
     }
   } catch {
     return null
@@ -378,6 +384,7 @@ function seedQueuedTask(item: QueuedWrite) {
       dueDate: task.dueDate,
       priority: task.priority,
       completed: false,
+      recurrence: task.recurrence,
     }
     return { ...current, openTasks: [row, ...openTasks] }
   })
@@ -452,6 +459,7 @@ async function keepSyncedTask(item: QueuedWrite, response: Response) {
       dueDate: task.dueDate,
       priority: task.priority,
       completed: task.completed,
+      recurrence: task.recurrence ?? null,
     }
     return { ...current, openTasks: [row, ...openTasks] }
   })
@@ -505,6 +513,7 @@ function healSyncedTasks() {
         dueDate: task.dueDate,
         priority: task.priority,
         completed: task.completed,
+        recurrence: task.recurrence ?? null,
       }
       return { ...current, openTasks: [row, ...openTasks] }
     })

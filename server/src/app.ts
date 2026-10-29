@@ -27,6 +27,7 @@ import { guardOrigin } from './security.ts'
 import { APP_VERSION, MINIMUM_CLIENT_VERSION } from './version.ts'
 import { AUTH_ROUTE_LIMIT, authRouteLimiter } from './rateLimit.ts'
 import { authRouter } from './routes/auth.ts'
+import { calendarRouter } from './routes/calendar.ts'
 import { dashboardRouter } from './routes/dashboard.ts'
 import { labelsRouter } from './routes/labels.ts'
 import { notesRouter } from './routes/notes.ts'
@@ -148,6 +149,7 @@ export function createApp(options: AppOptions = {}): Express {
   app.use('/api/notifications', notificationsRouter())
   app.use('/api/dashboard', dashboardRouter())
   app.use('/api/today', todayRouter())
+  app.use('/api/calendar', calendarRouter())
   app.use('/api/search', searchRouter())
 
   app.use((_req, res) => {

@@ -13,6 +13,7 @@ import type {
   AppNotification,
   AuthProviders,
   AuthSession,
+  CalendarTask,
   DashboardData,
   TodayData,
   Label,
@@ -497,6 +498,9 @@ export const httpApi = {
   },
   getToday(date, init?: RequestInit) {
     return request<TodayData>(withQuery('/api/today', { date }), init)
+  },
+  listCalendar(from, to, init?: RequestInit) {
+    return request<CalendarTask[]>(withQuery('/api/calendar', { from, to }), init)
   },
   getDashboard(init?: RequestInit) {
     return request<DashboardData>('/api/dashboard', init)

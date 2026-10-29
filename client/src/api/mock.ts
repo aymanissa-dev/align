@@ -1,4 +1,5 @@
 import { CONFLICT_MESSAGE } from '../../../shared/contract.ts'
+import { nextOccurrenceDate } from '../../../shared/dates.ts'
 import { matchesAllTokens, relevanceScore, searchTokens } from '../../../shared/search.ts'
 import { isMediumPassword, MEDIUM_PASSWORD_MESSAGE } from '../lib/passwordStrength.ts'
 import { ApiError } from './errors.ts'
@@ -119,6 +120,9 @@ function load(): Db {
           item.priority ??= 'medium'
           item.labelIds ??= []
           item.plannedFor ??= null
+          item.subtasks ??= []
+          item.recurrence ??= null
+          item.status ??= item.completed ? 'done' : 'todo'
         }
         return memory
       }
@@ -182,6 +186,9 @@ function publicTask(item: StoredTask): Task {
     plannedFor: item.plannedFor ?? null,
     completedOn: item.completedOn ?? null,
     order: item.order,
+    status: item.completed ? 'done' : item.status === 'doing' ? 'doing' : 'todo',
+    recurrence: item.recurrence === 'daily' || item.recurrence === 'weekly' || item.recurrence === 'monthly' ? item.recurrence : null,
+    subtasks: Array.isArray(item.subtasks) ? item.subtasks : [],
     version: item.version ?? 0,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
@@ -620,16 +627,19 @@ export const mockApi = {
         userId: user.id,
         projectId,
         title,
-        completed: false,
+        completed: input.status === 'done',
         dueDate: dueDateOf(input.dueDate) ?? null,
         priority: priorityOf(input.priority),
         labelIds: labelsOf(state, user.id, input.labelIds),
         plannedFor: dueDateOf(input.plannedFor) ?? null,
-        completedOn: null,
+        completedOn: input.status === 'done' ? new Date().toISOString().slice(0, 10) : null,
         order,
         createdAt: timestamp,
         updatedAt: timestamp,
         clientId: input.clientId,
+        status: input.status === 'doing' || input.status === 'done' ? input.status : 'todo',
+        recurrence: input.recurrence ?? null,
+        subtasks: input.subtasks ?? [],
       }
       state.tasks.push(item)
       touchProject(state, projectId)
@@ -657,9 +667,53 @@ export const mockApi = {
         if (!Number.isFinite(input.order)) throw new ApiError(400, 'Order must be a number.')
         item.order = input.order
       }
+      if (input.recurrence !== undefined) item.recurrence = input.recurrence
+      if (input.subtasks !== undefined) item.subtasks = input.subtasks
+      if (input.status !== undefined && input.completed === undefined) {
+        item.status = input.status
+        item.completed = input.status === 'done'
+        item.completedOn = item.completed ? (dueDateOf(input.completedOn) ?? item.completedOn ?? new Date().toISOString().slice(0, 10)) : null
+      } else if (input.completed !== undefined) {
+        item.status = input.completed ? 'done' : input.status === 'doing' ? 'doing' : 'todo'
+      } else if (input.status !== undefined) {
+        item.status = input.status
+      }
       item.updatedAt = now()
       touchProject(state, item.projectId)
       const justFinished = !wasCompleted && item.completed
+      const requestedFinish = input.completed === true || (input.status === 'done' && input.completed !== false)
+      if (item.completed && item.recurrence && (justFinished || (requestedFinish && wasCompleted))) {
+        const today = item.completedOn && /^\d{4}-\d{2}-\d{2}$/.test(item.completedOn) ? item.completedOn : new Date().toISOString().slice(0, 10)
+        const spawnKey = `recur:${item.id}:${today}`
+        const recurrence = item.recurrence
+        if (
+          (recurrence === 'daily' || recurrence === 'weekly' || recurrence === 'monthly') &&
+          !state.tasks.some((task) => task.userId === user.id && task.clientId === spawnKey)
+        ) {
+          const siblings = state.tasks.filter((task) => task.projectId === item.projectId)
+          const timestamp = now()
+          state.tasks.push({
+            id: uid('tsk'),
+            userId: user.id,
+            projectId: item.projectId,
+            title: item.title,
+            completed: false,
+            dueDate: nextOccurrenceDate(item.dueDate, recurrence, today),
+            priority: item.priority,
+            labelIds: [...item.labelIds],
+            plannedFor: null,
+            completedOn: null,
+            order: siblings.reduce((max, task) => Math.max(max, task.order), 0) + 1,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            clientId: spawnKey,
+            status: 'todo',
+            recurrence,
+            subtasks: (item.subtasks ?? []).map((subtask) => ({ id: crypto.randomUUID(), text: subtask.text, completed: false })),
+          })
+          pushActivity(state, user.id, item.projectId, 'create', `Created task ${quoteTitle(item.title)}`)
+        }
+      }
       pushActivity(
         state,
         user.id,
@@ -862,6 +916,30 @@ export const mockApi = {
     })
   },
 
+  async listCalendar(from, to, _init?: RequestInit) {
+    return read((state, user) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) {
+        throw new ApiError(400, 'Use a valid date range.')
+      }
+      const projects = state.projects.filter((project) => project.userId === user.id)
+      const names = new Map(projects.map((project) => [project.id, project.name]))
+      return state.tasks
+        .filter((task) => task.userId === user.id && task.dueDate && task.dueDate >= from && task.dueDate <= to && names.has(task.projectId))
+        .sort((a, b) => (a.dueDate ?? '').localeCompare(b.dueDate ?? '') || a.order - b.order)
+        .map((task) => ({
+          id: task.id,
+          projectId: task.projectId,
+          projectName: names.get(task.projectId) ?? '',
+          title: task.title,
+          completed: task.completed,
+          dueDate: task.dueDate as string,
+          priority: task.priority ?? 'medium',
+          status: task.completed ? 'done' as const : task.status === 'doing' ? 'doing' as const : 'todo' as const,
+          recurrence: task.recurrence === 'daily' || task.recurrence === 'weekly' || task.recurrence === 'monthly' ? task.recurrence : null,
+        }))
+    })
+  },
+
   async getToday(date, _init?: RequestInit) {
     return read((state, user) => {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new ApiError(400, 'Use a valid date.')
@@ -919,6 +997,7 @@ export const mockApi = {
               dueDate: item.dueDate,
               priority: item.priority ?? 'medium',
               completed: false as const,
+              recurrence: item.recurrence === 'daily' || item.recurrence === 'weekly' || item.recurrence === 'monthly' ? item.recurrence : null,
             },
           ]
         })

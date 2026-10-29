@@ -7,6 +7,7 @@ import type { Note } from '../api/types.ts'
 import { ProjectFormDialog } from '../components/ProjectFormDialog.tsx'
 import { ActivityPanel } from '../components/ActivityPanel.tsx'
 import { Whiteboard } from '../components/Whiteboard.tsx'
+import { BoardPanel } from '../components/BoardPanel.tsx'
 import { TasksPanel } from '../components/TasksPanel.tsx'
 import { useToast } from '../components/toast-context.ts'
 import { Button, ConfirmDialog, EmptyState, ErrorState, ListSkeleton, OfflineState, TextButton } from '../components/ui.tsx'
@@ -27,7 +28,13 @@ export function ProjectDetailPage() {
   const toast = useToast()
   const [params, setParams] = useSearchParams()
   const requested = params.get('tab')
-  const tab = requested === 'notes' || requested === 'activity' || requested === 'whiteboard' ? requested : 'tasks'
+  const compose = params.get('compose') === '1'
+  const tab =
+    compose
+      ? 'tasks'
+      : requested === 'notes' || requested === 'activity' || requested === 'whiteboard' || requested === 'board'
+        ? requested
+        : 'tasks'
   const [editing, setEditing] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
@@ -109,8 +116,8 @@ export function ProjectDetailPage() {
         </div>
       </div>
 
-      <div className="mt-6 flex gap-2" role="tablist" aria-label="Project sections">
-        {(['tasks', 'notes', 'activity', 'whiteboard'] as const).map((key) => (
+      <div className="mt-6 flex flex-wrap gap-2" role="tablist" aria-label="Project sections">
+        {(['tasks', 'board', 'notes', 'activity', 'whiteboard'] as const).map((key) => (
           <button
             key={key}
             type="button"
@@ -124,12 +131,13 @@ export function ProjectDetailPage() {
                 : 'border-neutral-300 text-neutral-600 hover:bg-neutral-50',
             )}
           >
-            {key === 'tasks' ? 'Tasks' : key === 'notes' ? 'Notes' : key === 'activity' ? 'Activity' : 'Whiteboard'}
+            {key === 'tasks' ? 'Tasks' : key === 'board' ? 'Board' : key === 'notes' ? 'Notes' : key === 'activity' ? 'Activity' : 'Whiteboard'}
           </button>
         ))}
       </div>
 
       {tab === 'tasks' ? <TasksPanel projectId={current.id} /> : null}
+      {tab === 'board' ? <BoardPanel projectId={current.id} /> : null}
       {tab === 'notes' ? <NotesPanel projectId={current.id} /> : null}
       {tab === 'activity' ? <ActivityPanel projectId={current.id} /> : null}
       {tab === 'whiteboard' ? <Whiteboard projectId={current.id} /> : null}

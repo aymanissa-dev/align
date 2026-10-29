@@ -7,13 +7,15 @@ import { useAuth } from '../auth/auth-context.ts'
 import { cn } from '../lib/cn.ts'
 import { useMediaQuery } from '../hooks/useMediaQuery.ts'
 import { Eyebrow } from './chrome.tsx'
-import { IconClose, IconDashboard, IconMenu, IconNotes, IconProjects, IconSearch, IconSettings, IconToday, IconTrash } from './icons.tsx'
+import { CommandPalette } from './CommandPalette.tsx'
+import { IconCalendar, IconClose, IconDashboard, IconMenu, IconNotes, IconProjects, IconSearch, IconSettings, IconToday, IconTrash } from './icons.tsx'
 import { NotificationBell } from './NotificationBell.tsx'
 import { ThemeToggle } from './ThemeControls.tsx'
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: IconDashboard, end: true },
   { to: '/today', label: 'Today', icon: IconToday, end: false },
+  { to: '/calendar', label: 'Calendar', icon: IconCalendar, end: false },
   { to: '/projects', label: 'Projects', icon: IconProjects, end: false },
   { to: '/notes', label: 'Notes', icon: IconNotes, end: false },
   { to: '/trash', label: 'Trash', icon: IconTrash, end: false },
@@ -198,6 +200,7 @@ export function Layout({ children }: { children?: ReactNode }) {
         </div>
       </aside>
 
+      <CommandPalette />
       <main id="main" className="min-h-screen pt-14 md:pt-0 md:pl-64">
         <div key={location.pathname} className="page-enter mx-auto w-full max-w-5xl px-5 py-8 md:px-8 md:py-10">
           {children ?? <Outlet />}

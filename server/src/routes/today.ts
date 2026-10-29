@@ -4,9 +4,8 @@ import { bind } from '../data/content.ts'
 import { currentTenant } from '../data/tenant.ts'
 import { HttpError } from '../errors.ts'
 import { asyncHandler, requireAuth } from '../middleware.ts'
+import { publicTask, TASK_FIELDS } from '../serialize.ts'
 import { normalizeDueDate } from '../validate.ts'
-
-const FIELDS = 'projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt __v'
 
 type TodayTask = {
   _id: Types.ObjectId
@@ -25,22 +24,7 @@ type TodayTask = {
 }
 
 function present(task: TodayTask, projectName: string) {
-  return {
-    id: task._id.toString(),
-    projectId: task.projectId.toString(),
-    projectName,
-    title: task.title,
-    completed: task.completed,
-    dueDate: task.dueDate,
-    priority: task.priority,
-    labelIds: (task.labelIds ?? []).map((id) => id.toString()),
-    plannedFor: task.plannedFor,
-    completedOn: task.completedOn,
-    order: task.order,
-    version: typeof task.__v === 'number' ? task.__v : 0,
-    createdAt: task.createdAt.toISOString(),
-    updatedAt: task.updatedAt.toISOString(),
-  }
+  return { ...publicTask(task), projectName }
 }
 
 export function todayRouter(): Router {
@@ -54,9 +38,9 @@ export function todayRouter(): Router {
       if (!date) throw new HttpError(400, 'Use a valid date.')
       const db = bind(currentTenant(req))
       const [open, plannedDone, finishedOn, projects] = await Promise.all([
-        db.tasks.find({ completed: false }).select(FIELDS).lean<TodayTask[]>(),
-        db.tasks.find({ completed: true, plannedFor: date }).select(FIELDS).lean<TodayTask[]>(),
-        db.tasks.find({ completed: true, completedOn: date }).select(FIELDS).lean<TodayTask[]>(),
+        db.tasks.find({ completed: false }).select(TASK_FIELDS).lean<TodayTask[]>(),
+        db.tasks.find({ completed: true, plannedFor: date }).select(TASK_FIELDS).lean<TodayTask[]>(),
+        db.tasks.find({ completed: true, completedOn: date }).select(TASK_FIELDS).lean<TodayTask[]>(),
         db.projects.find({ status: 'active' }).select('name').lean(),
       ])
       const names = new Map(projects.map((project) => [project._id.toString(), project.name]))

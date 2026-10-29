@@ -1,4 +1,4 @@
-import type { NotePatch, ProjectPatch, Task, TaskPatch, TaskPriority } from '../api/types.ts'
+import type { NotePatch, ProjectPatch, Recurrence, Task, TaskPatch, TaskPriority } from '../api/types.ts'
 
 function sameIds(left: string[], right: string[]): boolean {
   if (left.length !== right.length) return false
@@ -8,14 +8,15 @@ function sameIds(left: string[], right: string[]): boolean {
 }
 
 export function taskFieldPatch(
-  base: Pick<Task, 'title' | 'dueDate' | 'priority' | 'labelIds'>,
-  draft: { title: string; dueDate: string | null; priority: TaskPriority; labelIds: string[] },
+  base: Pick<Task, 'title' | 'dueDate' | 'priority' | 'labelIds' | 'recurrence'>,
+  draft: { title: string; dueDate: string | null; priority: TaskPriority; labelIds: string[]; recurrence: Recurrence | null },
 ): TaskPatch {
   const patch: TaskPatch = {}
   if (draft.title !== base.title) patch.title = draft.title
   if ((draft.dueDate || null) !== (base.dueDate || null)) patch.dueDate = draft.dueDate
   if (draft.priority !== base.priority) patch.priority = draft.priority
   if (!sameIds(draft.labelIds, base.labelIds)) patch.labelIds = draft.labelIds
+  if ((draft.recurrence || null) !== (base.recurrence || null)) patch.recurrence = draft.recurrence
   return patch
 }
 

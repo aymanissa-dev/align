@@ -16,15 +16,25 @@ import type {
   priorities,
   projectCreateSchema,
   projectPatchSchema,
+  recurrences,
   registerSchema,
   taskCreateSchema,
   taskPatchSchema,
+  taskStatuses,
 } from '../../../shared/schemas.ts'
 
 export type { HealthReport }
 
 export type ProjectStatus = 'active' | 'archived'
 export type TaskPriority = (typeof priorities)[number]
+export type Recurrence = (typeof recurrences)[number]
+export type TaskStatus = (typeof taskStatuses)[number]
+
+export type Subtask = {
+  id: string
+  text: string
+  completed: boolean
+}
 
 export type User = {
   id: string
@@ -140,9 +150,24 @@ export type Task = {
   plannedFor: string | null
   completedOn: string | null
   order: number
+  status: TaskStatus
+  recurrence: Recurrence | null
+  subtasks: Subtask[]
   version: number
   createdAt: string
   updatedAt: string
+}
+
+export type CalendarTask = {
+  id: string
+  projectId: string
+  projectName: string
+  title: string
+  completed: boolean
+  dueDate: string
+  priority: TaskPriority
+  status: TaskStatus
+  recurrence: Recurrence | null
 }
 
 export type Note = {
@@ -172,6 +197,7 @@ export type OpenTask = {
   dueDate: string | null
   priority: TaskPriority
   completed: boolean
+  recurrence: Recurrence | null
 }
 
 export type WhiteboardPoint = { x: number; y: number }
@@ -368,6 +394,8 @@ export interface AlignApi {
 
   /** GET /api/today?date= */
   getToday(date: string, init?: RequestInit): Promise<TodayData>
+  /** GET /api/calendar?from=&to= */
+  listCalendar(from: string, to: string, init?: RequestInit): Promise<CalendarTask[]>
   /** GET /api/dashboard */
   getDashboard(init?: RequestInit): Promise<DashboardData>
   /** GET /api/search?q= */

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api/index.ts'
@@ -21,6 +21,19 @@ export function ProjectsPage() {
   const [editing, setEditing] = useState<Project | null>(null)
   const [deleting, setDeleting] = useState<Project | null>(null)
   useDocumentTitle('Projects')
+  const wantsNew = params.get('new') === '1'
+  const [consumedNew, setConsumedNew] = useState(false)
+  if (wantsNew && !consumedNew) {
+    setConsumedNew(true)
+    setCreating(true)
+  }
+
+  useEffect(() => {
+    if (!wantsNew) return
+    const next = new URLSearchParams(params)
+    next.delete('new')
+    setParams(next, { replace: true })
+  }, [wantsNew, params, setParams])
 
   const projects = useQuery({
     queryKey: ['projects', status],

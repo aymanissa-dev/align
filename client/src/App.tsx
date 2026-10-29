@@ -27,6 +27,7 @@ import { ProjectsPage } from './pages/ProjectsPage.tsx'
 import { RegisterPage } from './pages/RegisterPage.tsx'
 import { SearchPage } from './pages/SearchPage.tsx'
 import { SettingsPage } from './pages/SettingsPage.tsx'
+import { CalendarPage } from './pages/CalendarPage.tsx'
 import { TodayPage } from './pages/TodayPage.tsx'
 import { UpcomingPage } from './pages/UpcomingPage.tsx'
 import { TrashPage } from './pages/TrashPage.tsx'
@@ -208,6 +209,7 @@ export default function App() {
               <Route element={<Protected />}>
                 <Route path="/today" element={<TodayPage />} />
                 <Route path="/upcoming" element={<UpcomingPage />} />
+                <Route path="/calendar" element={<CalendarPage />} />
                 <Route path="/projects" element={<ProjectsPage />} />
                 <Route path="/projects/:id" element={<ProjectDetailPage />} />
                 <Route path="/notes" element={<NotesPage />} />

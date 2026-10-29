@@ -3,11 +3,12 @@ import { Link } from 'react-router-dom'
 import { api } from '../api/index.ts'
 import type { OpenTask } from '../api/types.ts'
 import { useAuth } from '../auth/auth-context.ts'
-import { Badge, DueBadge, PageHeader, PriorityBadge } from '../components/chrome.tsx'
+import { Badge, DueBadge, PageHeader, PriorityBadge, RecurrenceBadge } from '../components/chrome.tsx'
 import { CheckButton, EmptyState, ErrorState, ListSkeleton, OfflineState } from '../components/ui.tsx'
 import { buttonClass } from '../lib/buttonClass.ts'
 import { useToast } from '../components/toast-context.ts'
 import { useToggleTask } from '../hooks/useToggleTask.ts'
+import { isConflict } from '../lib/conflict.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { useQueryMiss } from '../lib/queryMiss.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
@@ -37,7 +38,7 @@ export function UpcomingPage() {
   function onToggle(task: OpenTask) {
     toggle.mutate(
       { id: task.id, projectId: task.projectId, completed: task.completed },
-      { onError: (error) => toast(errorMessage(error)) },
+      { onError: (error) => { if (!isConflict(error)) toast(errorMessage(error)) } },
     )
   }
 
@@ -73,6 +74,7 @@ export function UpcomingPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="text-sm text-neutral-950">{task.title}</p>
                     <PriorityBadge priority={task.priority} />
+                    <RecurrenceBadge recurrence={task.recurrence} />
                   </div>
                   <Link to={`/projects/${task.projectId}`} className="focus-ring text-sm text-neutral-600 hover:text-neutral-950">
                     {task.projectName}

@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../auth/auth-context.ts'
 import { useToast } from './toast-context.ts'
-import { ACCENTS, persistTheme, readTheme, type ThemeChoice } from '../lib/theme.ts'
+import { ACCENTS, persistTheme, readTheme, THEME_EVENT, type ThemeChoice } from '../lib/theme.ts'
 import { cn } from '../lib/cn.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 
@@ -13,6 +13,12 @@ const CHOICES: { value: ThemeChoice; label: string }[] = [
 
 export function ThemeToggle({ className }: { className?: string }) {
   const [choice, setChoice] = useState<ThemeChoice>(() => readTheme())
+
+  useEffect(() => {
+    const onTheme = () => setChoice(readTheme())
+    window.addEventListener(THEME_EVENT, onTheme)
+    return () => window.removeEventListener(THEME_EVENT, onTheme)
+  }, [])
 
   return (
     <div role="radiogroup" aria-label="Color theme" className={cn('inline-flex border border-neutral-300', className)}>

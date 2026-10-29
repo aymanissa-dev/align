@@ -71,6 +71,15 @@ const labelSchema = new Schema(
 labelSchema.index({ userId: 1, name: 1 }, { unique: true })
 labelSchema.index({ workspaceId: 1, name: 1 }, { name: 'LabelWorkspace' })
 
+const subtaskSchema = new Schema(
+  {
+    id: { type: String, required: true },
+    text: { type: String, required: true },
+    completed: { type: Boolean, default: false, required: true },
+  },
+  { _id: false },
+)
+
 const taskSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
@@ -90,6 +99,9 @@ const taskSchema = new Schema(
     // Client-generated id so a retried or replayed create returns the same task.
     clientId: { type: String },
     searchWords: { type: [String] },
+    status: { type: String, enum: ['todo', 'doing', 'done'], default: 'todo' },
+    recurrence: { type: String, enum: ['daily', 'weekly', 'monthly', null], default: null },
+    subtasks: { type: [subtaskSchema], default: [] },
   },
   { timestamps: true, optimisticConcurrency: true },
 )
@@ -118,6 +130,7 @@ taskSchema.index({ userId: 1, plannedFor: 1 })
 taskSchema.index({ userId: 1, completedOn: 1 })
 taskSchema.index({ userId: 1, projectId: 1, order: 1, createdAt: 1, _id: 1 })
 taskSchema.index({ userId: 1, completed: 1, dueDate: 1 })
+taskSchema.index({ workspaceId: 1, deletedAt: 1, dueDate: 1 }, { name: 'TaskCalendar' })
 taskSchema.index({ userId: 1, title: 'text' }, { name: 'TaskTextIndex' })
 taskSchema.index({ userId: 1, searchWords: 1 }, { name: 'TaskSearchWords' })
 

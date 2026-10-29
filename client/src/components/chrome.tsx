@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
-import type { TaskPriority } from '../api/types.ts'
+import type { Recurrence, TaskPriority } from '../api/types.ts'
+import { recurrenceLabel } from '../lib/taskFields.ts'
 import { cn } from '../lib/cn.ts'
 import { dueState } from '../lib/due.ts'
 import { formatDate } from '../lib/format.ts'
@@ -82,6 +83,16 @@ export function PriorityBadge({ priority }: { priority: TaskPriority }) {
       )}
     >
       {priority}
+    </span>
+  )
+}
+
+export function RecurrenceBadge({ recurrence }: { recurrence?: Recurrence | null }) {
+  const label = recurrenceLabel(recurrence ?? null)
+  if (!label) return null
+  return (
+    <span className="border border-neutral-300 px-1.5 py-0.5 font-pixel text-[10px] tracking-[0.14em] text-neutral-600 uppercase">
+      {label}
     </span>
   )
 }

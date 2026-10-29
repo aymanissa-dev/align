@@ -315,6 +315,13 @@ export function SettingsPage() {
       </section>
 
       <section className="mt-4 max-w-lg border border-neutral-200 p-5">
+        <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Keyboard</h2>
+        <p className="mt-2 text-sm leading-6 text-neutral-600">
+          Ctrl+K or ⌘K opens the command palette. Esc closes it. Arrow keys move through the list, and Enter runs the selected command.
+        </p>
+      </section>
+
+      <section className="mt-4 max-w-lg border border-neutral-200 p-5">
         <h2 className="font-pixel text-[11px] tracking-[0.16em] text-neutral-500 uppercase">Profile</h2>
         <form onSubmit={onSaveName} className="mt-4 space-y-4" noValidate>
           <Field label="Name" htmlFor="profile-name" error={nameError}>

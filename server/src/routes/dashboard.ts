@@ -18,6 +18,7 @@ type OpenRow = {
   dueDate: string | null
   priority: 'low' | 'medium' | 'high' | 'urgent'
   projectId: Types.ObjectId
+  recurrence?: string | null
 }
 
 export async function dashboardPayload(tenant: Tenant) {
@@ -30,13 +31,13 @@ export async function dashboardPayload(tenant: Tenant) {
     ]),
     db.tasks
       .find({ completed: false, dueDate: { $gte: '0000-01-01' } })
-      .select('title dueDate priority projectId')
+      .select('title dueDate priority projectId recurrence')
       .sort({ dueDate: 1, title: 1 })
       .limit(datedLimit)
       .lean<OpenRow[]>(),
     db.tasks
       .find({ completed: false, dueDate: null })
-      .select('title dueDate priority projectId')
+      .select('title dueDate priority projectId recurrence')
       .sort({ title: 1 })
       .limit(OPEN_LIMIT)
       .lean<OpenRow[]>(),
@@ -49,7 +50,7 @@ export async function dashboardPayload(tenant: Tenant) {
       ? dated.filter((task) => active.has(task.projectId.toString()))
       : await db.tasks
           .find({ completed: false, projectId: { $in: activeIds }, dueDate: { $gte: '0000-01-01' } })
-          .select('title dueDate priority projectId')
+          .select('title dueDate priority projectId recurrence')
           .sort({ dueDate: 1, title: 1 })
           .limit(datedLimit)
           .lean<OpenRow[]>()
@@ -58,7 +59,7 @@ export async function dashboardPayload(tenant: Tenant) {
       ? undated.filter((task) => active.has(task.projectId.toString()))
       : await db.tasks
           .find({ completed: false, projectId: { $in: activeIds }, dueDate: null })
-          .select('title dueDate priority projectId')
+          .select('title dueDate priority projectId recurrence')
           .sort({ title: 1 })
           .limit(OPEN_LIMIT)
           .lean<OpenRow[]>()
@@ -91,6 +92,7 @@ export async function dashboardPayload(tenant: Tenant) {
             dueDate: task.dueDate,
             priority: task.priority,
             completed: false as const,
+            recurrence: task.recurrence === 'daily' || task.recurrence === 'weekly' || task.recurrence === 'monthly' ? task.recurrence : null,
           },
         ]
       })

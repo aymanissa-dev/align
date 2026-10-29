@@ -2,13 +2,17 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/index.ts'
 import { ApiError } from '../api/errors.ts'
 import type { DashboardData, OpenTask, Task, TodayData, TodayTask } from '../api/types.ts'
+import { isConflict } from '../lib/conflict.ts'
 import { localISODate } from '../lib/due.ts'
+import { errorMessage } from '../lib/errorMessage.ts'
+import { useToast } from '../components/toast-context.ts'
 
 type ToggleTarget = {
   id: string
   projectId: string
   completed: boolean
   version?: number
+  retried?: boolean
 }
 
 function byDue(a: OpenTask, b: OpenTask): number {
@@ -35,14 +39,16 @@ function patchToday(data: TodayData, target: ToggleTarget): TodayData {
 
 export function useToggleTask() {
   const queryClient = useQueryClient()
+  const toast = useToast()
 
-  return useMutation({
+  const toggle = useMutation({
     mutationFn: (target: ToggleTarget) =>
       api.updateTask(
         target.id,
         {
           completed: !target.completed,
           completedOn: target.completed ? null : localISODate(),
+          status: target.completed ? 'todo' : 'done',
         },
         { version: target.version },
       ),
@@ -61,7 +67,12 @@ export function useToggleTask() {
           ['tasks', target.projectId],
           previousTasks.map((task) =>
             task.id === target.id
-              ? { ...task, completed: nextCompleted, completedOn: nextCompleted ? localISODate() : null }
+              ? {
+                  ...task,
+                  completed: nextCompleted,
+                  completedOn: nextCompleted ? localISODate() : null,
+                  status: nextCompleted ? 'done' : 'todo',
+                }
               : task,
           ),
         )
@@ -98,6 +109,7 @@ export function useToggleTask() {
                 dueDate: task.dueDate,
                 priority: task.priority,
                 completed: false,
+                recurrence: task.recurrence ?? null,
               },
             ].sort(byDue)
           }
@@ -125,13 +137,27 @@ export function useToggleTask() {
       if (context?.previousTasks) queryClient.setQueryData(['tasks', target.projectId], context.previousTasks)
       if (context?.previousDashboard) queryClient.setQueryData(['dashboard'], context.previousDashboard)
       for (const [key, data] of context?.previousToday ?? []) queryClient.setQueryData(key, data)
+      if (isConflict(error) && !target.retried) {
+        void api.listTasks(target.projectId).then((fresh) => {
+          queryClient.setQueryData(['tasks', target.projectId], fresh)
+          const task = fresh.find((item) => item.id === target.id)
+          if (task && task.completed === target.completed) {
+            toggle.mutate({ ...target, version: task.version, retried: true })
+          }
+        })
+        return
+      }
+      if (isConflict(error)) toast(errorMessage(error))
     },
     onSettled: (_data, _error, target) => {
       void queryClient.invalidateQueries({ queryKey: ['tasks', target.projectId] })
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] })
       void queryClient.invalidateQueries({ queryKey: ['today'] })
       void queryClient.invalidateQueries({ queryKey: ['notifications'] })
+      void queryClient.invalidateQueries({ queryKey: ['calendar'] })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
     },
   })
+
+  return toggle
 }

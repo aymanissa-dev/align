@@ -8,6 +8,7 @@ import { CheckButton, EmptyState, ErrorState, ListSkeleton, OfflineState, Progre
 import { buttonClass } from '../lib/buttonClass.ts'
 import { useToast } from '../components/toast-context.ts'
 import { useToggleTask } from '../hooks/useToggleTask.ts'
+import { isConflict } from '../lib/conflict.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { isUpcoming, UPCOMING_CAP } from '../lib/due.ts'
 import { firstName, greeting } from '../lib/format.ts'
@@ -42,7 +43,7 @@ export function DashboardPage() {
   function onToggle(task: OpenTask) {
     toggle.mutate(
       { id: task.id, projectId: task.projectId, completed: task.completed },
-      { onError: (error) => toast(errorMessage(error)) },
+      { onError: (error) => { if (!isConflict(error)) toast(errorMessage(error)) } },
     )
   }
 

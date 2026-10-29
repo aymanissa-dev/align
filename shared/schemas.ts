@@ -104,10 +104,52 @@ export const projectPatchSchema = z.object({
 })
 
 export const priorities = ['low', 'medium', 'high', 'urgent'] as const
+export const recurrences = ['daily', 'weekly', 'monthly'] as const
+export const taskStatuses = ['todo', 'doing', 'done'] as const
 
 const priority = z.enum(priorities, {
   errorMap: () => ({ message: 'Priority must be low, medium, high, or urgent.' }),
 })
+
+const recurrence = z.union([
+  z.enum(recurrences, {
+    errorMap: () => ({ message: 'Repeat must be daily, weekly, or monthly.' }),
+  }),
+  z.null(),
+])
+
+const taskStatus = z.enum(taskStatuses, {
+  errorMap: () => ({ message: 'Status must be todo, doing, or done.' }),
+})
+
+const subtaskSchema = z.object({
+  id: z
+    .string({ required_error: 'Checklist is invalid.', invalid_type_error: 'Checklist is invalid.' })
+    .trim()
+    .min(1, 'Checklist is invalid.')
+    .max(40, 'Checklist is invalid.')
+    .regex(/^[A-Za-z0-9_-]+$/, 'Checklist is invalid.'),
+  text: z
+    .string({ required_error: 'Checklist text is required.', invalid_type_error: 'Checklist text is required.' })
+    .trim()
+    .min(1, 'Checklist text is required.')
+    .max(200, 'Checklist text is too long.'),
+  completed: z.boolean({ invalid_type_error: 'Checklist is invalid.' }),
+})
+
+const subtasksSchema = z
+  .array(subtaskSchema, { invalid_type_error: 'Checklist is invalid.' })
+  .max(40, 'Too many checklist items.')
+  .superRefine((items, ctx) => {
+    const seen = new Set<string>()
+    for (const item of items) {
+      if (seen.has(item.id)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Checklist items must be unique.' })
+        return
+      }
+      seen.add(item.id)
+    }
+  })
 
 const labelIds = z
   .array(z.string({ invalid_type_error: 'Unknown label.' }), { invalid_type_error: 'Unknown label.' })
@@ -125,6 +167,9 @@ export const taskCreateSchema = z.object({
   labelIds: labelIds.optional(),
   plannedFor: dueDate.optional(),
   clientId: z.string().uuid('clientId must be a uuid.').optional(),
+  recurrence: recurrence.optional(),
+  status: taskStatus.optional(),
+  subtasks: subtasksSchema.optional(),
 })
 
 export const taskPatchSchema = z.object({
@@ -136,6 +181,9 @@ export const taskPatchSchema = z.object({
   plannedFor: dueDate.optional(),
   completedOn: dueDate.optional(),
   order: z.number({ invalid_type_error: 'Order must be a number.' }).finite('Order must be a number.').optional(),
+  recurrence: recurrence.optional(),
+  status: taskStatus.optional(),
+  subtasks: subtasksSchema.optional(),
 })
 
 export const labelCreateSchema = z.object({
