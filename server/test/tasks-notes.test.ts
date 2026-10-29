@@ -168,8 +168,13 @@ describe('tasks and notes', () => {
       subtasks: [{ id: 'ask', text: 'Ask for blockers', completed: true }],
     })
     const taskId = created.body.id as string
+    const before = await agent.get(`/api/projects/${id}/tasks`)
     const done = await agent.patch(`/api/tasks/${taskId}`).send({ completed: true, completedOn: '2026-10-29' })
     expect(done.body).toMatchObject({ completed: true, status: 'done', dueDate: '2026-10-29' })
+    expect(done.body.spawned).toMatchObject({ title: 'Standup', completed: false, dueDate: '2026-10-30', status: 'todo' })
+    const againList = await agent.get(`/api/projects/${id}/tasks`).set('If-None-Match', before.headers.etag as string)
+    expect(againList.status).toBe(200)
+    expect(againList.body).toHaveLength(2)
 
     const again = await agent.patch(`/api/tasks/${taskId}`).send({ completed: true, completedOn: '2026-10-29' })
     expect(again.status).toBe(200)

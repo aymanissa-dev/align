@@ -26,13 +26,18 @@ export function UpcomingPage() {
   const miss = useQueryMiss(dashboard)
 
   if (!user) return null
-  if (!dashboard.data) {
-    if (miss === 'loading') return <ListSkeleton />
+  if (!dashboard.data || dashboard.isPending) {
     if (miss === 'offline') return <OfflineState />
+    if (miss === 'loading' || dashboard.isPending || !dashboard.isError) return <ListSkeleton />
     return <ErrorState error={dashboard.error} onRetry={() => void dashboard.refetch()} />
   }
 
   const dated = dashboard.data.openTasks.filter((task) => task.dueDate)
+  // A cached empty dashboard is not "nothing due" until this visit's fetch finishes.
+  if (dated.length === 0 && !dashboard.isFetchedAfterMount) {
+    if (miss === 'offline' || dashboard.isPaused) return <OfflineState />
+    return <ListSkeleton />
+  }
   const count = dashboard.data.datedOpenCount ?? dated.length
 
   function onToggle(task: OpenTask) {

@@ -37,6 +37,20 @@ export function forgetGet(path: string): void {
   etags.delete(path)
 }
 
+/** Task lists are cached by ETag. A completion that creates the next occurrence must not reuse the previous list. */
+export function forgetTaskLists(): void {
+  for (const key of etags.keys()) {
+    if (
+      key === '/api/dashboard' ||
+      key.startsWith('/api/today') ||
+      key.startsWith('/api/calendar') ||
+      /^\/api\/projects\/[^/]+\/tasks(?:\?|$)/.test(key)
+    ) {
+      etags.delete(key)
+    }
+  }
+}
+
 function rememberGet(path: string, response: Response, body: string) {
   const etag = response.headers.get('etag')
   if (!etag || body.length > 1_000_000) return
@@ -436,8 +450,10 @@ export const httpApi = {
       body: JSON.stringify({ ...input, clientId: input.clientId ?? crypto.randomUUID() }),
     })
   },
-  updateTask(id, input, opts) {
-    return request<Task>(`/api/tasks/${id}`, withMatch({ method: 'PATCH', body: JSON.stringify(input) }, opts))
+  async updateTask(id, input, opts) {
+    const task = await request<Task>(`/api/tasks/${id}`, withMatch({ method: 'PATCH', body: JSON.stringify(input) }, opts))
+    forgetTaskLists()
+    return task
   },
   async deleteTask(id) {
     await request<void>(`/api/tasks/${id}`, { method: 'DELETE' })

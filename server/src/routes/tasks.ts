@@ -71,7 +71,7 @@ export function tasksRouter(): Router {
       await task.save()
       const requestedFinish = input.completed === true || (input.status === 'done' && input.completed !== false)
       const today = task.completedOn && /^\d{4}-\d{2}-\d{2}$/.test(task.completedOn) ? task.completedOn : utcDay()
-      let spawned = false
+      let spawned: Awaited<ReturnType<typeof spawnNextOccurrence>> = null
       if (task.completed && task.recurrence && (justFinished || (requestedFinish && wasCompleted))) {
         spawned = await spawnNextOccurrence(db, task, today)
       }
@@ -96,7 +96,8 @@ export function tasksRouter(): Router {
       }
       if (task.completed) await db.notifications.deleteMany({ taskId: task._id, kind: 'overdue' })
       stampVersion(res, task.__v)
-      res.json(publicTask(task))
+      const body = publicTask(task)
+      res.json(spawned ? { ...body, spawned: publicTask(spawned) } : body)
     }),
   )
 

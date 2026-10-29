@@ -5,6 +5,7 @@ import { api } from '../api/index.ts'
 import { ApiError } from '../api/errors.ts'
 import { boardMove } from '../lib/board.ts'
 import { isConflict } from '../lib/conflict.ts'
+import { insertSpawned, readSpawned, refreshTaskLists } from '../lib/taskLists.ts'
 import { cn } from '../lib/cn.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { useQueryMiss } from '../lib/queryMiss.ts'
@@ -49,6 +50,11 @@ export function BoardPanel({ projectId }: { projectId: string }) {
         )
       }
       return { previous }
+    },
+    onSuccess: async (task) => {
+      const spawned = readSpawned(task)
+      if (spawned) insertSpawned(queryClient, projectId, spawned)
+      await refreshTaskLists(queryClient, projectId)
     },
     onError: (error, input, context) => {
       if (error instanceof ApiError && error.queued) return

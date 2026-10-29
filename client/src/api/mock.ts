@@ -682,6 +682,7 @@ export const mockApi = {
       touchProject(state, item.projectId)
       const justFinished = !wasCompleted && item.completed
       const requestedFinish = input.completed === true || (input.status === 'done' && input.completed !== false)
+      let spawnedTask: StoredTask | null = null
       if (item.completed && item.recurrence && (justFinished || (requestedFinish && wasCompleted))) {
         const today = item.completedOn && /^\d{4}-\d{2}-\d{2}$/.test(item.completedOn) ? item.completedOn : new Date().toISOString().slice(0, 10)
         const spawnKey = `recur:${item.id}:${today}`
@@ -692,7 +693,7 @@ export const mockApi = {
         ) {
           const siblings = state.tasks.filter((task) => task.projectId === item.projectId)
           const timestamp = now()
-          state.tasks.push({
+          const spawned: StoredTask = {
             id: uid('tsk'),
             userId: user.id,
             projectId: item.projectId,
@@ -710,7 +711,9 @@ export const mockApi = {
             status: 'todo',
             recurrence,
             subtasks: (item.subtasks ?? []).map((subtask) => ({ id: crypto.randomUUID(), text: subtask.text, completed: false })),
-          })
+          }
+          state.tasks.push(spawned)
+          spawnedTask = spawned
           pushActivity(state, user.id, item.projectId, 'create', `Created task ${quoteTitle(item.title)}`)
         }
       }
@@ -724,7 +727,8 @@ export const mockApi = {
       if (item.completed) {
         state.notifications = state.notifications.filter((note) => !(note.taskId === item.id && note.kind === 'overdue'))
       }
-      return publicTask(item)
+      const body = publicTask(item)
+      return spawnedTask ? { ...body, spawned: publicTask(spawnedTask) } : body
     })
   },
 

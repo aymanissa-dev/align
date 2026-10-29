@@ -4,6 +4,7 @@ import { ApiError } from '../api/errors.ts'
 import type { DashboardData, OpenTask, Task, TodayData, TodayTask } from '../api/types.ts'
 import { isConflict } from '../lib/conflict.ts'
 import { localISODate } from '../lib/due.ts'
+import { insertSpawned, readSpawned, refreshTaskLists } from '../lib/taskLists.ts'
 import { errorMessage } from '../lib/errorMessage.ts'
 import { useToast } from '../components/toast-context.ts'
 
@@ -148,6 +149,11 @@ export function useToggleTask() {
         return
       }
       if (isConflict(error)) toast(errorMessage(error))
+    },
+    onSuccess: async (saved, target) => {
+      const spawned = readSpawned(saved)
+      if (spawned) insertSpawned(queryClient, target.projectId, spawned)
+      await refreshTaskLists(queryClient, target.projectId)
     },
     onSettled: (_data, _error, target) => {
       void queryClient.invalidateQueries({ queryKey: ['tasks', target.projectId] })

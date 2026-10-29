@@ -18,11 +18,11 @@ function isRecurrence(value: string | null | undefined): value is RecurrenceInte
  * The spawn key is stable for a completion day, so a retried PATCH does not
  * create a second copy.
  */
-export async function spawnNextOccurrence(db: Content, task: TaskDoc, today: string): Promise<boolean> {
-  if (!isRecurrence(task.recurrence) || !task.completed) return false
+export async function spawnNextOccurrence(db: Content, task: TaskDoc, today: string): Promise<TaskDoc | null> {
+  if (!isRecurrence(task.recurrence) || !task.completed) return null
   const spawnKey = `recur:${task._id.toString()}:${task.completedOn ?? today}`
-  const existing = await db.tasks.findOne({ clientId: spawnKey }).select('_id')
-  if (existing) return false
+  const existing = await db.tasks.findOne({ clientId: spawnKey })
+  if (existing) return null
   const dueDate = nextOccurrenceDate(task.dueDate, task.recurrence, today)
   const latest = await db.tasks.findOne({ projectId: task.projectId }).sort({ order: -1 }).select('order')
   const subtasks = (task.subtasks ?? []).flatMap((item) => {
@@ -30,7 +30,7 @@ export async function spawnNextOccurrence(db: Content, task: TaskDoc, today: str
     return [{ id: crypto.randomUUID(), text: item.text, completed: false }]
   })
   try {
-    await db.tasks.create({
+    return await db.tasks.create({
       projectId: task.projectId,
       title: task.title,
       completed: false,
@@ -45,9 +45,8 @@ export async function spawnNextOccurrence(db: Content, task: TaskDoc, today: str
       status: 'todo',
       subtasks,
     })
-    return true
   } catch (error) {
-    if (isDuplicateKey(error)) return false
+    if (isDuplicateKey(error)) return null
     throw error
   }
 }

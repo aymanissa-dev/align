@@ -15,6 +15,7 @@ export const CHANGELOG: readonly ChangelogEntry[] = [
       'Each project has a Board with Todo, Doing, and Done. Drag a card between columns. The task list is still there.',
       'Calendar shows the month of tasks that have a due date. Open a day, then open the task in its project.',
       'Press Ctrl+K or ⌘K to jump around Align, start a project, or add a task in the project you have open.',
+      'Completing a repeating task shows the next one right away. Upcoming waits to load before saying nothing is due.',
     ],
   },
   {
