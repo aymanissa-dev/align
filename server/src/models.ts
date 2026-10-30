@@ -141,6 +141,8 @@ const noteSchema = new Schema(
     projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true },
     title: { type: String, required: true },
     body: { type: String, default: '' },
+    // Source of truth for note ↔ task links. The task side is derived from this list.
+    taskIds: { type: [{ type: Schema.Types.ObjectId, ref: 'Task' }], default: () => [] },
     searchWords: { type: [String] },
     deletedAt: { type: Date, default: null },
     purgeAt: { type: Date, default: null },

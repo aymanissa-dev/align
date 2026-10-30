@@ -35,6 +35,15 @@ export function IconToday({ className }: { className?: string }) {
   )
 }
 
+export function IconUpcoming({ className }: { className?: string }) {
+  return (
+    <Icon className={className}>
+      <path d="M5 7h8M5 12h8M5 17h5" />
+      <path d="M15 12h5M17.5 9.5 20 12l-2.5 2.5" />
+    </Icon>
+  )
+}
+
 export function IconCalendar({ className }: { className?: string }) {
   return (
     <Icon className={className}>

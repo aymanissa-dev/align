@@ -11,6 +11,7 @@ import { errorMessage } from '../lib/errorMessage.ts'
 import { useQueryMiss } from '../lib/queryMiss.ts'
 import { checklistLabel, recurrenceOf, statusOf, subtasksOf } from '../lib/taskFields.ts'
 import { DueBadge, RecurrenceBadge } from './chrome.tsx'
+import { LinkedNoteChips } from './LinkedNotes.tsx'
 import { useToast } from './toast-context.ts'
 import { ErrorState, ListSkeleton, OfflineState } from './ui.tsx'
 
@@ -31,6 +32,10 @@ export function BoardPanel({ projectId }: { projectId: string }) {
   const tasks = useQuery({
     queryKey: ['tasks', projectId],
     queryFn: ({ signal }) => api.listTasks(projectId, { signal }),
+  })
+  const projectNotes = useQuery({
+    queryKey: ['notes', projectId],
+    queryFn: () => api.listProjectNotes(projectId),
   })
   const miss = useQueryMiss(tasks)
   const [dragId, setDragId] = useState<string | null>(null)
@@ -185,6 +190,7 @@ export function BoardPanel({ projectId }: { projectId: string }) {
                       <RecurrenceBadge recurrence={recurrenceOf(task)} />
                       {progress ? <span className="font-mono text-[11px] text-neutral-500">{progress}</span> : null}
                     </div>
+                    <LinkedNoteChips notes={projectNotes.data} taskId={task.id} />
                     <label className="mt-3 block">
                       <span className="sr-only">Column for “{task.title}”</span>
                       <select

@@ -155,6 +155,29 @@ const labelIds = z
   .array(z.string({ invalid_type_error: 'Unknown label.' }), { invalid_type_error: 'Unknown label.' })
   .max(12, 'Too many labels.')
 
+const taskLinkId = z
+  .string({
+    required_error: 'Link a task from this project.',
+    invalid_type_error: 'Link a task from this project.',
+  })
+  .trim()
+  .regex(/^[a-f\d]{24}$/i, 'Link a task from this project.')
+
+const taskIdsSchema = z
+  .array(taskLinkId, { invalid_type_error: 'Linked tasks are invalid.' })
+  .max(40, 'Too many linked tasks.')
+  .superRefine((items, ctx) => {
+    const seen = new Set<string>()
+    for (const item of items) {
+      const key = item.toLowerCase()
+      if (seen.has(key)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Linked tasks must be unique.' })
+        return
+      }
+      seen.add(key)
+    }
+  })
+
 const labelColor = z
   .string({ required_error: 'Choose a color.', invalid_type_error: 'Choose a color.' })
   .trim()
@@ -203,11 +226,13 @@ export const noteCreateSchema = z.object({
     .max(160, 'Title is too long.')
     .optional(),
   body: z.string({ invalid_type_error: 'Note is too long.' }).max(100_000, 'Note is too long.').optional(),
+  taskIds: taskIdsSchema.optional(),
 })
 
 export const notePatchSchema = z.object({
   title: text('Title', 160).optional(),
   body: z.string({ invalid_type_error: 'Note is too long.' }).max(100_000, 'Note is too long.').optional(),
+  taskIds: taskIdsSchema.optional(),
 })
 
 const finite = z.number({ invalid_type_error: 'Whiteboard is invalid.' }).finite()

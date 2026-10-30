@@ -171,6 +171,14 @@ var labelSchema = new Schema(
 );
 labelSchema.index({ userId: 1, name: 1 }, { unique: true });
 labelSchema.index({ workspaceId: 1, name: 1 }, { name: "LabelWorkspace" });
+var subtaskSchema = new Schema(
+  {
+    id: { type: String, required: true },
+    text: { type: String, required: true },
+    completed: { type: Boolean, default: false, required: true }
+  },
+  { _id: false }
+);
 var taskSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
@@ -189,7 +197,10 @@ var taskSchema = new Schema(
     order: { type: Number, required: true },
     // Client-generated id so a retried or replayed create returns the same task.
     clientId: { type: String },
-    searchWords: { type: [String] }
+    searchWords: { type: [String] },
+    status: { type: String, enum: ["todo", "doing", "done"], default: "todo" },
+    recurrence: { type: String, enum: ["daily", "weekly", "monthly", null], default: null },
+    subtasks: { type: [subtaskSchema], default: [] }
   },
   { timestamps: true, optimisticConcurrency: true }
 );
@@ -218,6 +229,7 @@ taskSchema.index({ userId: 1, plannedFor: 1 });
 taskSchema.index({ userId: 1, completedOn: 1 });
 taskSchema.index({ userId: 1, projectId: 1, order: 1, createdAt: 1, _id: 1 });
 taskSchema.index({ userId: 1, completed: 1, dueDate: 1 });
+taskSchema.index({ workspaceId: 1, deletedAt: 1, dueDate: 1 }, { name: "TaskCalendar" });
 taskSchema.index({ userId: 1, title: "text" }, { name: "TaskTextIndex" });
 taskSchema.index({ userId: 1, searchWords: 1 }, { name: "TaskSearchWords" });
 var noteSchema = new Schema(
@@ -227,6 +239,8 @@ var noteSchema = new Schema(
     projectId: { type: Schema.Types.ObjectId, ref: "Project", required: true },
     title: { type: String, required: true },
     body: { type: String, default: "" },
+    // Source of truth for note ↔ task links. The task side is derived from this list.
+    taskIds: { type: [{ type: Schema.Types.ObjectId, ref: "Task" }], default: () => [] },
     searchWords: { type: [String] },
     deletedAt: { type: Date, default: null },
     purgeAt: { type: Date, default: null },
@@ -2232,6 +2246,134 @@ import { Router as Router3 } from "express";
 
 // src/data/content.ts
 import { Types as Types4 } from "mongoose";
+
+// src/serialize.ts
+function docId(doc) {
+  return doc.id || doc._id.toString();
+}
+function versionOf(doc) {
+  return typeof doc.__v === "number" ? doc.__v : 0;
+}
+function publicUser(user) {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    accent: user.accent || "#171717",
+    totpEnabled: Boolean(user.totpEnabledAt),
+    createdAt: user.createdAt.toISOString()
+  };
+}
+function publicProject(project) {
+  return {
+    id: docId(project),
+    name: project.name,
+    description: project.description,
+    status: project.status,
+    version: versionOf(project),
+    createdAt: project.createdAt.toISOString(),
+    updatedAt: project.updatedAt.toISOString()
+  };
+}
+function publicLabel(label) {
+  return {
+    id: docId(label),
+    name: label.name,
+    color: label.color,
+    version: versionOf(label),
+    createdAt: label.createdAt.toISOString()
+  };
+}
+var TASK_FIELDS = "projectId title completed dueDate priority labelIds plannedFor completedOn order status recurrence subtasks createdAt updatedAt __v";
+var NOTE_FIELDS = "projectId title body taskIds createdAt updatedAt __v";
+function taskIdStrings(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((id) => id != null).map((id) => String(id));
+}
+function publicSubtasks(value) {
+  if (!Array.isArray(value)) return [];
+  const items = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const row = item;
+    if (typeof row.id !== "string" || typeof row.text !== "string") continue;
+    items.push({ id: row.id, text: row.text, completed: row.completed === true });
+  }
+  return items;
+}
+function publicRecurrence(value) {
+  if (value === "daily" || value === "weekly" || value === "monthly") return value;
+  return null;
+}
+function publicStatus(completed, value) {
+  if (completed) return "done";
+  if (value === "doing") return "doing";
+  return "todo";
+}
+function publicTask(task) {
+  return {
+    id: docId(task),
+    projectId: task.projectId.toString(),
+    title: task.title,
+    completed: task.completed,
+    dueDate: task.dueDate,
+    priority: task.priority,
+    labelIds: (task.labelIds ?? []).map((id) => id.toString()),
+    plannedFor: task.plannedFor ?? null,
+    completedOn: task.completedOn ?? null,
+    order: task.order,
+    status: publicStatus(task.completed, task.status),
+    recurrence: publicRecurrence(task.recurrence),
+    subtasks: publicSubtasks(task.subtasks),
+    version: versionOf(task),
+    createdAt: task.createdAt.toISOString(),
+    updatedAt: task.updatedAt.toISOString()
+  };
+}
+function publicActivity(item) {
+  return {
+    id: docId(item),
+    projectId: item.projectId ? item.projectId.toString() : "",
+    type: item.type,
+    summary: item.summary,
+    createdAt: item.createdAt.toISOString()
+  };
+}
+function publicNotification(item) {
+  return {
+    id: docId(item),
+    projectId: item.projectId ? item.projectId.toString() : "",
+    taskId: item.taskId ? item.taskId.toString() : "",
+    kind: item.kind,
+    title: item.title,
+    projectName: item.projectName,
+    dueDate: item.dueDate,
+    read: item.read,
+    createdAt: item.createdAt.toISOString()
+  };
+}
+function publicNote(note, links) {
+  const taskIds = taskIdStrings(note.taskIds);
+  const projectId = note.projectId.toString();
+  const linkedTasks = taskIds.flatMap((id) => {
+    const task = links?.get(id);
+    if (!task || task.projectId !== projectId) return [];
+    return [{ id, title: task.title, trashed: task.trashed }];
+  });
+  return {
+    id: docId(note),
+    projectId,
+    title: note.title,
+    body: note.body,
+    taskIds,
+    linkedTasks,
+    version: versionOf(note),
+    createdAt: note.createdAt.toISOString(),
+    updatedAt: note.updatedAt.toISOString()
+  };
+}
+
+// src/data/content.ts
 var TRASH_MS = 30 * 24 * 60 * 60 * 1e3;
 function objectId(id) {
   if (!/^[a-f\d]{24}$/i.test(id)) return null;
@@ -2361,6 +2503,57 @@ function bind(tenant) {
       const found = await Label.find({ workspaceId, _id: { $in: objectIds } }).select("_id");
       if (found.length !== objectIds.length) throw new HttpError(400, "Unknown label.");
       return objectIds.filter((id) => id !== null);
+    },
+    /**
+     * Note.taskIds is the source of truth. Only tasks in this workspace and
+     * project can be linked, including tasks currently in Trash. An id from
+     * another account does not match. A previously linked task that was purged
+     * is dropped so the rest of the save can succeed.
+     */
+    async assignNoteTasks(projectId, requested, previous) {
+      const unique = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const id of requested) {
+        const key = id.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        unique.push(id);
+      }
+      const objectIds = unique.map((id) => objectId(id));
+      if (objectIds.some((id) => id === null)) throw new HttpError(400, "Link a task from this project.");
+      const validIds = objectIds.filter((id) => id !== null);
+      const found = validIds.length ? await Task.find({ workspaceId, projectId, _id: { $in: validIds } }).select("_id") : [];
+      const foundSet = new Set(found.map((task) => task._id.toString()));
+      const previousSet = new Set(previous.map((id) => id.toString().toLowerCase()));
+      const rejected = unique.filter((id) => !foundSet.has(id.toLowerCase()) && !previousSet.has(id.toLowerCase()));
+      if (rejected.length > 0) throw new HttpError(400, "Link a task from this project.");
+      return unique.flatMap((id) => {
+        if (!foundSet.has(id.toLowerCase())) return [];
+        const parsed = objectId(id);
+        return parsed ? [parsed] : [];
+      });
+    },
+    async presentNotes(notes) {
+      const ids = /* @__PURE__ */ new Set();
+      for (const note of notes) {
+        for (const id of note.taskIds ?? []) {
+          const key = id.toString();
+          if (objectId(key)) ids.add(key);
+        }
+      }
+      const objectIds = [...ids].map((id) => objectId(id)).filter((id) => id !== null);
+      const tasks = objectIds.length ? await Task.find({ workspaceId, _id: { $in: objectIds } }).select("title deletedAt projectId").lean() : [];
+      const links = new Map(
+        tasks.map((task) => [
+          task._id.toString(),
+          {
+            title: task.title,
+            trashed: task.deletedAt != null,
+            projectId: task.projectId.toString()
+          }
+        ])
+      );
+      return notes.map((note) => publicNote(note, links));
     },
     async touchProject(projectId) {
       await Project.updateOne({ _id: projectId, workspaceId }, { $currentDate: { updatedAt: true } });
@@ -2585,14 +2778,14 @@ async function dashboardPayload(tenant) {
     db.tasks.aggregate([
       { $group: { _id: { projectId: "$projectId", completed: "$completed" }, n: { $sum: 1 } } }
     ]),
-    db.tasks.find({ completed: false, dueDate: { $gte: "0000-01-01" } }).select("title dueDate priority projectId").sort({ dueDate: 1, title: 1 }).limit(datedLimit).lean(),
-    db.tasks.find({ completed: false, dueDate: null }).select("title dueDate priority projectId").sort({ title: 1 }).limit(OPEN_LIMIT).lean(),
+    db.tasks.find({ completed: false, dueDate: { $gte: "0000-01-01" } }).select("title dueDate priority projectId recurrence").sort({ dueDate: 1, title: 1 }).limit(datedLimit).lean(),
+    db.tasks.find({ completed: false, dueDate: null }).select("title dueDate priority projectId recurrence").sort({ title: 1 }).limit(OPEN_LIMIT).lean(),
     db.tasks.find({ completed: false, dueDate: { $gte: "0000-01-01" } }).select("projectId").lean()
   ]);
   const activeIds = projects.map((project) => project._id);
   const active = new Set(activeIds.map((id) => id.toString()));
-  const datedRows = dated.length < datedLimit ? dated.filter((task) => active.has(task.projectId.toString())) : await db.tasks.find({ completed: false, projectId: { $in: activeIds }, dueDate: { $gte: "0000-01-01" } }).select("title dueDate priority projectId").sort({ dueDate: 1, title: 1 }).limit(datedLimit).lean();
-  const undatedRows = undated.length < OPEN_LIMIT ? undated.filter((task) => active.has(task.projectId.toString())) : await db.tasks.find({ completed: false, projectId: { $in: activeIds }, dueDate: null }).select("title dueDate priority projectId").sort({ title: 1 }).limit(OPEN_LIMIT).lean();
+  const datedRows = dated.length < datedLimit ? dated.filter((task) => active.has(task.projectId.toString())) : await db.tasks.find({ completed: false, projectId: { $in: activeIds }, dueDate: { $gte: "0000-01-01" } }).select("title dueDate priority projectId recurrence").sort({ dueDate: 1, title: 1 }).limit(datedLimit).lean();
+  const undatedRows = undated.length < OPEN_LIMIT ? undated.filter((task) => active.has(task.projectId.toString())) : await db.tasks.find({ completed: false, projectId: { $in: activeIds }, dueDate: null }).select("title dueDate priority projectId recurrence").sort({ title: 1 }).limit(OPEN_LIMIT).lean();
   const datedOpenCount = datedIds.filter((task) => active.has(task.projectId.toString())).length;
   const names = new Map(projects.map((project) => [project._id.toString(), project.name]));
   const tally = /* @__PURE__ */ new Map();
@@ -2619,7 +2812,8 @@ async function dashboardPayload(tenant) {
         title: task.title,
         dueDate: task.dueDate,
         priority: task.priority,
-        completed: false
+        completed: false,
+        recurrence: task.recurrence === "daily" || task.recurrence === "weekly" || task.recurrence === "monthly" ? task.recurrence : null
       }
     ];
   });
@@ -3005,94 +3199,6 @@ function dummyPasswordHash() {
   return dummyHash;
 }
 
-// src/serialize.ts
-function docId(doc) {
-  return doc.id || doc._id.toString();
-}
-function versionOf(doc) {
-  return typeof doc.__v === "number" ? doc.__v : 0;
-}
-function publicUser(user) {
-  return {
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    accent: user.accent || "#171717",
-    totpEnabled: Boolean(user.totpEnabledAt),
-    createdAt: user.createdAt.toISOString()
-  };
-}
-function publicProject(project) {
-  return {
-    id: docId(project),
-    name: project.name,
-    description: project.description,
-    status: project.status,
-    version: versionOf(project),
-    createdAt: project.createdAt.toISOString(),
-    updatedAt: project.updatedAt.toISOString()
-  };
-}
-function publicLabel(label) {
-  return {
-    id: docId(label),
-    name: label.name,
-    color: label.color,
-    version: versionOf(label),
-    createdAt: label.createdAt.toISOString()
-  };
-}
-function publicTask(task) {
-  return {
-    id: docId(task),
-    projectId: task.projectId.toString(),
-    title: task.title,
-    completed: task.completed,
-    dueDate: task.dueDate,
-    priority: task.priority,
-    labelIds: (task.labelIds ?? []).map((id) => id.toString()),
-    plannedFor: task.plannedFor ?? null,
-    completedOn: task.completedOn ?? null,
-    order: task.order,
-    version: versionOf(task),
-    createdAt: task.createdAt.toISOString(),
-    updatedAt: task.updatedAt.toISOString()
-  };
-}
-function publicActivity(item) {
-  return {
-    id: docId(item),
-    projectId: item.projectId ? item.projectId.toString() : "",
-    type: item.type,
-    summary: item.summary,
-    createdAt: item.createdAt.toISOString()
-  };
-}
-function publicNotification(item) {
-  return {
-    id: docId(item),
-    projectId: item.projectId ? item.projectId.toString() : "",
-    taskId: item.taskId ? item.taskId.toString() : "",
-    kind: item.kind,
-    title: item.title,
-    projectName: item.projectName,
-    dueDate: item.dueDate,
-    read: item.read,
-    createdAt: item.createdAt.toISOString()
-  };
-}
-function publicNote(note) {
-  return {
-    id: docId(note),
-    projectId: note.projectId.toString(),
-    title: note.title,
-    body: note.body,
-    version: versionOf(note),
-    createdAt: note.createdAt.toISOString(),
-    updatedAt: note.updatedAt.toISOString()
-  };
-}
-
 // ../shared/schemas.ts
 import { z } from "zod";
 
@@ -3211,10 +3317,51 @@ var projectPatchSchema = z.object({
   description: description.optional()
 });
 var priorities = ["low", "medium", "high", "urgent"];
+var recurrences = ["daily", "weekly", "monthly"];
+var taskStatuses = ["todo", "doing", "done"];
 var priority = z.enum(priorities, {
   errorMap: () => ({ message: "Priority must be low, medium, high, or urgent." })
 });
+var recurrence = z.union([
+  z.enum(recurrences, {
+    errorMap: () => ({ message: "Repeat must be daily, weekly, or monthly." })
+  }),
+  z.null()
+]);
+var taskStatus = z.enum(taskStatuses, {
+  errorMap: () => ({ message: "Status must be todo, doing, or done." })
+});
+var subtaskSchema2 = z.object({
+  id: z.string({ required_error: "Checklist is invalid.", invalid_type_error: "Checklist is invalid." }).trim().min(1, "Checklist is invalid.").max(40, "Checklist is invalid.").regex(/^[A-Za-z0-9_-]+$/, "Checklist is invalid."),
+  text: z.string({ required_error: "Checklist text is required.", invalid_type_error: "Checklist text is required." }).trim().min(1, "Checklist text is required.").max(200, "Checklist text is too long."),
+  completed: z.boolean({ invalid_type_error: "Checklist is invalid." })
+});
+var subtasksSchema = z.array(subtaskSchema2, { invalid_type_error: "Checklist is invalid." }).max(40, "Too many checklist items.").superRefine((items, ctx) => {
+  const seen = /* @__PURE__ */ new Set();
+  for (const item of items) {
+    if (seen.has(item.id)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Checklist items must be unique." });
+      return;
+    }
+    seen.add(item.id);
+  }
+});
 var labelIds = z.array(z.string({ invalid_type_error: "Unknown label." }), { invalid_type_error: "Unknown label." }).max(12, "Too many labels.");
+var taskLinkId = z.string({
+  required_error: "Link a task from this project.",
+  invalid_type_error: "Link a task from this project."
+}).trim().regex(/^[a-f\d]{24}$/i, "Link a task from this project.");
+var taskIdsSchema = z.array(taskLinkId, { invalid_type_error: "Linked tasks are invalid." }).max(40, "Too many linked tasks.").superRefine((items, ctx) => {
+  const seen = /* @__PURE__ */ new Set();
+  for (const item of items) {
+    const key = item.toLowerCase();
+    if (seen.has(key)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Linked tasks must be unique." });
+      return;
+    }
+    seen.add(key);
+  }
+});
 var labelColor = z.string({ required_error: "Choose a color.", invalid_type_error: "Choose a color." }).trim().regex(/^#[0-9a-fA-F]{6}$/, "Choose a color.");
 var taskCreateSchema = z.object({
   title: text("Task title", 200),
@@ -3222,7 +3369,10 @@ var taskCreateSchema = z.object({
   priority: priority.optional(),
   labelIds: labelIds.optional(),
   plannedFor: dueDate.optional(),
-  clientId: z.string().uuid("clientId must be a uuid.").optional()
+  clientId: z.string().uuid("clientId must be a uuid.").optional(),
+  recurrence: recurrence.optional(),
+  status: taskStatus.optional(),
+  subtasks: subtasksSchema.optional()
 });
 var taskPatchSchema = z.object({
   title: text("Task title", 200).optional(),
@@ -3232,7 +3382,10 @@ var taskPatchSchema = z.object({
   labelIds: labelIds.optional(),
   plannedFor: dueDate.optional(),
   completedOn: dueDate.optional(),
-  order: z.number({ invalid_type_error: "Order must be a number." }).finite("Order must be a number.").optional()
+  order: z.number({ invalid_type_error: "Order must be a number." }).finite("Order must be a number.").optional(),
+  recurrence: recurrence.optional(),
+  status: taskStatus.optional(),
+  subtasks: subtasksSchema.optional()
 });
 var labelCreateSchema = z.object({
   name: text("Label name", 40),
@@ -3244,11 +3397,13 @@ var labelPatchSchema = z.object({
 });
 var noteCreateSchema = z.object({
   title: z.string({ invalid_type_error: "Title is required." }).trim().max(160, "Title is too long.").optional(),
-  body: z.string({ invalid_type_error: "Note is too long." }).max(1e5, "Note is too long.").optional()
+  body: z.string({ invalid_type_error: "Note is too long." }).max(1e5, "Note is too long.").optional(),
+  taskIds: taskIdsSchema.optional()
 });
 var notePatchSchema = z.object({
   title: text("Title", 160).optional(),
-  body: z.string({ invalid_type_error: "Note is too long." }).max(1e5, "Note is too long.").optional()
+  body: z.string({ invalid_type_error: "Note is too long." }).max(1e5, "Note is too long.").optional(),
+  taskIds: taskIdsSchema.optional()
 });
 var finite = z.number({ invalid_type_error: "Whiteboard is invalid." }).finite();
 var hex = z.string().regex(/^#[0-9a-fA-F]{6}$/, "Whiteboard is invalid.");
@@ -4346,8 +4501,90 @@ function authRouter(limiter) {
   return router;
 }
 
-// src/routes/labels.ts
+// src/routes/calendar.ts
 import { Router as Router4 } from "express";
+
+// ../shared/dates.ts
+function shiftISODate(iso, days) {
+  const [year, month, day] = iso.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+function daysBetween(from, to) {
+  const [fromYear, fromMonth, fromDay] = from.split("-").map(Number);
+  const [toYear, toMonth, toDay] = to.split("-").map(Number);
+  const start = Date.UTC(fromYear, fromMonth - 1, fromDay);
+  const end = Date.UTC(toYear, toMonth - 1, toDay);
+  return Math.round((end - start) / 864e5);
+}
+function addMonths(iso, months) {
+  const [year, month, day] = iso.split("-").map(Number);
+  const index = month - 1 + months;
+  const nextYear = year + Math.floor(index / 12);
+  const nextMonth = index % 12;
+  const last = new Date(Date.UTC(nextYear, nextMonth + 1, 0)).getUTCDate();
+  const nextDay = Math.min(day, last);
+  return `${String(nextYear).padStart(4, "0")}-${String(nextMonth + 1).padStart(2, "0")}-${String(nextDay).padStart(2, "0")}`;
+}
+function nextOccurrenceDate(dueDate2, recurrence2, today) {
+  const base = dueDate2 && /^\d{4}-\d{2}-\d{2}$/.test(dueDate2) ? dueDate2 : today;
+  if (recurrence2 === "monthly") {
+    let next = addMonths(base, 1);
+    for (let i = 0; i < 2400 && next <= today; i += 1) next = addMonths(next, 1);
+    return next;
+  }
+  const step = recurrence2 === "daily" ? 1 : 7;
+  const first = shiftISODate(base, step);
+  if (first > today) return first;
+  const jumps = Math.floor(daysBetween(first, today) / step) + 1;
+  return shiftISODate(first, jumps * step);
+}
+
+// src/routes/calendar.ts
+var MAX_SPAN = 62;
+function calendarRouter() {
+  const router = Router4();
+  router.use(requireAuth);
+  router.get(
+    "/",
+    asyncHandler(async (req, res) => {
+      const from = typeof req.query.from === "string" ? normalizeDueDate(req.query.from) : null;
+      const to = typeof req.query.to === "string" ? normalizeDueDate(req.query.to) : null;
+      if (!from || !to || from > to) throw new HttpError(400, "Use a valid date range.");
+      if (daysBetween(from, to) > MAX_SPAN) throw new HttpError(400, "Choose a shorter range.");
+      const db = bind(currentTenant(req));
+      const [tasks, projects] = await Promise.all([
+        db.tasks.find({ dueDate: { $gte: from, $lte: to } }).select(TASK_FIELDS).sort({ dueDate: 1, order: 1, createdAt: 1 }).lean(),
+        db.projects.find().select("name").lean()
+      ]);
+      const names = new Map(projects.map((project) => [project._id.toString(), project.name]));
+      res.json(
+        tasks.flatMap((task) => {
+          const projectName = names.get(task.projectId.toString());
+          if (!projectName || !task.dueDate) return [];
+          return [
+            {
+              id: task._id.toString(),
+              projectId: task.projectId.toString(),
+              projectName,
+              title: task.title,
+              completed: task.completed,
+              dueDate: task.dueDate,
+              priority: task.priority,
+              status: publicStatus(task.completed, task.status),
+              recurrence: publicRecurrence(task.recurrence)
+            }
+          ];
+        })
+      );
+    })
+  );
+  return router;
+}
+
+// src/routes/labels.ts
+import { Router as Router5 } from "express";
 
 // src/activity.ts
 function quoteTitle(title) {
@@ -4387,7 +4624,7 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function labelsRouter() {
-  const router = Router4();
+  const router = Router5();
   router.use(requireAuth, requireWriter);
   router.get(
     "/",
@@ -4468,25 +4705,27 @@ function labelsRouter() {
 }
 
 // src/routes/notes.ts
-import { Router as Router5 } from "express";
+import { Router as Router6 } from "express";
 function notesRouter() {
-  const router = Router5();
+  const router = Router6();
   router.use(requireAuth, requireWriter);
   router.get(
     "/",
     asyncHandler(async (req, res) => {
       const db = bind(currentTenant(req));
       const projectIds = await db.activeProjectIds();
-      const notes = await db.notes.find({ projectId: { $in: projectIds } }).select("projectId title body createdAt updatedAt __v").sort({ updatedAt: -1 }).lean();
-      res.json(notes.map(publicNote));
+      const notes = await db.notes.find({ projectId: { $in: projectIds } }).select(NOTE_FIELDS).sort({ updatedAt: -1 }).lean();
+      res.json(await db.presentNotes(notes));
     })
   );
   router.get(
     "/:id",
     asyncHandler(async (req, res) => {
-      const note = await bind(currentTenant(req)).requireNote(req.params.id);
+      const db = bind(currentTenant(req));
+      const note = await db.requireNote(req.params.id);
       stampVersion(res, note.__v);
-      res.json(publicNote(note));
+      const [body] = await db.presentNotes([note]);
+      res.json(body);
     })
   );
   router.patch(
@@ -4499,6 +4738,10 @@ function notesRouter() {
       const input = parseBody(notePatchSchema, req.body);
       if (input.title !== void 0) note.title = input.title;
       if (input.body !== void 0) note.body = input.body;
+      if (input.taskIds !== void 0) {
+        note.taskIds = await db.assignNoteTasks(note.projectId, input.taskIds, note.taskIds ?? []);
+        note.markModified("taskIds");
+      }
       await note.save();
       await db.touchProject(note.projectId);
       await recordActivity({
@@ -4509,7 +4752,8 @@ function notesRouter() {
         summary: `Updated note ${quoteTitle(note.title)}`
       });
       stampVersion(res, note.__v);
-      res.json(publicNote(note));
+      const [body] = await db.presentNotes([note]);
+      res.json(body);
     })
   );
   router.delete(
@@ -4536,16 +4780,8 @@ function notesRouter() {
 }
 
 // src/routes/notifications.ts
-import { Router as Router6 } from "express";
+import { Router as Router7 } from "express";
 import { Types as Types9 } from "mongoose";
-
-// src/dates.ts
-function shiftISODate(iso, days) {
-  const [year, month, day] = iso.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
 
 // src/page.ts
 import { Types as Types8 } from "mongoose";
@@ -4679,7 +4915,7 @@ function present(row) {
   };
 }
 function notificationsRouter() {
-  const router = Router6();
+  const router = Router7();
   router.use(requireAuth, requireWriter);
   router.get(
     "/",
@@ -4799,12 +5035,12 @@ function notificationsRouter() {
 }
 
 // src/routes/projects.ts
-import { Router as Router7 } from "express";
+import { Router as Router8 } from "express";
 function isDuplicateKey(error) {
   return typeof error === "object" && error !== null && "code" in error && error.code === 11e3;
 }
 function projectsRouter() {
-  const router = Router7();
+  const router = Router8();
   router.use(requireAuth, requireWriter);
   router.get(
     "/",
@@ -4853,7 +5089,7 @@ function projectsRouter() {
       const limit = pageLimit(req.query.limit);
       const cursor = afterTaskCursor(req.query.cursor);
       const base = { projectId: project._id };
-      const tasks = await db.tasks.find(cursor ? { $and: [base, afterTaskFilter(cursor)] } : base).select("projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt __v").sort({ order: 1, createdAt: 1, _id: 1 }).limit(limit + 1).lean();
+      const tasks = await db.tasks.find(cursor ? { $and: [base, afterTaskFilter(cursor)] } : base).select(TASK_FIELDS).sort({ order: 1, createdAt: 1, _id: 1 }).limit(limit + 1).lean();
       const next = nextTaskCursor(tasks, limit);
       if (next) res.set("X-Next-Cursor", next);
       res.json(tasks.slice(0, limit).map(publicTask));
@@ -4876,16 +5112,21 @@ function projectsRouter() {
       const dueDate2 = normalizeDueDate(input.dueDate) ?? null;
       const labelIds2 = await db.ownedLabelIds(input.labelIds ?? []);
       const latest = await db.tasks.findOne({ projectId: project._id }).sort({ order: -1 }).select("order");
+      const status = input.status === "doing" || input.status === "done" ? input.status : "todo";
       try {
         const task = await db.tasks.create({
           projectId: project._id,
           title: input.title,
-          completed: false,
+          completed: status === "done",
           dueDate: dueDate2,
           priority: input.priority ?? "medium",
           labelIds: labelIds2,
           plannedFor: normalizeDueDate(input.plannedFor) ?? null,
+          completedOn: status === "done" ? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10) : null,
           order: (latest?.order ?? 0) + 1,
+          status,
+          recurrence: input.recurrence ?? null,
+          subtasks: input.subtasks ?? [],
           ...input.clientId ? { clientId: input.clientId } : {}
         });
         const side = Promise.all([
@@ -4919,8 +5160,8 @@ function projectsRouter() {
     asyncHandler(async (req, res) => {
       const db = bind(currentTenant(req));
       const project = await db.requireProject(req.params.id);
-      const notes = await db.notes.find({ projectId: project._id }).select("projectId title body createdAt updatedAt __v").sort({ updatedAt: -1 }).lean();
-      res.json(notes.map(publicNote));
+      const notes = await db.notes.find({ projectId: project._id }).select(NOTE_FIELDS).sort({ updatedAt: -1 }).lean();
+      res.json(await db.presentNotes(notes));
     })
   );
   router.post(
@@ -4930,10 +5171,12 @@ function projectsRouter() {
       const db = bind(tenant);
       const project = await db.requireProject(req.params.id);
       const input = parseBody(noteCreateSchema, req.body);
+      const taskIds = input.taskIds ? await db.assignNoteTasks(project._id, input.taskIds, []) : [];
       const note = await db.notes.create({
         projectId: project._id,
         title: input.title ? input.title : "Untitled",
-        body: input.body ?? ""
+        body: input.body ?? "",
+        taskIds
       });
       await db.touchProject(project._id);
       await recordActivity({
@@ -4944,7 +5187,8 @@ function projectsRouter() {
         summary: `Created note ${quoteTitle(note.title)}`
       });
       stampVersion(res, note.__v);
-      res.status(201).json(publicNote(note));
+      const [body] = await db.presentNotes([note]);
+      res.status(201).json(body);
     })
   );
   router.get(
@@ -5044,7 +5288,7 @@ function projectsRouter() {
 }
 
 // src/routes/search.ts
-import { Router as Router8 } from "express";
+import { Router as Router9 } from "express";
 var RESULT_LIMIT = 20;
 var CANDIDATE_LIMIT = 60;
 var TIME_MS = 800;
@@ -5064,7 +5308,7 @@ function byScore(items) {
   return [...items].sort((a, b) => b.score - a.score).slice(0, RESULT_LIMIT);
 }
 function searchRouter() {
-  const router = Router8();
+  const router = Router9();
   router.use(requireAuth);
   router.get(
     "/",
@@ -5146,9 +5390,54 @@ function searchRouter() {
 }
 
 // src/routes/tasks.ts
-import { Router as Router9 } from "express";
+import { Router as Router10 } from "express";
+
+// src/recur.ts
+function isDuplicateKey2(error) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === 11e3;
+}
+function isRecurrence(value) {
+  return value === "daily" || value === "weekly" || value === "monthly";
+}
+async function spawnNextOccurrence(db, task, today) {
+  if (!isRecurrence(task.recurrence) || !task.completed) return null;
+  const spawnKey = `recur:${task._id.toString()}:${task.completedOn ?? today}`;
+  const existing = await db.tasks.findOne({ clientId: spawnKey });
+  if (existing) return null;
+  const dueDate2 = nextOccurrenceDate(task.dueDate, task.recurrence, today);
+  const latest = await db.tasks.findOne({ projectId: task.projectId }).sort({ order: -1 }).select("order");
+  const subtasks = (task.subtasks ?? []).flatMap((item) => {
+    if (!item.text) return [];
+    return [{ id: crypto.randomUUID(), text: item.text, completed: false }];
+  });
+  try {
+    return await db.tasks.create({
+      projectId: task.projectId,
+      title: task.title,
+      completed: false,
+      dueDate: dueDate2,
+      priority: task.priority,
+      labelIds: task.labelIds,
+      plannedFor: null,
+      completedOn: null,
+      order: (latest?.order ?? task.order) + 1,
+      clientId: spawnKey,
+      recurrence: task.recurrence,
+      status: "todo",
+      subtasks
+    });
+  } catch (error) {
+    if (isDuplicateKey2(error)) return null;
+    throw error;
+  }
+}
+
+// src/routes/tasks.ts
+function utcDay() {
+  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+}
 function tasksRouter() {
-  const router = Router9();
+  const router = Router10();
   router.use(requireAuth, requireWriter);
   router.patch(
     "/:id",
@@ -5159,36 +5448,66 @@ function tasksRouter() {
       assertVersion(task.__v, expectedVersion(req));
       const input = parseBody(taskPatchSchema, req.body);
       const wasCompleted = task.completed;
-      const planningOnly = input.plannedFor !== void 0 && input.title === void 0 && input.completed === void 0 && input.dueDate === void 0 && input.priority === void 0 && input.labelIds === void 0 && input.order === void 0 && input.completedOn === void 0;
+      const planningOnly = input.plannedFor !== void 0 && input.title === void 0 && input.completed === void 0 && input.dueDate === void 0 && input.priority === void 0 && input.labelIds === void 0 && input.order === void 0 && input.completedOn === void 0 && input.recurrence === void 0 && input.status === void 0 && input.subtasks === void 0;
       if (input.title !== void 0) task.title = input.title;
-      if (input.completed !== void 0) {
-        task.completed = input.completed;
-        if (input.completed) {
-          task.completedOn = normalizeDueDate(input.completedOn) ?? task.completedOn ?? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-        } else {
-          task.completedOn = null;
-        }
-      }
       if (input.dueDate !== void 0) task.dueDate = normalizeDueDate(input.dueDate) ?? null;
       if (input.priority !== void 0) task.priority = input.priority;
       if (input.labelIds !== void 0) task.labelIds = await db.ownedLabelIds(input.labelIds);
       if (input.plannedFor !== void 0) task.plannedFor = normalizeDueDate(input.plannedFor) ?? null;
       if (input.order !== void 0) task.order = input.order;
+      if (input.recurrence !== void 0) task.recurrence = input.recurrence;
+      if (input.subtasks !== void 0) task.set("subtasks", input.subtasks);
+      if (input.status !== void 0 && input.completed === void 0) {
+        task.status = input.status;
+        task.completed = input.status === "done";
+        if (task.completed) {
+          task.completedOn = normalizeDueDate(input.completedOn) ?? task.completedOn ?? utcDay();
+        } else {
+          task.completedOn = null;
+        }
+      } else if (input.completed !== void 0) {
+        task.completed = input.completed;
+        if (input.completed) {
+          task.completedOn = normalizeDueDate(input.completedOn) ?? task.completedOn ?? utcDay();
+          task.status = input.status && input.status !== "done" ? input.status : "done";
+        } else {
+          task.completedOn = null;
+          task.status = input.status === "doing" ? "doing" : "todo";
+        }
+      } else if (input.status !== void 0) {
+        task.status = input.status;
+      }
+      const justFinished = !wasCompleted && task.completed;
       await task.save();
+      const requestedFinish = input.completed === true || input.status === "done" && input.completed !== false;
+      const today = task.completedOn && /^\d{4}-\d{2}-\d{2}$/.test(task.completedOn) ? task.completedOn : utcDay();
+      let spawned = null;
+      if (task.completed && task.recurrence && (justFinished || requestedFinish && wasCompleted)) {
+        spawned = await spawnNextOccurrence(db, task, today);
+      }
       await db.touchProject(task.projectId);
-      const finished = !wasCompleted && task.completed;
       if (!planningOnly) {
         await recordActivity({
           userId: tenant.userId,
           workspaceId: tenant.workspaceId,
           projectId: task.projectId,
-          type: finished ? "complete" : "update",
-          summary: finished ? `Completed task ${quoteTitle(task.title)}` : `Updated task ${quoteTitle(task.title)}`
+          type: justFinished ? "complete" : "update",
+          summary: justFinished ? `Completed task ${quoteTitle(task.title)}` : `Updated task ${quoteTitle(task.title)}`
+        });
+      }
+      if (spawned) {
+        await recordActivity({
+          userId: tenant.userId,
+          workspaceId: tenant.workspaceId,
+          projectId: task.projectId,
+          type: "create",
+          summary: `Created task ${quoteTitle(task.title)}`
         });
       }
       if (task.completed) await db.notifications.deleteMany({ taskId: task._id, kind: "overdue" });
       stampVersion(res, task.__v);
-      res.json(publicTask(task));
+      const body = publicTask(task);
+      res.json(spawned ? { ...body, spawned: publicTask(spawned) } : body);
     })
   );
   router.delete(
@@ -5216,28 +5535,12 @@ function tasksRouter() {
 }
 
 // src/routes/today.ts
-import { Router as Router10 } from "express";
-var FIELDS = "projectId title completed dueDate priority labelIds plannedFor completedOn order createdAt updatedAt __v";
+import { Router as Router11 } from "express";
 function present2(task, projectName) {
-  return {
-    id: task._id.toString(),
-    projectId: task.projectId.toString(),
-    projectName,
-    title: task.title,
-    completed: task.completed,
-    dueDate: task.dueDate,
-    priority: task.priority,
-    labelIds: (task.labelIds ?? []).map((id) => id.toString()),
-    plannedFor: task.plannedFor,
-    completedOn: task.completedOn,
-    order: task.order,
-    version: typeof task.__v === "number" ? task.__v : 0,
-    createdAt: task.createdAt.toISOString(),
-    updatedAt: task.updatedAt.toISOString()
-  };
+  return { ...publicTask(task), projectName };
 }
 function todayRouter() {
-  const router = Router10();
+  const router = Router11();
   router.use(requireAuth);
   router.get(
     "/",
@@ -5246,9 +5549,9 @@ function todayRouter() {
       if (!date) throw new HttpError(400, "Use a valid date.");
       const db = bind(currentTenant(req));
       const [open, plannedDone, finishedOn, projects] = await Promise.all([
-        db.tasks.find({ completed: false }).select(FIELDS).lean(),
-        db.tasks.find({ completed: true, plannedFor: date }).select(FIELDS).lean(),
-        db.tasks.find({ completed: true, completedOn: date }).select(FIELDS).lean(),
+        db.tasks.find({ completed: false }).select(TASK_FIELDS).lean(),
+        db.tasks.find({ completed: true, plannedFor: date }).select(TASK_FIELDS).lean(),
+        db.tasks.find({ completed: true, completedOn: date }).select(TASK_FIELDS).lean(),
         db.projects.find({ status: "active" }).select("name").lean()
       ]);
       const names = new Map(projects.map((project) => [project._id.toString(), project.name]));
@@ -5283,9 +5586,9 @@ function todayRouter() {
 }
 
 // src/routes/trash.ts
-import { Router as Router11 } from "express";
+import { Router as Router12 } from "express";
 function trashRouter() {
-  const router = Router11();
+  const router = Router12();
   router.use(requireAuth, requireWriter);
   router.get(
     "/",
@@ -5368,9 +5671,9 @@ function trashRouter() {
 }
 
 // src/routes/workspaces.ts
-import { Router as Router12 } from "express";
+import { Router as Router13 } from "express";
 function workspacesRouter() {
-  const router = Router12();
+  const router = Router13();
   router.use(requireAuth);
   router.get(
     "/",
@@ -5520,6 +5823,7 @@ function createApp(options = {}) {
   app2.use("/api/notifications", notificationsRouter());
   app2.use("/api/dashboard", dashboardRouter());
   app2.use("/api/today", todayRouter());
+  app2.use("/api/calendar", calendarRouter());
   app2.use("/api/search", searchRouter());
   app2.use((_req, res) => {
     res.status(404).json({ error: "Not found." });

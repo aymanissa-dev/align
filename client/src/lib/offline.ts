@@ -195,10 +195,36 @@ export function queueFailure(): string | null {
   return mine().find((item) => item.lastError)?.lastError ?? null
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** One in-flight note save should carry every field edited offline, not a second If-Match that will lose. */
+function mergePatchBody(current: string | undefined, next: string | undefined): string | undefined {
+  if (current === undefined) return next
+  if (next === undefined) return current
+  try {
+    const left: unknown = JSON.parse(current)
+    const right: unknown = JSON.parse(next)
+    if (!isRecord(left) || !isRecord(right)) return next
+    return JSON.stringify({ ...left, ...right })
+  } catch {
+    return next
+  }
+}
+
 export function enqueueWrite(input: { path: string; method: string; body?: string; match?: string }): string {
   const owner = currentOwner()
   if (!owner) throw new Error('offline-owner')
   const items = readQueue()
+  if (input.method === 'PATCH' && /^\/api\/notes\/[^/]+$/.test(input.path)) {
+    const pending = items.find((item) => item.userId === owner && item.method === 'PATCH' && item.path === input.path)
+    if (pending) {
+      pending.body = mergePatchBody(pending.body, input.body)
+      writeQueue(items)
+      return pending.id
+    }
+  }
   const next = { userId: owner, path: input.path, method: input.method, body: input.body, match: input.match }
   const nextClientId = clientIdOf(next)
   const existing = items.find(

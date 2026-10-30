@@ -5,7 +5,7 @@ import { bind } from '../data/content.ts'
 import { currentTenant } from '../data/tenant.ts'
 import { asyncHandler, requireAuth, requireWriter } from '../middleware.ts'
 import { afterTaskCursor, afterTaskFilter, beforeCursor, beforeFilter, nextDateCursor, nextTaskCursor, pageLimit } from '../page.ts'
-import { publicActivity, publicNote, publicProject, publicTask, TASK_FIELDS } from '../serialize.ts'
+import { NOTE_FIELDS, publicActivity, publicProject, publicTask, TASK_FIELDS } from '../serialize.ts'
 import {
   normalizeDueDate,
   noteCreateSchema,
@@ -152,8 +152,8 @@ export function projectsRouter(): Router {
     asyncHandler(async (req, res) => {
       const db = bind(currentTenant(req))
       const project = await db.requireProject(req.params.id)
-      const notes = await db.notes.find({ projectId: project._id }).select('projectId title body createdAt updatedAt __v').sort({ updatedAt: -1 }).lean()
-      res.json(notes.map(publicNote))
+      const notes = await db.notes.find({ projectId: project._id }).select(NOTE_FIELDS).sort({ updatedAt: -1 }).lean()
+      res.json(await db.presentNotes(notes))
     }),
   )
 
@@ -164,10 +164,12 @@ export function projectsRouter(): Router {
       const db = bind(tenant)
       const project = await db.requireProject(req.params.id)
       const input = parseBody(noteCreateSchema, req.body)
+      const taskIds = input.taskIds ? await db.assignNoteTasks(project._id, input.taskIds, []) : []
       const note = await db.notes.create({
         projectId: project._id,
         title: input.title ? input.title : 'Untitled',
         body: input.body ?? '',
+        taskIds,
       })
       await db.touchProject(project._id)
       await recordActivity({
@@ -178,7 +180,8 @@ export function projectsRouter(): Router {
         summary: `Created note ${quoteTitle(note.title)}`,
       })
       stampVersion(res, note.__v)
-      res.status(201).json(publicNote(note))
+      const [body] = await db.presentNotes([note])
+      res.status(201).json(body)
     }),
   )
 

@@ -8,13 +8,14 @@ import { cn } from '../lib/cn.ts'
 import { useMediaQuery } from '../hooks/useMediaQuery.ts'
 import { Eyebrow } from './chrome.tsx'
 import { CommandPalette } from './CommandPalette.tsx'
-import { IconCalendar, IconClose, IconDashboard, IconMenu, IconNotes, IconProjects, IconSearch, IconSettings, IconToday, IconTrash } from './icons.tsx'
+import { IconCalendar, IconClose, IconDashboard, IconMenu, IconNotes, IconProjects, IconSearch, IconSettings, IconToday, IconTrash, IconUpcoming } from './icons.tsx'
 import { NotificationBell } from './NotificationBell.tsx'
 import { ThemeToggle } from './ThemeControls.tsx'
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: IconDashboard, end: true },
   { to: '/today', label: 'Today', icon: IconToday, end: false },
+  { to: '/upcoming', label: 'Upcoming', icon: IconUpcoming, end: false },
   { to: '/calendar', label: 'Calendar', icon: IconCalendar, end: false },
   { to: '/projects', label: 'Projects', icon: IconProjects, end: false },
   { to: '/notes', label: 'Notes', icon: IconNotes, end: false },

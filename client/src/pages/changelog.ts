@@ -7,6 +7,15 @@ export type ChangelogEntry = {
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    date: '2026-10-30',
+    title: 'Upcoming, and notes on tasks',
+    items: [
+      'Upcoming is in the sidebar again, between Today and Calendar.',
+      'Link a note to tasks in the same project. Open the task to see those notes, and open a note from the task.',
+      'If a linked task or note is in Trash, the link waits. It shows again when you restore it.',
+    ],
+  },
+  {
     date: '2026-10-29',
     title: 'Checklists, boards, and a calendar',
     items: [

@@ -4,7 +4,7 @@ import { assertVersion, expectedVersion, stampVersion } from '../concurrency.ts'
 import { bind } from '../data/content.ts'
 import { currentTenant } from '../data/tenant.ts'
 import { asyncHandler, requireAuth, requireWriter } from '../middleware.ts'
-import { publicNote } from '../serialize.ts'
+import { NOTE_FIELDS } from '../serialize.ts'
 import { notePatchSchema, parseBody } from '../validate.ts'
 
 export function notesRouter(): Router {
@@ -18,19 +18,21 @@ export function notesRouter(): Router {
       const projectIds = await db.activeProjectIds()
       const notes = await db.notes
         .find({ projectId: { $in: projectIds } })
-        .select('projectId title body createdAt updatedAt __v')
+        .select(NOTE_FIELDS)
         .sort({ updatedAt: -1 })
         .lean()
-      res.json(notes.map(publicNote))
+      res.json(await db.presentNotes(notes))
     }),
   )
 
   router.get(
     '/:id',
     asyncHandler(async (req, res) => {
-      const note = await bind(currentTenant(req)).requireNote(req.params.id)
+      const db = bind(currentTenant(req))
+      const note = await db.requireNote(req.params.id)
       stampVersion(res, note.__v)
-      res.json(publicNote(note))
+      const [body] = await db.presentNotes([note])
+      res.json(body)
     }),
   )
 
@@ -44,6 +46,10 @@ export function notesRouter(): Router {
       const input = parseBody(notePatchSchema, req.body)
       if (input.title !== undefined) note.title = input.title
       if (input.body !== undefined) note.body = input.body
+      if (input.taskIds !== undefined) {
+        note.taskIds = await db.assignNoteTasks(note.projectId, input.taskIds, note.taskIds ?? [])
+        note.markModified('taskIds')
+      }
       await note.save()
       await db.touchProject(note.projectId)
       await recordActivity({
@@ -54,7 +60,8 @@ export function notesRouter(): Router {
         summary: `Updated note ${quoteTitle(note.title)}`,
       })
       stampVersion(res, note.__v)
-      res.json(publicNote(note))
+      const [body] = await db.presentNotes([note])
+      res.json(body)
     }),
   )
 

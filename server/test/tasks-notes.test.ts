@@ -214,6 +214,71 @@ describe('tasks and notes', () => {
     })
   })
 
+  it('links a note to tasks in the same project and keeps the link through trash', async () => {
+    const { agent } = await registerUser()
+    const other = await registerUser('Other')
+    const project = await agent.post('/api/projects').send({ name: 'Notes' })
+    const id = project.body.id as string
+    const elsewhere = await agent.post('/api/projects').send({ name: 'Elsewhere' })
+    const first = await agent.post(`/api/projects/${id}/tasks`).send({ title: 'Write the brief' })
+    const second = await agent.post(`/api/projects/${id}/tasks`).send({ title: 'Review the brief' })
+    const foreign = await agent.post(`/api/projects/${elsewhere.body.id}/tasks`).send({ title: 'Not here' })
+    const created = await agent.post(`/api/projects/${id}/notes`).send({ title: 'Brief', taskIds: [first.body.id] })
+    expect(created.status).toBe(201)
+    expect(created.body.taskIds).toEqual([first.body.id])
+    expect(created.body.linkedTasks).toEqual([{ id: first.body.id, title: 'Write the brief', trashed: false }])
+
+    const both = await agent.patch(`/api/notes/${created.body.id}`).send({ taskIds: [second.body.id, first.body.id] })
+    expect(both.status).toBe(200)
+    expect(both.body.taskIds).toEqual([second.body.id, first.body.id])
+    expect(both.body.linkedTasks.map((task: { title: string }) => task.title)).toEqual(['Review the brief', 'Write the brief'])
+
+    const renamed = await agent.patch(`/api/notes/${created.body.id}`).send({ title: 'Brief notes' })
+    expect(renamed.body).toMatchObject({ title: 'Brief notes', taskIds: [second.body.id, first.body.id] })
+
+    const listed = await agent.get(`/api/projects/${id}/notes`)
+    expect(listed.body[0].taskIds).toEqual([second.body.id, first.body.id])
+    expect((await agent.get('/api/notes')).body[0].taskIds).toEqual([second.body.id, first.body.id])
+
+    expect((await agent.patch(`/api/notes/${created.body.id}`).send({ taskIds: [first.body.id, first.body.id] })).status).toBe(400)
+    expect((await agent.patch(`/api/notes/${created.body.id}`).send({ taskIds: ['nope'] })).status).toBe(400)
+    expect((await agent.patch(`/api/notes/${created.body.id}`).send({ taskIds: [foreign.body.id] })).status).toBe(400)
+    const tooMany = Array.from({ length: 41 }, (_, index) => index.toString(16).padStart(24, '0'))
+    expect((await agent.patch(`/api/notes/${created.body.id}`).send({ taskIds: tooMany })).status).toBe(400)
+    expect((await agent.get(`/api/notes/${created.body.id}`)).body.taskIds).toEqual([second.body.id, first.body.id])
+
+    const outsider = await other.agent.post('/api/projects').send({ name: 'Private' })
+    const outsiderNote = await other.agent.post(`/api/projects/${outsider.body.id}/notes`).send({ title: 'Mine' })
+    expect((await other.agent.patch(`/api/notes/${outsiderNote.body.id}`).send({ taskIds: [first.body.id] })).status).toBe(400)
+
+    expect((await agent.delete(`/api/tasks/${first.body.id}`)).status).toBe(204)
+    const trashedTask = await agent.get(`/api/notes/${created.body.id}`)
+    expect(trashedTask.body.taskIds).toEqual([second.body.id, first.body.id])
+    expect(trashedTask.body.linkedTasks).toEqual([
+      { id: second.body.id, title: 'Review the brief', trashed: false },
+      { id: first.body.id, title: 'Write the brief', trashed: true },
+    ])
+    expect((await agent.post(`/api/trash/tasks/${first.body.id}/restore`)).status).toBe(200)
+    expect((await agent.get(`/api/notes/${created.body.id}`)).body.linkedTasks[1]).toMatchObject({ id: first.body.id, trashed: false })
+
+    expect((await agent.delete(`/api/notes/${created.body.id}`)).status).toBe(204)
+    expect((await agent.get(`/api/projects/${id}/notes`)).body).toEqual([])
+    expect((await agent.post(`/api/trash/notes/${created.body.id}/restore`)).status).toBe(200)
+    expect((await agent.get(`/api/projects/${id}/notes`)).body[0].taskIds).toEqual([second.body.id, first.body.id])
+
+    expect((await agent.delete(`/api/tasks/${first.body.id}`)).status).toBe(204)
+    expect((await agent.delete(`/api/trash/tasks/${first.body.id}`)).status).toBe(204)
+    const dangling = await agent.get(`/api/notes/${created.body.id}`)
+    expect(dangling.body.taskIds).toContain(first.body.id)
+    expect(dangling.body.linkedTasks.map((task: { id: string }) => task.id)).toEqual([second.body.id])
+    const cleaned = await agent.patch(`/api/notes/${created.body.id}`).send({ taskIds: dangling.body.taskIds })
+    expect(cleaned.status).toBe(200)
+    expect(cleaned.body.taskIds).toEqual([second.body.id])
+
+    const cleared = await agent.patch(`/api/notes/${created.body.id}`).send({ taskIds: [] })
+    expect(cleared.body).toMatchObject({ taskIds: [], linkedTasks: [] })
+  })
+
   it('moves a task across board columns and lists due dates on the calendar', async () => {
     const { agent } = await registerUser()
     const project = await agent.post('/api/projects').send({ name: 'Board' })

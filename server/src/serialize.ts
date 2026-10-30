@@ -45,6 +45,15 @@ export function publicLabel(label: LabelDoc | (Pick<LabelDoc, 'name' | 'color' |
 export const TASK_FIELDS =
   'projectId title completed dueDate priority labelIds plannedFor completedOn order status recurrence subtasks createdAt updatedAt __v'
 
+export const NOTE_FIELDS = 'projectId title body taskIds createdAt updatedAt __v'
+
+export type NoteLinkView = { title: string; trashed: boolean; projectId: string }
+
+function taskIdStrings(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((id) => id != null).map((id) => String(id))
+}
+
 function publicSubtasks(value: unknown): { id: string; text: string; completed: boolean }[] {
   if (!Array.isArray(value)) return []
   const items: { id: string; text: string; completed: boolean }[] = []
@@ -114,12 +123,24 @@ export function publicNotification(item: NotificationDoc | (Pick<NotificationDoc
   }
 }
 
-export function publicNote(note: NoteDoc | (Pick<NoteDoc, 'projectId' | 'title' | 'body' | 'createdAt' | 'updatedAt'> & { id?: string; _id: Types.ObjectId; __v?: number | null })) {
+export function publicNote(
+  note: NoteDoc | (Pick<NoteDoc, 'projectId' | 'title' | 'body' | 'createdAt' | 'updatedAt'> & { id?: string; _id: Types.ObjectId; __v?: number | null; taskIds?: { toString(): string }[] | null }),
+  links?: ReadonlyMap<string, NoteLinkView>,
+) {
+  const taskIds = taskIdStrings(note.taskIds)
+  const projectId = note.projectId.toString()
+  const linkedTasks = taskIds.flatMap((id) => {
+    const task = links?.get(id)
+    if (!task || task.projectId !== projectId) return []
+    return [{ id, title: task.title, trashed: task.trashed }]
+  })
   return {
     id: docId(note),
-    projectId: note.projectId.toString(),
+    projectId,
     title: note.title,
     body: note.body,
+    taskIds,
+    linkedTasks,
     version: versionOf(note),
     createdAt: note.createdAt.toISOString(),
     updatedAt: note.updatedAt.toISOString(),

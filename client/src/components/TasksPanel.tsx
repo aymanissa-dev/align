@@ -8,6 +8,7 @@ import { ConflictDialog } from './ConflictDialog.tsx'
 import { useToast } from './toast-context.ts'
 import { isConflict } from '../lib/conflict.ts'
 import { taskFieldPatch } from '../lib/patch.ts'
+import { LinkedNoteChips } from './LinkedNotes.tsx'
 import { IconPencil, IconTrash } from './icons.tsx'
 import { Button, CheckButton, ConfirmDialog, ErrorState, Input, ListSkeleton, OfflineState, ProgressBar, Select } from './ui.tsx'
 import { DueBadge, PriorityBadge, RecurrenceBadge } from './chrome.tsx'
@@ -62,6 +63,10 @@ export function TasksPanel({ projectId }: { projectId: string }) {
   const labels = useQuery({
     queryKey: ['labels'],
     queryFn: () => api.listLabels(),
+  })
+  const projectNotes = useQuery({
+    queryKey: ['notes', projectId],
+    queryFn: () => api.listProjectNotes(projectId),
   })
   const miss = useQueryMiss(tasks)
 
@@ -640,6 +645,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
                     </div>
                     {task.id.startsWith('queued:') || task.id.startsWith('optimistic:') ? null : (
                       <div className="pl-11">
+                        <LinkedNoteChips notes={projectNotes.data} taskId={task.id} />
                         <button
                           type="button"
                           className="focus-ring inline-flex min-h-11 items-center text-xs text-neutral-600 hover:text-neutral-950"

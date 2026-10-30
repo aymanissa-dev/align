@@ -22,6 +22,7 @@ import {
   type TaskDoc,
 } from '../models.ts'
 import type { Tenant } from './tenant.ts'
+import { publicNote } from '../serialize.ts'
 import { withTransaction } from './txn.ts'
 
 const TRASH_MS = 30 * 24 * 60 * 60 * 1000
@@ -159,6 +160,65 @@ export function bind(tenant: Tenant) {
       const found = await Label.find({ workspaceId, _id: { $in: objectIds } }).select('_id')
       if (found.length !== objectIds.length) throw new HttpError(400, 'Unknown label.')
       return objectIds.filter((id): id is Types.ObjectId => id !== null)
+    },
+    /**
+     * Note.taskIds is the source of truth. Only tasks in this workspace and
+     * project can be linked, including tasks currently in Trash. An id from
+     * another account does not match. A previously linked task that was purged
+     * is dropped so the rest of the save can succeed.
+     */
+    async assignNoteTasks(
+      projectId: Types.ObjectId,
+      requested: string[],
+      previous: readonly { toString(): string }[],
+    ): Promise<Types.ObjectId[]> {
+      const unique: string[] = []
+      const seen = new Set<string>()
+      for (const id of requested) {
+        const key = id.toLowerCase()
+        if (seen.has(key)) continue
+        seen.add(key)
+        unique.push(id)
+      }
+      const objectIds = unique.map((id) => objectId(id))
+      if (objectIds.some((id) => id === null)) throw new HttpError(400, 'Link a task from this project.')
+      const validIds = objectIds.filter((id): id is Types.ObjectId => id !== null)
+      const found = validIds.length
+        ? await Task.find({ workspaceId, projectId, _id: { $in: validIds } }).select('_id')
+        : []
+      const foundSet = new Set(found.map((task) => task._id.toString()))
+      const previousSet = new Set(previous.map((id) => id.toString().toLowerCase()))
+      const rejected = unique.filter((id) => !foundSet.has(id.toLowerCase()) && !previousSet.has(id.toLowerCase()))
+      if (rejected.length > 0) throw new HttpError(400, 'Link a task from this project.')
+      return unique.flatMap((id) => {
+        if (!foundSet.has(id.toLowerCase())) return []
+        const parsed = objectId(id)
+        return parsed ? [parsed] : []
+      })
+    },
+    async presentNotes<T extends Parameters<typeof publicNote>[0]>(notes: readonly T[]) {
+      const ids = new Set<string>()
+      for (const note of notes) {
+        for (const id of note.taskIds ?? []) {
+          const key = id.toString()
+          if (objectId(key)) ids.add(key)
+        }
+      }
+      const objectIds = [...ids].map((id) => objectId(id)).filter((id): id is Types.ObjectId => id !== null)
+      const tasks = objectIds.length
+        ? await Task.find({ workspaceId, _id: { $in: objectIds } }).select('title deletedAt projectId').lean()
+        : []
+      const links = new Map(
+        tasks.map((task) => [
+          task._id.toString(),
+          {
+            title: task.title,
+            trashed: task.deletedAt != null,
+            projectId: task.projectId.toString(),
+          },
+        ]),
+      )
+      return notes.map((note) => publicNote(note, links))
     },
     async touchProject(projectId: Types.ObjectId): Promise<void> {
       await Project.updateOne({ _id: projectId, workspaceId }, { $currentDate: { updatedAt: true } })

@@ -35,7 +35,7 @@ const DELAY_MS = 120
 type StoredUser = User & { password: string; recoveryKey?: string | null }
 type StoredProject = Omit<Project, 'version'> & { userId: string; version?: number }
 type StoredTask = Omit<Task, 'version'> & { userId: string; clientId?: string; version?: number }
-type StoredNote = Omit<Note, 'version'> & { userId: string; version?: number }
+type StoredNote = Omit<Note, 'version' | 'linkedTasks' | 'taskIds'> & { userId: string; version?: number; taskIds?: string[] }
 type StoredLabel = Omit<Label, 'version'> & { userId: string; version?: number }
 type StoredActivity = ActivityEvent & { userId: string }
 type StoredNotification = AppNotification & { userId: string; key: string }
@@ -205,12 +205,34 @@ function colorOf(value: string | undefined): string {
   return color.toLowerCase()
 }
 
-function publicNote(item: StoredNote): Note {
+function assignTaskIds(state: Db, userId: string, projectId: string, ids: string[], previous: string[]): string[] {
+  if (!Array.isArray(ids)) throw new ApiError(400, 'Linked tasks are invalid.')
+  if (ids.length > 40) throw new ApiError(400, 'Too many linked tasks.')
+  const unique: string[] = []
+  const seen = new Set<string>()
+  for (const id of ids) {
+    if (typeof id !== 'string' || seen.has(id)) throw new ApiError(400, id && seen.has(id) ? 'Linked tasks must be unique.' : 'Link a task from this project.')
+    seen.add(id)
+    const task = state.tasks.find((item) => item.id === id && item.userId === userId && item.projectId === projectId)
+    if (!task && !previous.includes(id)) throw new ApiError(400, 'Link a task from this project.')
+    if (task) unique.push(id)
+  }
+  return unique
+}
+
+function publicNote(item: StoredNote, state: Db, userId: string): Note {
+  const taskIds = item.taskIds ?? []
   return {
     id: item.id,
     projectId: item.projectId,
     title: item.title,
     body: item.body,
+    taskIds,
+    linkedTasks: taskIds.flatMap((id) => {
+      const task = state.tasks.find((entry) => entry.id === id && entry.userId === userId && entry.projectId === item.projectId)
+      if (!task) return []
+      return [{ id, title: task.title, trashed: false }]
+    }),
     version: item.version ?? 0,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
@@ -801,7 +823,7 @@ export const mockApi = {
 
   async listNotes() {
     return read((state, user) =>
-      sortByUpdated(state.notes.filter((item) => item.userId === user.id)).map(publicNote),
+      sortByUpdated(state.notes.filter((item) => item.userId === user.id)).map((item) => publicNote(item, state, user.id)),
     )
   },
 
@@ -810,7 +832,7 @@ export const mockApi = {
       findProject(state, user.id, projectId)
       return sortByUpdated(
         state.notes.filter((item) => item.userId === user.id && item.projectId === projectId),
-      ).map(publicNote)
+      ).map((item) => publicNote(item, state, user.id))
     })
   },
 
@@ -824,18 +846,19 @@ export const mockApi = {
         projectId,
         title: requireName(input.title?.trim() ? input.title : 'Untitled', 'Title', 160),
         body: (input.body ?? '').slice(0, 100_000),
+        taskIds: input.taskIds ? assignTaskIds(state, user.id, projectId, input.taskIds, []) : [],
         createdAt: timestamp,
         updatedAt: timestamp,
       }
       state.notes.push(item)
       touchProject(state, projectId)
       pushActivity(state, user.id, projectId, 'create', `Created note ${quoteTitle(item.title)}`)
-      return publicNote(item)
+      return publicNote(item, state, user.id)
     })
   },
 
   async getNote(id) {
-    return read((state, user) => publicNote(findNote(state, user.id, id)))
+    return read((state, user) => publicNote(findNote(state, user.id, id), state, user.id))
   },
 
   async updateNote(id, input, opts) {
@@ -844,10 +867,11 @@ export const mockApi = {
       bump(item, opts)
       if (input.title !== undefined) item.title = requireName(input.title, 'Title', 160)
       if (input.body !== undefined) item.body = input.body.slice(0, 100_000)
+      if (input.taskIds !== undefined) item.taskIds = assignTaskIds(state, user.id, item.projectId, input.taskIds, item.taskIds ?? [])
       item.updatedAt = now()
       touchProject(state, item.projectId)
       pushActivity(state, user.id, item.projectId, 'update', `Updated note ${quoteTitle(item.title)}`)
-      return publicNote(item)
+      return publicNote(item, state, user.id)
     })
   },
 

@@ -3,8 +3,9 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ApiError } from '../api/errors.ts'
 import { api } from '../api/index.ts'
-import type { Note } from '../api/types.ts'
+import type { LinkedTask, Note } from '../api/types.ts'
 import { ConflictDialog } from '../components/ConflictDialog.tsx'
+import { NoteTaskLinks } from '../components/NoteTaskLinks.tsx'
 import { useToast } from '../components/toast-context.ts'
 import { isConflict } from '../lib/conflict.ts'
 import { noteFieldPatch } from '../lib/patch.ts'
@@ -14,6 +15,25 @@ import { broadcastWorkspaceChange } from '../lib/dataChannel.ts'
 import { invalidateWorkspace, queryClient } from '../queryClient.ts'
 import { useQueryMiss } from '../lib/queryMiss.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
+
+function chainWrite<T>(chain: { current: Promise<void> }, work: () => Promise<T>): Promise<T> {
+  const next = chain.current.then(work, work)
+  chain.current = next.then(
+    () => undefined,
+    () => undefined,
+  )
+  return next
+}
+
+function linksFor(ids: string[], known: { id: string; title: string }[], previous: LinkedTask[]): LinkedTask[] {
+  return ids.map((id) => {
+    const task = known.find((item) => item.id === id)
+    if (task) return { id, title: task.title, trashed: false }
+    const existing = previous.find((item) => item.id === id)
+    if (existing) return existing
+    return { id, title: 'Removed', trashed: true }
+  })
+}
 
 export function NoteEditorPage() {
   const { id = '' } = useParams()
@@ -51,9 +71,13 @@ function Editor({ note }: { note: Note }) {
   const toast = useToast()
   const [title, setTitle] = useState(note.title)
   const [body, setBody] = useState(note.body)
+  const [taskIds, setTaskIds] = useState(() => note.taskIds ?? [])
+  const [linkedTasks, setLinkedTasks] = useState(() => note.linkedTasks ?? [])
+  const [linking, setLinking] = useState(false)
   const [status, setStatus] = useState<'saved' | 'saving' | 'error'>('saved')
   const [confirmDelete, setConfirmDelete] = useState(false)
   const saved = useRef({ title: note.title, body: note.body, version: note.version })
+  const writeChain = useRef(Promise.resolve())
   const latest = useRef({ title: note.title, body: note.body })
   const [conflict, setConflict] = useState<{ title: string; body: string } | null>(null)
   const generation = useRef(0)
@@ -69,34 +93,90 @@ function Editor({ note }: { note: Note }) {
     return (nextTitle.trim() || 'Untitled') === saved.current.title && nextBody === saved.current.body
   }
 
-  async function persist(nextTitle: string, nextBody: string, overwrite = false) {
-    const id = ++generation.current
-    const normalized = nextTitle.trim() || 'Untitled'
-    const patch = noteFieldPatch(saved.current, { title: normalized, body: nextBody })
-    if (!overwrite && Object.keys(patch).length === 0) {
-      setStatus('saved')
-      return
-    }
-    try {
-      const updated = await api.updateNote(note.id, patch, {
-        version: saved.current.version,
-        overwrite,
-      })
-      if (generation.current !== id) return
-      saved.current = { title: updated.title, body: updated.body, version: updated.version }
-      setConflict(null)
-      queryClient.setQueryData(['note', note.id], updated)
-      broadcastWorkspaceChange()
-      void queryClient.invalidateQueries({ queryKey: ['notes'] })
-      const current = latest.current
-      if ((current.title.trim() || 'Untitled') === updated.title && current.body === updated.body) {
-        setStatus('saved')
+  function rememberLinks(nextIds: string[], nextLinks: LinkedTask[]) {
+    const apply = (current: Note[] | undefined) =>
+      current?.map((item) => (item.id === note.id ? { ...item, taskIds: nextIds, linkedTasks: nextLinks } : item))
+    queryClient.setQueryData<Note[]>(['notes', note.projectId], apply)
+    queryClient.setQueryData<Note[]>(['notes'], apply)
+  }
+
+  function setTaskLinks(next: string[], known: { id: string; title: string }[]) {
+    const previousIds = taskIds
+    const previousLinks = linkedTasks
+    const optimistic = linksFor(next, known, previousLinks)
+    setLinking(true)
+    setTaskIds(next)
+    setLinkedTasks(optimistic)
+    rememberLinks(next, optimistic)
+    void chainWrite(writeChain, async () => {
+      setStatus('saving')
+      try {
+        const updated = await api.updateNote(note.id, { taskIds: next }, { version: saved.current.version })
+        saved.current.version = updated.version
+        const nextIds = updated.taskIds ?? []
+        const nextLinks = updated.linkedTasks ?? []
+        setTaskIds(nextIds)
+        setLinkedTasks(nextLinks)
+        rememberLinks(nextIds, nextLinks)
+        queryClient.setQueryData<Note>(['note', note.id], (current) =>
+          current ? { ...current, taskIds: nextIds, linkedTasks: nextLinks, version: updated.version } : updated,
+        )
+        broadcastWorkspaceChange()
+        void queryClient.invalidateQueries({ queryKey: ['notes'] })
+        if (isSaved(latest.current.title, latest.current.body)) setStatus('saved')
+      } catch (error) {
+        if (error instanceof ApiError && error.queued) {
+          toast('Saved on this device. It will sync when you reconnect.')
+          if (isSaved(latest.current.title, latest.current.body)) setStatus('saved')
+          return
+        }
+        setTaskIds(previousIds)
+        setLinkedTasks(previousLinks)
+        rememberLinks(previousIds, previousLinks)
+        if (isConflict(error)) {
+          toast('This note changed elsewhere.')
+          void queryClient.invalidateQueries({ queryKey: ['note', note.id] })
+        } else {
+          toast(errorMessage(error))
+        }
+        setStatus(isSaved(latest.current.title, latest.current.body) ? 'saved' : 'error')
+      } finally {
+        setLinking(false)
       }
-    } catch (error) {
-      if (generation.current !== id) return
-      if (isConflict(error)) setConflict({ title: normalized, body: nextBody })
-      setStatus('error')
-    }
+    })
+  }
+
+  function persist(nextTitle: string, nextBody: string, overwrite = false) {
+    const id = ++generation.current
+    return chainWrite(writeChain, async () => {
+      if (!overwrite && generation.current !== id) return
+      const normalized = nextTitle.trim() || 'Untitled'
+      const patch = noteFieldPatch(saved.current, { title: normalized, body: nextBody })
+      if (!overwrite && Object.keys(patch).length === 0) {
+        setStatus('saved')
+        return
+      }
+      try {
+        const updated = await api.updateNote(note.id, patch, {
+          version: saved.current.version,
+          overwrite,
+        })
+        if (!overwrite && generation.current !== id) return
+        saved.current = { title: updated.title, body: updated.body, version: updated.version }
+        setConflict(null)
+        queryClient.setQueryData(['note', note.id], updated)
+        broadcastWorkspaceChange()
+        void queryClient.invalidateQueries({ queryKey: ['notes'] })
+        const current = latest.current
+        if ((current.title.trim() || 'Untitled') === updated.title && current.body === updated.body) {
+          setStatus('saved')
+        }
+      } catch (error) {
+        if (!overwrite && generation.current !== id) return
+        if (isConflict(error)) setConflict({ title: normalized, body: nextBody })
+        setStatus('error')
+      }
+    })
   }
 
   useEffect(() => {
@@ -112,18 +192,21 @@ function Editor({ note }: { note: Note }) {
 
   useEffect(() => {
     const noteId = note.id
+    const chain = writeChain
     const readLatest = () => latest.current
     const readSaved = () => saved.current
     const nextGeneration = () => ++generation.current
     const currentGeneration = () => generation.current
     return () => {
       const current = readLatest()
-      const stored = readSaved()
-      const normalized = current.title.trim() || 'Untitled'
-      const patch = noteFieldPatch(stored, { title: normalized, body: current.body })
-      if (Object.keys(patch).length === 0) return
       const requestId = nextGeneration()
-      void api.updateNote(noteId, patch, { version: stored.version }).then((updated) => {
+      void chainWrite(chain, async () => {
+        if (currentGeneration() !== requestId) return
+        const stored = readSaved()
+        const normalized = current.title.trim() || 'Untitled'
+        const patch = noteFieldPatch(stored, { title: normalized, body: current.body })
+        if (Object.keys(patch).length === 0) return
+        const updated = await api.updateNote(noteId, patch, { version: stored.version })
         if (currentGeneration() !== requestId) return
         queryClient.setQueryData(['note', noteId], updated)
         broadcastWorkspaceChange()
@@ -194,6 +277,13 @@ function Editor({ note }: { note: Note }) {
       ) : (
         <p className="mt-3 text-sm text-neutral-400">Project</p>
       )}
+      <NoteTaskLinks
+        projectId={note.projectId}
+        taskIds={taskIds}
+        linkedTasks={linkedTasks}
+        pending={linking}
+        onChange={setTaskLinks}
+      />
       <textarea
         id="note-editor-body"
         name="body"

@@ -170,11 +170,19 @@ export type CalendarTask = {
   recurrence: Recurrence | null
 }
 
+export type LinkedTask = {
+  id: string
+  title: string
+  trashed: boolean
+}
+
 export type Note = {
   id: string
   projectId: string
   title: string
   body: string
+  taskIds: string[]
+  linkedTasks: LinkedTask[]
   version: number
   createdAt: string
   updatedAt: string
