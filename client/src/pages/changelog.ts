@@ -29,8 +29,10 @@ export const CHANGELOG: readonly ChangelogEntry[] = [
   },
   {
     date: '2026-10-26',
-    title: 'Changelog',
+    title: 'Landing page and changelog',
     items: [
+      'The public landing page reveals in a short stagger. It stays still when reduced motion is on.',
+      'A guest opening Align sees the landing page right away, with no flash of the signed-in workspace. The changelog, privacy, and terms pages do the same.',
       'A public changelog lists what changed in Align. It is linked from the footer.',
     ],
   },
